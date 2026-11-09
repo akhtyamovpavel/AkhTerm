@@ -656,7 +656,7 @@ pub fn refresh_ui() {
                 .map(|r| (r.avg_mi, r.grade));
 
             s.sidebar_row.update(idx, s, mi_badge, is_act);
-            s.top_tab.update(&s.title, is_act, s.unread);
+            s.top_tab.update(&s.title, &s.proc_info.agent, is_act, s.unread);
         }
         filter_sidebar(app);
         unsafe { gtk_widget_set_sensitive(app.reconnect_btn, i32::from(can_reconnect)) };

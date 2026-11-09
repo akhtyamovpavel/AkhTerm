@@ -6,7 +6,7 @@ use std::ptr;
 use crate::ffi::{
     g_object_set, g_object_unref, gdk_screen_get_default, gtk_css_provider_load_from_data,
     gtk_css_provider_new, gtk_settings_get_default, gtk_style_context_add_provider_for_screen,
-    GdkRGBA, GTK_STYLE_PROVIDER_PRIORITY_APPLICATION,
+    gtk_widget_set_name, GdkRGBA, GtkWidget, GTK_STYLE_PROVIDER_PRIORITY_APPLICATION,
 };
 
 const SHADCN_GTK_CSS: &str = concat!(
@@ -34,6 +34,17 @@ pub unsafe fn apply_gtk_theme() {
         GTK_STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
     g_object_unref(provider);
+}
+
+pub fn set_agent_accent(icon: *mut GtkWidget, agent: &str) {
+    let name = match agent {
+        "DeepSeek" => c"agent-deepseek",
+        "Codex" => c"agent-codex",
+        "Claude" => c"agent-claude",
+        "Kimi" => c"agent-kimi",
+        _ => c"",
+    };
+    unsafe { gtk_widget_set_name(icon, name.as_ptr()) };
 }
 
 pub const TERM_BG: GdkRGBA = GdkRGBA::rgb(9, 9, 11);

@@ -203,7 +203,9 @@ pub fn inspect_proc_tree(root_pid: i32) -> ProcInfo {
         if exe == "tmux" || low.contains("tmux ") {
             info.has_tmux = "tmux".to_string();
         }
-        if exe == "agy" || low.contains("/agy") || low.contains("antigravity") {
+        if matches!(exe.as_str(), "deepseek" | "deepseek-cli") {
+            info.agent = "DeepSeek".to_string();
+        } else if exe == "agy" || low.contains("/agy") || low.contains("antigravity") {
             info.agent = "AGY".to_string();
         } else if exe == "codex" || low.contains("codex") {
             info.agent = "Codex".to_string();

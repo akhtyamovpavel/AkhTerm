@@ -202,7 +202,10 @@ pub fn create_vte_widget(cwd: &str, argv_strs: &[&str]) -> (*mut GtkWidget, i32)
 
 pub fn detect_agent_name(raw: &str) -> Option<&'static str> {
     let low = raw.to_lowercase();
-    if low.contains("agy") || low.contains("antigravity") {
+    let first_word = low.split_whitespace().next().map(|word| word.trim_end_matches(':'));
+    if matches!(first_word, Some("deepseek" | "deepseek-cli")) {
+        Some("DeepSeek")
+    } else if low.contains("agy") || low.contains("antigravity") {
         Some("AGY")
     } else if low.contains("codex") {
         Some("Codex")

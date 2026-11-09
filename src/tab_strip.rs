@@ -6,6 +6,7 @@ use std::ptr;
 use crate::connect_click;
 use crate::ffi::*;
 use crate::session::SessionCategory;
+use crate::theme::set_agent_accent;
 use crate::ui_text as text;
 
 type ClickHandler = extern "C" fn(*mut GtkWidget, *mut c_void);
@@ -81,6 +82,7 @@ impl TabStrip {
 pub struct TabView {
     widget: *mut GtkWidget,
     select: *mut GtkWidget,
+    icon: *mut GtkWidget,
     label: *mut GtkWidget,
 }
 
@@ -120,12 +122,14 @@ impl TabView {
             Self {
                 widget,
                 select,
+                icon,
                 label,
             }
         }
     }
 
-    pub fn update(&self, title: &str, active: bool, unread: bool) {
+    pub fn update(&self, title: &str, agent: &str, active: bool, unread: bool) {
+        set_agent_accent(self.icon, agent);
         set_class(self.widget, "tab-active", active);
         set_class(self.widget, "tab-ready", unread && !active);
         if let Ok(title) = CString::new(title) {

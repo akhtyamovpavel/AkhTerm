@@ -19,8 +19,8 @@
     color: @muted;
 }
 
-.terminal-tab.tab-ready .tab-icon {
-    color: @ready;
+.terminal-tab.tab-ready {
+    border-bottom-color: @ready;
 }
 
 button.tab-select,

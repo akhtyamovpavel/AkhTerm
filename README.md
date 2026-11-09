@@ -2,6 +2,8 @@
 
 AkhTerm is a native Linux terminal built with Rust, GTK 3 and VTE. It puts local shells, SSH connections and remote tmux sessions in one window. It remembers the open tabs, their order, the active tab and the working directories of local shells.
 
+![AkhTerm showing color-coded agent tabs beside a demo SSH tab attached to tmux](assets/screenshots/akhterm.png)
+
 ## Install the Debian package
 
 The `amd64` package was tested on Ubuntu 24.04 and 26.04. Open the `.deb` in your graphical package installer, or install it with APT from the directory containing the file.

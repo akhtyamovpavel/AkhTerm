@@ -100,6 +100,7 @@ extern "C" {
     // GTK3
     pub fn gtk_init(argc: *mut c_int, argv: *mut *mut *mut c_char);
     pub fn gtk_settings_get_default() -> *mut GtkSettings;
+    pub fn gtk_widget_set_name(widget: *mut GtkWidget, name: *const c_char);
     pub fn gtk_main();
     pub fn gtk_main_quit();
 

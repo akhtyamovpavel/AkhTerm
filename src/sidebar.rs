@@ -6,6 +6,7 @@ use std::ptr;
 use crate::ffi::*;
 use crate::paths::shorten_home;
 use crate::session::{SessionCategory, TermSession, WorkState};
+use crate::theme::set_agent_accent;
 use crate::{connect_click, connect_entry_changed};
 
 type WidgetHandler = extern "C" fn(*mut GtkWidget, *mut c_void);
@@ -179,6 +180,7 @@ fn group_index(category: SessionCategory) -> usize {
 
 pub struct SidebarRow {
     widget: *mut GtkWidget,
+    icon: *mut GtkWidget,
     title: *mut GtkWidget,
     detail: *mut GtkWidget,
     status: *mut GtkWidget,
@@ -208,6 +210,7 @@ impl SidebarRow {
             gtk_box_pack_start(content, lines, 1, 1, 0);
             Self {
                 widget,
+                icon,
                 title,
                 detail,
                 status,
@@ -223,6 +226,7 @@ impl SidebarRow {
         mi: Option<(f64, &str)>,
         active: bool,
     ) {
+        set_agent_accent(self.icon, &session.proc_info.agent);
         set_class(self.widget, "sidebar-selected", active);
         let (status, style) = status_for(session);
         for class in ["sidebar-ready", "sidebar-working", "sidebar-ended"] {

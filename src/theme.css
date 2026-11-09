@@ -8,6 +8,22 @@
 @define-color focus #a1a1aa;
 @define-color ready #86d9b5;
 
+#agent-deepseek {
+    color: #60a5fa;
+}
+
+#agent-codex {
+    color: #d4d4d8;
+}
+
+#agent-claude {
+    color: #fb923c;
+}
+
+#agent-kimi {
+    color: #7dd3fc;
+}
+
 .main-bg, popover, tooltip {
     font-family: "Geist", sans-serif;
     font-size: 14px;
