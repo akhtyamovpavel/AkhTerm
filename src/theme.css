@@ -8,20 +8,35 @@
 @define-color focus #a1a1aa;
 @define-color ready #86d9b5;
 
+.tab-icon,
+.sidebar-icon {
+    border-radius: 4px;
+    padding: 2px 3px;
+}
+
+#agent-agy {
+    color: #c4b5fd;
+    background-color: #35274e;
+}
+
 #agent-deepseek {
     color: #60a5fa;
+    background-color: #203b5e;
 }
 
 #agent-codex {
-    color: #d4d4d8;
+    color: #e4e4e7;
+    background-color: #45454d;
 }
 
 #agent-claude {
     color: #fb923c;
+    background-color: #4c2b1b;
 }
 
 #agent-kimi {
     color: #7dd3fc;
+    background-color: #173a47;
 }
 
 .main-bg, popover, tooltip {

@@ -103,6 +103,7 @@ impl TabView {
             let content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 7);
             let icon = gtk_image_new_from_icon_name(category.icon_name().as_ptr(), GTK_ICON_SIZE_MENU);
             add_class(icon, "tab-icon");
+            gtk_widget_set_valign(icon, GTK_ALIGN_CENTER);
             gtk_box_pack_start(content, icon, 0, 0, 0);
             let label = gtk_label_new(ptr::null());
             gtk_label_set_xalign(label, 0.0);

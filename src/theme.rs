@@ -38,6 +38,7 @@ pub unsafe fn apply_gtk_theme() {
 
 pub fn set_agent_accent(icon: *mut GtkWidget, agent: &str) {
     let name = match agent {
+        "AGY" => c"agent-agy",
         "DeepSeek" => c"agent-deepseek",
         "Codex" => c"agent-codex",
         "Claude" => c"agent-claude",
