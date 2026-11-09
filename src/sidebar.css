@@ -1,39 +1,39 @@
 .sidebar {
-    background-color: #111113;
-    border-right: 1px solid #27272a;
+    background-color: #101012;
+    border-right: 1px solid @border;
     padding: 12px;
 }
 
 .sidebar-title {
-    color: #fafafa;
-    font-size: 1.125em;
+    color: @text;
     font-weight: 600;
 }
 
 .sidebar-shortcut {
-    background-color: #18181b;
-    border: 1px solid #27272a;
+    background-color: @surface;
+    border: 1px solid @border;
     border-radius: 5px;
-    color: #a1a1aa;
+    color: @muted;
     padding: 2px 6px;
-    font-size: 0.9em;
+    font-size: 12px;
 }
 
 .sidebar entry {
-    background-color: #18181b;
-    border-color: #3f3f46;
+    background-color: @surface;
+    border-color: @border;
+    min-height: 22px;
     padding: 5px 8px;
 }
 
 .sidebar entry:focus {
-    border-color: #71717a;
+    border-color: @focus;
 }
 
 .sidebar-group-label,
 .sidebar-disclosure > title {
-    color: #a1a1aa;
+    color: @muted;
     padding: 2px 8px;
-    font-size: 0.9em;
+    font-size: 12px;
     font-weight: 600;
 }
 
@@ -48,19 +48,18 @@ button.sidebar-action {
 
 button.sidebar-row:hover,
 button.sidebar-action:hover {
-    background-color: #202024;
-    color: #fafafa;
+    background-color: @hover;
+    color: @text;
 }
 
 button.sidebar-row.sidebar-selected {
-    background-color: #27272a;
-    border-color: #3f3f46;
-    color: #fafafa;
+    background-color: @selected;
+    color: @text;
 }
 
 button.sidebar-row:focus,
 button.sidebar-action:focus {
-    outline: 1px solid #a1a1aa;
+    outline: 1px solid @focus;
     outline-offset: -2px;
 }
 
@@ -69,7 +68,7 @@ button.sidebar-action:focus {
 }
 
 .sidebar-icon {
-    color: #a1a1aa;
+    color: @muted;
     margin-top: 1px;
 }
 
@@ -81,12 +80,12 @@ button.sidebar-action:focus {
 .sidebar-metric,
 .sidebar-status,
 .sidebar-empty {
-    color: #a1a1aa;
-    font-size: 0.9em;
+    color: @muted;
+    font-size: 12px;
 }
 
 .sidebar-status.sidebar-ready {
-    color: #86d9b5;
+    color: @ready;
 }
 
 .sidebar-status.sidebar-working {
@@ -107,8 +106,8 @@ button.sidebar-action:focus {
 }
 
 .sidebar-disclosure > title:hover {
-    background-color: #202024;
-    color: #fafafa;
+    background-color: @hover;
+    color: @text;
 }
 
 button.sidebar-action {
@@ -116,6 +115,6 @@ button.sidebar-action {
 }
 
 button.sidebar-action.sidebar-tmux-current {
-    color: #fafafa;
-    background-color: #202024;
+    color: @text;
+    background-color: @hover;
 }

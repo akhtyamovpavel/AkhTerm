@@ -23,7 +23,7 @@ impl Sidebar {
     pub fn new(parent: *mut GtkWidget, on_search: WidgetHandler) -> Self {
         unsafe {
             let panel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-            gtk_widget_set_size_request(panel, 345, -1);
+            gtk_widget_set_size_request(panel, 320, -1);
             add_class(panel, "sidebar");
             gtk_box_pack_start(parent, panel, 0, 1, 0);
 
@@ -187,17 +187,12 @@ pub struct SidebarRow {
 
 impl SidebarRow {
     fn new(category: SessionCategory) -> Self {
-        let icon_name = match category {
-            SessionCategory::Project => c"utilities-terminal-symbolic",
-            SessionCategory::Remote => c"network-server-symbolic",
-            SessionCategory::Daemon => c"computer-symbolic",
-        };
         unsafe {
             let widget = gtk_button_new();
             add_class(widget, "sidebar-row");
             let content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 9);
             gtk_container_add(widget, content);
-            let icon = gtk_image_new_from_icon_name(icon_name.as_ptr(), GTK_ICON_SIZE_MENU);
+            let icon = gtk_image_new_from_icon_name(category.icon_name().as_ptr(), GTK_ICON_SIZE_MENU);
             add_class(icon, "sidebar-icon");
             gtk_widget_set_valign(icon, GTK_ALIGN_START);
             gtk_box_pack_start(content, icon, 0, 0, 0);

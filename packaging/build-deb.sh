@@ -25,6 +25,7 @@ install -Dm644 "$packaging_dir/org.akhterm.AkhTerm.svg" \
     "$package_dir/usr/share/icons/hicolor/scalable/apps/org.akhterm.AkhTerm.svg"
 install -Dm644 config.example.conf "$doc_dir/config.example.conf"
 install -m644 LICENSE "$doc_dir/copyright"
+install -m644 assets/fonts/OFL-Geist.txt "$doc_dir/"
 install -m644 "$packaging_dir/NOTICE" /usr/share/common-licenses/{LGPL-2.1,LGPL-3,GPL-3} "$doc_dir/"
 
 # dpkg-shlibdeps reads source metadata and scans the staged executable.

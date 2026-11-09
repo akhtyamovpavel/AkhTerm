@@ -5,6 +5,8 @@ use std::ptr;
 
 use crate::connect_click;
 use crate::ffi::*;
+use crate::session::SessionCategory;
+use crate::ui_text as text;
 
 type ClickHandler = extern "C" fn(*mut GtkWidget, *mut c_void);
 
@@ -31,10 +33,10 @@ impl TabStrip {
             let adjustment = gtk_scrolled_window_get_hadjustment(scroll);
             gtk_container_set_focus_hadjustment(tabs, adjustment);
 
-            let new_tab = gtk_button_new_with_label(c"+".as_ptr());
+            let new_tab = gtk_button_new_with_label(text::NEW_TAB.as_ptr());
             add_class(new_tab, "new-tab");
             gtk_widget_set_valign(new_tab, GTK_ALIGN_CENTER);
-            gtk_widget_set_tooltip_text(new_tab, c"Новая вкладка (Ctrl+Shift+T)".as_ptr());
+            gtk_widget_set_tooltip_text(new_tab, text::NEW_TAB_TIP.as_ptr());
             connect_click(new_tab, on_new_tab, ptr::null_mut());
             gtk_box_pack_start(row, new_tab, 0, 0, 0);
 
@@ -42,36 +44,19 @@ impl TabStrip {
         }
     }
 
-    pub fn append(&self, sid: usize, on_select: ClickHandler, on_close: ClickHandler) -> TabView {
-        let data = sid as *mut c_void;
+    pub fn append(
+        &self,
+        sid: usize,
+        category: SessionCategory,
+        on_select: ClickHandler,
+        on_close: ClickHandler,
+    ) -> TabView {
+        let tab = TabView::new(sid, category, on_select, on_close);
         unsafe {
-            let widget = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-            add_class(widget, "terminal-tab");
-
-            let select = gtk_button_new();
-            add_class(select, "tab-select");
-            let label = gtk_label_new(ptr::null());
-            gtk_label_set_xalign(label, 0.0);
-            gtk_label_set_ellipsize(label, PANGO_ELLIPSIZE_END);
-            gtk_label_set_max_width_chars(label, 22);
-            gtk_container_add(select, label);
-            connect_click(select, on_select, data);
-            gtk_box_pack_start(widget, select, 1, 1, 0);
-
-            let close = gtk_button_new_with_label(c"×".as_ptr());
-            add_class(close, "tab-close");
-            gtk_widget_set_tooltip_text(close, c"Закрыть вкладку".as_ptr());
-            connect_click(close, on_close, data);
-            gtk_box_pack_start(widget, close, 0, 0, 0);
-
-            gtk_box_pack_start(self.tabs, widget, 0, 0, 0);
-            gtk_widget_show_all(widget);
-            TabView {
-                widget,
-                select,
-                label,
-            }
+            gtk_box_pack_start(self.tabs, tab.widget, 0, 0, 0);
+            gtk_widget_show_all(tab.widget);
         }
+        tab
     }
 
     pub fn reveal(&self, tab: &TabView) {
@@ -100,6 +85,46 @@ pub struct TabView {
 }
 
 impl TabView {
+    fn new(
+        sid: usize,
+        category: SessionCategory,
+        on_select: ClickHandler,
+        on_close: ClickHandler,
+    ) -> Self {
+        let data = sid as *mut c_void;
+        unsafe {
+            let widget = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+            add_class(widget, "terminal-tab");
+
+            let select = gtk_button_new();
+            add_class(select, "tab-select");
+            let content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 7);
+            let icon = gtk_image_new_from_icon_name(category.icon_name().as_ptr(), GTK_ICON_SIZE_MENU);
+            add_class(icon, "tab-icon");
+            gtk_box_pack_start(content, icon, 0, 0, 0);
+            let label = gtk_label_new(ptr::null());
+            gtk_label_set_xalign(label, 0.0);
+            gtk_label_set_ellipsize(label, PANGO_ELLIPSIZE_END);
+            gtk_label_set_max_width_chars(label, 22);
+            gtk_box_pack_start(content, label, 1, 1, 0);
+            gtk_container_add(select, content);
+            connect_click(select, on_select, data);
+            gtk_box_pack_start(widget, select, 1, 1, 0);
+
+            let close = gtk_button_new_with_label(text::CLOSE_TAB.as_ptr());
+            add_class(close, "tab-close");
+            gtk_widget_set_tooltip_text(close, text::CLOSE_TAB_TIP.as_ptr());
+            connect_click(close, on_close, data);
+            gtk_box_pack_start(widget, close, 0, 0, 0);
+
+            Self {
+                widget,
+                select,
+                label,
+            }
+        }
+    }
+
     pub fn update(&self, title: &str, active: bool, unread: bool) {
         set_class(self.widget, "tab-active", active);
         set_class(self.widget, "tab-ready", unread && !active);

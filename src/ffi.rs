@@ -14,6 +14,8 @@ pub type GtkAdjustment = c_void;
 pub type GtkPopover = c_void;
 pub type GtkStyleContext = c_void;
 pub type GtkCssProvider = c_void;
+pub type GtkSettings = c_void;
+pub type GtkHeaderBar = c_void;
 pub type GdkScreen = c_void;
 pub type GdkEvent = c_void;
 pub type VteTerminal = c_void;
@@ -69,6 +71,8 @@ extern "C" {
 
     // GLib / GObject
     pub fn g_free(mem: *mut c_void);
+    pub fn g_object_set(object: *mut c_void, first_property_name: *const c_char, ...);
+    pub fn g_object_unref(object: *mut c_void);
     pub fn g_timeout_add(interval: c_uint, function: extern "C" fn(*mut c_void) -> c_int, data: *mut c_void) -> c_uint;
     pub fn g_idle_add(function: extern "C" fn(*mut c_void) -> c_int, data: *mut c_void) -> c_uint;
     pub fn g_unix_signal_add(signum: c_int, function: extern "C" fn(*mut c_void) -> c_int, data: *mut c_void) -> c_uint;
@@ -95,11 +99,13 @@ extern "C" {
 
     // GTK3
     pub fn gtk_init(argc: *mut c_int, argv: *mut *mut *mut c_char);
+    pub fn gtk_settings_get_default() -> *mut GtkSettings;
     pub fn gtk_main();
     pub fn gtk_main_quit();
 
     pub fn gtk_window_new(wtype: c_int) -> *mut GtkWidget;
     pub fn gtk_window_set_title(window: *mut GtkWindow, title: *const c_char);
+    pub fn gtk_window_set_titlebar(window: *mut GtkWindow, titlebar: *mut GtkWidget);
     pub fn gtk_window_set_default_size(window: *mut GtkWindow, width: c_int, height: c_int);
     pub fn gtk_window_set_decorated(window: *mut GtkWindow, setting: c_int);
     pub fn gtk_window_set_resizable(window: *mut GtkWindow, resizable: c_int);
@@ -109,6 +115,10 @@ extern "C" {
     pub fn gtk_window_is_maximized(window: *mut GtkWindow) -> c_int;
     pub fn gtk_window_fullscreen(window: *mut GtkWindow);
     pub fn gtk_window_unfullscreen(window: *mut GtkWindow);
+
+    pub fn gtk_header_bar_new() -> *mut GtkWidget;
+    pub fn gtk_header_bar_set_custom_title(bar: *mut GtkHeaderBar, title: *mut GtkWidget);
+    pub fn gtk_header_bar_set_show_close_button(bar: *mut GtkHeaderBar, setting: c_int);
 
     pub fn gtk_css_provider_new() -> *mut GtkCssProvider;
     pub fn gtk_css_provider_load_from_data(

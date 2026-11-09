@@ -19,6 +19,16 @@ pub enum SessionCategory {
     Daemon,
 }
 
+impl SessionCategory {
+    pub fn icon_name(self) -> &'static CStr {
+        match self {
+            Self::Project => c"utilities-terminal-symbolic",
+            Self::Remote => c"network-server-symbolic",
+            Self::Daemon => c"computer-symbolic",
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum WorkState {
     Idle,
@@ -31,7 +41,6 @@ pub struct TermSession {
     pub base_title: String,
     pub title: String,
     pub osc_title: String,
-    pub icon: String,
     pub custom_title: bool,
     pub cwd: String,
     pub category: SessionCategory,

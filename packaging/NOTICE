@@ -6,3 +6,6 @@ Lesser General Public License, version 3 or later.
 See LGPL-2.1, LGPL-3 and GPL-3 in this directory for the license texts. The
 system packages include their own copyright and license notices under
 /usr/share/doc/.
+
+The bundled Geist font is distributed under the SIL Open Font License 1.1.
+See OFL-Geist.txt in this directory.

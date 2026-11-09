@@ -25,7 +25,7 @@ jobs:
         run: |
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential dpkg-dev libgtk-3-dev libvte-2.91-0
+          sudo apt-get install -y --no-install-recommends build-essential dpkg-dev libfontconfig-dev libgtk-3-dev libvte-2.91-0
 
       - name: Run Rust tests
         run: cargo test --offline --locked
@@ -56,6 +56,7 @@ jobs:
           test -x /usr/bin/akhterm
           test -s /usr/share/applications/org.akhterm.AkhTerm.desktop
           test -s /usr/share/icons/hicolor/scalable/apps/org.akhterm.AkhTerm.svg
+          test -s /usr/share/doc/akhterm/OFL-Geist.txt
           libraries="$(ldd /usr/bin/akhterm)"
           if grep -Fq 'not found' <<< "$libraries"; then
             echo "$libraries" >&2

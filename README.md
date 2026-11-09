@@ -19,7 +19,7 @@ The [Build Debian package workflow](.github/workflows/build-deb.yml) runs on pus
 On Debian or Ubuntu, install the native build dependencies. Rust and Cargo are also required. The build was verified with Rust and Cargo 1.85.
 
 ```sh
-sudo apt install build-essential libgtk-3-dev libvte-2.91-0
+sudo apt install build-essential libfontconfig-dev libgtk-3-dev libvte-2.91-0
 cargo build --release --offline --locked
 ./target/release/akhterm
 ```
@@ -40,6 +40,8 @@ sudo apt install dpkg-dev
 3. If you already have an alias in `~/.ssh/config`, open the «Профили / SSH» menu. Choose `ssh` for a remote shell or `tmux:main` for a persistent session. Use `Ctrl+Shift+R` to reconnect the active SSH tab and return to its tmux session.
 
 `Ctrl+Shift+W` closes the active tab. The `×` button closes its own tab, and `Alt+1` through `Alt+9` select tabs by position. The interface labels are in Russian.
+
+In a shell tab, open «Агенты» and choose **Claude Code** to run `claude` in that shell. Install the [Claude Code CLI](https://code.claude.com/docs/en/quickstart) on the machine where the shell runs.
 
 ## Local configuration
 
@@ -78,3 +80,5 @@ cargo test --offline --locked
 ## License
 
 AkhTerm is licensed under the [MIT License](LICENSE). The Debian package includes [notices for the system libraries](packaging/NOTICE).
+
+The interface bundles [Geist 1.7.0](https://github.com/vercel/geist-font/releases/tag/1.7.0) under the [SIL Open Font License 1.1](assets/fonts/OFL-Geist.txt).

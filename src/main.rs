@@ -8,6 +8,8 @@ mod sidebar;
 mod tab_strip;
 mod tabs;
 mod theme;
+mod ui_font;
+mod ui_text;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -32,7 +34,7 @@ use session::{create_vte_widget, refresh_smart_title, SessionCategory, TermSessi
 use sidebar::Sidebar;
 use tab_strip::TabStrip;
 use tabs::{Tab, TabStore, TabsState};
-use theme::SHADCN_GTK_CSS;
+use ui_text as text;
 
 struct AppState {
     config: WorkspaceConfig,
@@ -468,7 +470,7 @@ fn open_tab(tab: Tab) -> usize {
             let title = remote.title();
             let args = remote.argv();
             let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-            add_tab(&title, "🖥", &home_dir(), SessionCategory::Remote, &argv, tab)
+            add_tab(&title, &home_dir(), SessionCategory::Remote, &argv, tab)
         }
     }
 }
@@ -486,7 +488,7 @@ fn open_local_tab(profile: String, cwd: &str) -> usize {
     } else {
         (SessionCategory::Project, shell.as_str())
     };
-    add_tab(&info.title, &info.icon, &cwd, category, &[command], tab)
+    add_tab(&info.title, &cwd, category, &[command], tab)
 }
 
 fn create_terminal(cwd: &str, argv: &[&str], sid: usize, scale: f64) -> (*mut GtkWidget, i32) {
@@ -508,7 +510,6 @@ fn create_terminal(cwd: &str, argv: &[&str], sid: usize, scale: f64) -> (*mut Gt
 
 fn add_tab(
     title: &str,
-    icon: &str,
     cwd: &str,
     category: SessionCategory,
     argv: &[&str],
@@ -531,7 +532,7 @@ fn add_tab(
                 gtk_stack_add_named(app.stack, term_scroll, stack_name.as_ptr());
 
                 let sidebar_row = app.sidebar.append_tab(category, sid, on_select_session);
-                let top_tab = app.tab_strip.append(sid, on_select_session, on_close_tab);
+                let top_tab = app.tab_strip.append(sid, category, on_select_session, on_close_tab);
 
                 gtk_widget_show_all(term_scroll);
 
@@ -540,7 +541,6 @@ fn add_tab(
                     base_title: title.to_string(),
                     title: title.to_string(),
                     osc_title: String::new(),
-                    icon: icon.to_owned(),
                     custom_title: false,
                     cwd: cwd.to_string(),
                     category,
@@ -656,7 +656,7 @@ pub fn refresh_ui() {
                 .map(|r| (r.avg_mi, r.grade));
 
             s.sidebar_row.update(idx, s, mi_badge, is_act);
-            s.top_tab.update(&format!("{}  {}", s.icon, s.title), is_act, s.unread);
+            s.top_tab.update(&s.title, is_act, s.unread);
         }
         filter_sidebar(app);
         unsafe { gtk_widget_set_sensitive(app.reconnect_btn, i32::from(can_reconnect)) };
@@ -708,14 +708,12 @@ pub fn refresh_ui() {
             }
         }
 
-        let zoom_pct = (app.font_scale * 100.0).round() as i32;
         let footer = format!(
-            "Нативный Rust + GTK3 + VTE-2.91  ·  Вкладок: {}  ·  В работе: {}  ·  Ждут: {}  ·  SSH: {}  ·  Масштаб: {}% (Ctrl± / Ctrl+0)  ·  F11 / ▢: Полный экран",
+            "Вкладки: {}    В работе: {}    Готово: {}    SSH: {}",
             app.sessions.len(),
             working,
             ready,
-            ssh_count,
-            zoom_pct
+            ssh_count
         );
         set_label_text(app.footer_status, &footer);
     });
@@ -913,18 +911,15 @@ extern "C" fn on_popup_popover(_btn: *mut GtkWidget, pop_ptr: *mut c_void) {
 }
 
 extern "C" fn on_agent_cmd(_btn: *mut GtkWidget, code: *mut c_void) {
-    let cmd = match code as usize {
-        1 => "agy\n",
-        2 => "codex\n",
-        3 => "dsh\n",
-        _ => "kimi\n",
+    let Some((_, command)) = text::AGENT_ACTIONS.get(code as usize) else {
+        return;
     };
     APP.with(|cell| {
         if let Some(app) = cell.borrow().as_ref() {
             unsafe { gtk_popover_popdown(app.agents_pop) };
         }
     });
-    send_to_active(cmd);
+    send_to_active(command);
 }
 
 extern "C" fn on_spawn_preset(_btn: *mut GtkWidget, index: *mut c_void) {
@@ -1208,30 +1203,33 @@ fn list_handoff_files(directory: Option<&Path>) -> Vec<PathBuf> {
     files
 }
 
+unsafe fn add_toolbar_action(
+    toolbar: *mut GtkWidget,
+    label: &CStr,
+    tooltip: &CStr,
+    on_click: extern "C" fn(*mut GtkWidget, *mut c_void),
+) -> *mut GtkWidget {
+    let button = gtk_button_new_with_label(label.as_ptr());
+    gtk_widget_set_tooltip_text(button, tooltip.as_ptr());
+    connect_click(button, on_click, ptr::null_mut());
+    gtk_box_pack_end(toolbar, button, 0, 0, 0);
+    button
+}
+
 fn run_app() {
+    let _ui_font = ui_font::load().inspect_err(|error| eprintln!("AkhTerm: {error}"));
     let config = WorkspaceConfig::load();
     let handoff_files = list_handoff_files(config.briefs_dir.as_deref());
     let mi_dirs = config.mi_directories();
     unsafe {
         gtk_init(ptr::null_mut(), ptr::null_mut());
+        theme::apply_gtk_theme();
         const SIGTERM: c_int = 15;
         g_unix_signal_add(SIGTERM, on_terminate, ptr::null_mut());
 
-        let provider = gtk_css_provider_new();
-        let css_c = CString::new(SHADCN_GTK_CSS).unwrap();
-        gtk_css_provider_load_from_data(provider, css_c.as_ptr(), -1, ptr::null_mut());
-        let screen = gdk_screen_get_default();
-        gtk_style_context_add_provider_for_screen(
-            screen,
-            provider,
-            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
-
         let win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-        let title_c = CString::new("AkhTerm — Native Rust · VTE-2.91 · AI Terminal").unwrap();
-        gtk_window_set_title(win, title_c.as_ptr());
-        let wm_c = CString::new("AkhTerm").unwrap();
-        gtk_window_set_wmclass(win, wm_c.as_ptr(), wm_c.as_ptr());
+        gtk_window_set_title(win, text::APP_NAME.as_ptr());
+        gtk_window_set_wmclass(win, text::APP_NAME.as_ptr(), text::APP_NAME.as_ptr());
         gtk_window_set_decorated(win, 1);
         gtk_window_set_resizable(win, 1);
         gtk_window_set_default_size(win, 1480, 900);
@@ -1259,86 +1257,57 @@ fn run_app() {
         let root_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
         gtk_container_add(win, root_vbox);
 
-        // Top Bar
+        let header = gtk_header_bar_new();
+        add_class(header, "window-header");
+        let brand = gtk_label_new(text::APP_NAME.as_ptr());
+        add_class(brand, "brand-label");
+        gtk_header_bar_set_custom_title(header, brand);
+        gtk_header_bar_set_show_close_button(header, 1);
+        gtk_window_set_titlebar(win, header);
+
         let topbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
         add_class(topbar, "topbar");
         gtk_box_pack_start(root_vbox, topbar, 0, 1, 0);
-
-        let brand_c = CString::new("◈ AkhTerm · Rust").unwrap();
-        let brand_lbl = gtk_label_new(brand_c.as_ptr());
-        add_class(brand_lbl, "brand-label");
-        gtk_box_pack_start(topbar, brand_lbl, 0, 0, 0);
-
         let tab_strip = TabStrip::new(root_vbox, on_new_tab);
 
-        let box_btn = gtk_button_new_with_label(c"Профили / SSH ▾".as_ptr());
-        add_class(box_btn, "btn-violet");
-        gtk_box_pack_start(topbar, box_btn, 0, 0, 4);
+        let box_btn = gtk_button_new_with_label(text::PROFILES.as_ptr());
+        gtk_box_pack_start(topbar, box_btn, 0, 0, 0);
 
-        let side_tog_btn = gtk_button_new_with_label(CString::new("◧").unwrap().as_ptr());
+        let side_tog_btn = add_toolbar_action(
+            topbar,
+            text::TOGGLE_SIDEBAR,
+            text::TOGGLE_SIDEBAR_TIP,
+            on_toggle_sidebar,
+        );
         add_class(side_tog_btn, "btn-icon-sq");
-        gtk_widget_set_tooltip_text(
-            side_tog_btn,
-            CString::new("Скрыть / показать левую боковую панель").unwrap().as_ptr(),
+        let reconnect_btn = add_toolbar_action(
+            topbar,
+            text::RECONNECT,
+            text::RECONNECT_TIP,
+            on_reconnect_active,
         );
-        connect_click(side_tog_btn, on_toggle_sidebar, ptr::null_mut());
-        gtk_box_pack_end(topbar, side_tog_btn, 0, 0, 0);
+        add_toolbar_action(topbar, text::INTERRUPT, text::INTERRUPT_TIP, on_sigint_clicked);
+        add_toolbar_action(topbar, text::PASTE_IMAGE, text::PASTE_IMAGE_TIP, on_paste_image_clicked);
 
-        let reconnect_btn = gtk_button_new_with_label(c"Переподключить".as_ptr());
-        let reconnect_tip = c"Переподключить активную вкладку SSH или tmux (Ctrl+Shift+R)";
-        gtk_widget_set_tooltip_text(reconnect_btn, reconnect_tip.as_ptr());
-        connect_click(reconnect_btn, on_reconnect_active, ptr::null_mut());
-        gtk_box_pack_end(topbar, reconnect_btn, 0, 0, 0);
-
-        let sigint_btn = gtk_button_new_with_label(CString::new("SIGINT ^C").unwrap().as_ptr());
-        connect_click(sigint_btn, on_sigint_clicked, ptr::null_mut());
-        gtk_box_pack_end(topbar, sigint_btn, 0, 0, 0);
-
-        let img_paste_btn = gtk_button_new_with_label(CString::new("🖼 Скрин").unwrap().as_ptr());
-        add_class(img_paste_btn, "btn-violet");
-        gtk_widget_set_tooltip_text(
-            img_paste_btn,
-            CString::new(
-                "Вставить скриншот/картинку из буфера (по SSH заливает на удалённый сервер в /tmp и вставляет путь) — Ctrl+V / Ctrl+Shift+V",
-            )
-            .unwrap()
-            .as_ptr(),
-        );
-        connect_click(img_paste_btn, on_paste_image_clicked, ptr::null_mut());
-        gtk_box_pack_end(topbar, img_paste_btn, 0, 0, 0);
-
-        // Zoom controls: [ - ] [ 100% ] [ + ]
-        let zoom_in_btn = gtk_button_new_with_label(CString::new("+").unwrap().as_ptr());
+        let zoom_in_btn = add_toolbar_action(topbar, text::ZOOM_IN, text::ZOOM_IN_TIP, on_zoom_in);
         add_class(zoom_in_btn, "btn-icon-sq");
-        connect_click(zoom_in_btn, on_zoom_in, ptr::null_mut());
-        gtk_box_pack_end(topbar, zoom_in_btn, 0, 0, 0);
-
-        let zoom_btn = gtk_button_new_with_label(CString::new("100%").unwrap().as_ptr());
-        connect_click(zoom_btn, on_zoom_reset, ptr::null_mut());
-        gtk_box_pack_end(topbar, zoom_btn, 0, 0, 0);
-
-        let zoom_out_btn = gtk_button_new_with_label(CString::new("−").unwrap().as_ptr());
+        let zoom_btn = add_toolbar_action(topbar, text::ZOOM_RESET, text::ZOOM_RESET_TIP, on_zoom_reset);
+        let zoom_out_btn = add_toolbar_action(topbar, text::ZOOM_OUT, text::ZOOM_OUT_TIP, on_zoom_out);
         add_class(zoom_out_btn, "btn-icon-sq");
-        connect_click(zoom_out_btn, on_zoom_out, ptr::null_mut());
-        gtk_box_pack_end(topbar, zoom_out_btn, 0, 0, 0);
 
-        let settings_btn = gtk_button_new_with_label(CString::new("⚙ Серверы (SSH) ▾").unwrap().as_ptr());
-        add_class(settings_btn, "btn-violet");
+        let settings_btn = gtk_button_new_with_label(text::SERVERS.as_ptr());
         gtk_box_pack_end(topbar, settings_btn, 0, 0, 0);
 
-        let handoff_btn = gtk_button_new_with_label(CString::new("Handoff ▾").unwrap().as_ptr());
-        add_class(handoff_btn, "btn-violet");
+        let handoff_btn = gtk_button_new_with_label(text::HANDOFF.as_ptr());
         if handoff_files.is_empty() {
             gtk_widget_set_no_show_all(handoff_btn, 1);
         }
         gtk_box_pack_end(topbar, handoff_btn, 0, 0, 0);
 
-        let agents_btn = gtk_button_new_with_label(CString::new("Агенты ▾").unwrap().as_ptr());
-        add_class(agents_btn, "btn-violet");
+        let agents_btn = gtk_button_new_with_label(text::AGENTS.as_ptr());
         gtk_box_pack_end(topbar, agents_btn, 0, 0, 0);
 
-        let mi_btn = gtk_button_new_with_label(CString::new("MI · ... ▾").unwrap().as_ptr());
-        add_class(mi_btn, "btn-mi-a");
+        let mi_btn = gtk_button_new_with_label(text::MAINTAINABILITY.as_ptr());
         gtk_box_pack_end(topbar, mi_btn, 0, 0, 0);
 
         // Popover: Maintainability Index (MI)
@@ -1356,13 +1325,8 @@ fn run_app() {
         let agents_pop = gtk_popover_new(agents_btn);
         let agents_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
         add_class(agents_box, "popover-box");
-        for (code, label) in [
-            (1usize, "agy · Antigravity CLI"),
-            (2usize, "codex · OpenAI Codex CLI"),
-            (3usize, "dsh · DSH Agent"),
-            (4usize, "kimi · Kimi Code CLI"),
-        ] {
-            let b = gtk_button_new_with_label(CString::new(label).unwrap().as_ptr());
+        for (code, (label, _)) in text::AGENT_ACTIONS.iter().enumerate() {
+            let b = gtk_button_new_with_label(label.as_ptr());
             connect_click(b, on_agent_cmd, code as *mut c_void);
             gtk_box_pack_start(agents_box, b, 0, 1, 0);
         }
@@ -1489,7 +1453,7 @@ fn run_app() {
             let row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
             let label = format!("ssh {}", h.alias);
             let plain = gtk_button_new_with_label(CString::new(label).unwrap().as_ptr());
-            let tmux = gtk_button_new_with_label(c"tmux:main".as_ptr());
+            let tmux = gtk_button_new_with_label(text::TMUX_MAIN.as_ptr());
             connect_click(plain, on_connect_ssh_host_plain, idx as *mut c_void);
             connect_click(tmux, on_connect_ssh_host_tmux, idx as *mut c_void);
             gtk_box_pack_start(row, plain, 1, 1, 0);
