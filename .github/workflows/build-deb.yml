@@ -37,6 +37,10 @@ jobs:
           packages=(target/deb/akhterm_*_amd64.deb)
           test "${#packages[@]}" -eq 1
           test -f "${packages[0]}"
+          # Minimal Ubuntu images can exclude documentation during installation.
+          dpkg-deb --fsys-tarfile "${packages[0]}" \
+            | tar -xOf - ./usr/share/doc/akhterm/OFL-Geist.txt \
+            | cmp - assets/fonts/OFL-Geist.txt
           echo "path=${packages[0]}" >> "$GITHUB_OUTPUT"
 
       - name: Verify installation on Ubuntu 24.04 and 26.04
@@ -56,7 +60,6 @@ jobs:
           test -x /usr/bin/akhterm
           test -s /usr/share/applications/org.akhterm.AkhTerm.desktop
           test -s /usr/share/icons/hicolor/scalable/apps/org.akhterm.AkhTerm.svg
-          test -s /usr/share/doc/akhterm/OFL-Geist.txt
           libraries="$(ldd /usr/bin/akhterm)"
           if grep -Fq 'not found' <<< "$libraries"; then
             echo "$libraries" >&2
