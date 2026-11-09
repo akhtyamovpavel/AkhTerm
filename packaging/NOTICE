@@ -1,0 +1,8 @@
+AkhTerm dynamically links to system libraries. GTK 3 (including GDK), GLib
+(including GObject), Pango and glibc are used under the GNU Lesser General
+Public License, version 2.1 or later. The VTE library is used under the GNU
+Lesser General Public License, version 3 or later.
+
+See LGPL-2.1, LGPL-3 and GPL-3 in this directory for the license texts. The
+system packages include their own copyright and license notices under
+/usr/share/doc/.

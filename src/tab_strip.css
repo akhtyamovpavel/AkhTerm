@@ -1,0 +1,82 @@
+.tab-strip {
+    background-color: #111115;
+    border-bottom: 1px solid #27272a;
+    padding: 5px 8px;
+}
+
+.terminal-tab {
+    background-color: #18181c;
+    border: 1px solid #27272a;
+    border-bottom-width: 2px;
+    border-radius: 7px;
+    padding: 2px;
+}
+
+.terminal-tab.tab-active {
+    background-color: #252134;
+    border-color: #393048;
+    border-bottom-color: #a78bfa;
+}
+
+.terminal-tab.tab-ready {
+    border-bottom-color: #34d399;
+}
+
+button.tab-select,
+button.tab-close {
+    background-color: transparent;
+    border: none;
+    border-radius: 5px;
+    color: #b4b4be;
+    min-height: 26px;
+    padding: 0 8px;
+}
+
+.tab-active button.tab-select {
+    color: #fafafa;
+    font-weight: 600;
+}
+
+.tab-ready button.tab-select {
+    color: #6ee7b7;
+}
+
+button.tab-close {
+    min-width: 28px;
+    padding: 0;
+    font-size: 16px;
+}
+
+button.tab-select:hover,
+button.tab-close:hover {
+    background-color: rgba(255, 255, 255, 0.09);
+    color: #fafafa;
+}
+
+button.tab-select:focus,
+button.tab-close:focus,
+button.new-tab:focus {
+    outline: 1px solid #c4b5fd;
+    outline-offset: -2px;
+}
+
+button.new-tab {
+    background-color: #1b1923;
+    border-color: #393048;
+    color: #ddd6fe;
+    min-width: 32px;
+    min-height: 31px;
+    padding: 0;
+    font-size: 18px;
+}
+
+button.new-tab:hover {
+    background-color: #2c2540;
+    color: #fafafa;
+}
+
+.tab-strip scrollbar slider {
+    min-width: 32px;
+    min-height: 4px;
+    margin: 1px;
+}

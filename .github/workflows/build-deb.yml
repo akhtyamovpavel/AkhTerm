@@ -1,0 +1,73 @@
+name: Build Debian package
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      RUSTUP_TOOLCHAIN: 1.85.1
+
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential dpkg-dev libgtk-3-dev libvte-2.91-0
+
+      - name: Run Rust tests
+        run: cargo test --offline --locked
+
+      - name: Build amd64 package
+        id: package
+        run: |
+          ./packaging/build-deb.sh
+          packages=(target/deb/akhterm_*_amd64.deb)
+          test "${#packages[@]}" -eq 1
+          test -f "${packages[0]}"
+          echo "path=${packages[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify installation on Ubuntu 24.04 and 26.04
+        env:
+          PACKAGE_PATH: ${{ steps.package.outputs.path }}
+        run: |
+          package="$(realpath "$PACKAGE_PATH")"
+          for version in 24.04 26.04; do
+            echo "::group::Ubuntu $version"
+            docker run --rm -i \
+              --mount "type=bind,source=$package,target=/tmp/akhterm.deb,readonly" \
+              "ubuntu:$version" bash -eu <<'CHECK'
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y --no-install-recommends /tmp/akhterm.deb
+          dpkg-query -W akhterm
+          test -x /usr/bin/akhterm
+          test -s /usr/share/applications/org.akhterm.AkhTerm.desktop
+          test -s /usr/share/icons/hicolor/scalable/apps/org.akhterm.AkhTerm.svg
+          libraries="$(ldd /usr/bin/akhterm)"
+          if grep -Fq 'not found' <<< "$libraries"; then
+            echo "$libraries" >&2
+            exit 1
+          fi
+          CHECK
+            echo "::endgroup::"
+          done
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: ${{ steps.package.outputs.path }}
+          archive: false
+          if-no-files-found: error

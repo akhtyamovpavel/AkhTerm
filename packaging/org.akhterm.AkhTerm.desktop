@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=AkhTerm
+Comment=Local shells, SSH and remote tmux sessions
+Comment[ru]=Локальные оболочки, SSH и удалённые сессии tmux
+Exec=/usr/bin/akhterm
+TryExec=/usr/bin/akhterm
+Icon=org.akhterm.AkhTerm
+Terminal=false
+Categories=System;TerminalEmulator;
+StartupNotify=true
+StartupWMClass=AkhTerm

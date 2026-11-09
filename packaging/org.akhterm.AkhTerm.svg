@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#18181b"/>
+      <stop offset="100%" stop-color="#09090b"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#6d28d9"/>
+    </linearGradient>
+    <linearGradient id="emerald" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+  </defs>
+  <rect x="12" y="12" width="232" height="232" rx="52" fill="url(#bg)" stroke="#3f3f46" stroke-width="6"/>
+  <rect x="28" y="32" width="200" height="32" rx="12" fill="#121216"/>
+  <circle cx="50" cy="48" r="6" fill="#8b5cf6"/>
+  <circle cx="70" cy="48" r="6" fill="#10b981"/>
+  <circle cx="90" cy="48" r="6" fill="#3b82f6"/>
+  <path d="M58 106 L106 142 L58 178" fill="none" stroke="url(#accent)" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="122" y1="176" x2="188" y2="176" stroke="url(#emerald)" stroke-width="18" stroke-linecap="round"/>
+  <polygon points="186,88 170,118 190,118 182,144 206,110 186,110" fill="#a78bfa"/>
+</svg>

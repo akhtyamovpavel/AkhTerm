@@ -1,0 +1,121 @@
+.sidebar {
+    background-color: #111113;
+    border-right: 1px solid #27272a;
+    padding: 12px;
+}
+
+.sidebar-title {
+    color: #fafafa;
+    font-size: 1.125em;
+    font-weight: 600;
+}
+
+.sidebar-shortcut {
+    background-color: #18181b;
+    border: 1px solid #27272a;
+    border-radius: 5px;
+    color: #a1a1aa;
+    padding: 2px 6px;
+    font-size: 0.9em;
+}
+
+.sidebar entry {
+    background-color: #18181b;
+    border-color: #3f3f46;
+    padding: 5px 8px;
+}
+
+.sidebar entry:focus {
+    border-color: #71717a;
+}
+
+.sidebar-group-label,
+.sidebar-disclosure > title {
+    color: #a1a1aa;
+    padding: 2px 8px;
+    font-size: 0.9em;
+    font-weight: 600;
+}
+
+button.sidebar-row,
+button.sidebar-action {
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: #d4d4d8;
+    padding: 6px 8px;
+}
+
+button.sidebar-row:hover,
+button.sidebar-action:hover {
+    background-color: #202024;
+    color: #fafafa;
+}
+
+button.sidebar-row.sidebar-selected {
+    background-color: #27272a;
+    border-color: #3f3f46;
+    color: #fafafa;
+}
+
+button.sidebar-row:focus,
+button.sidebar-action:focus {
+    outline: 1px solid #a1a1aa;
+    outline-offset: -2px;
+}
+
+.sidebar-selected .sidebar-row-title {
+    font-weight: 600;
+}
+
+.sidebar-icon {
+    color: #a1a1aa;
+    margin-top: 1px;
+}
+
+.sidebar-selected .sidebar-icon {
+    color: #e4e4e7;
+}
+
+.sidebar-detail,
+.sidebar-metric,
+.sidebar-status,
+.sidebar-empty {
+    color: #a1a1aa;
+    font-size: 0.9em;
+}
+
+.sidebar-status.sidebar-ready {
+    color: #86d9b5;
+}
+
+.sidebar-status.sidebar-working {
+    color: #9bbcf3;
+}
+
+.sidebar-status.sidebar-ended {
+    color: #e7c389;
+}
+
+.sidebar-empty {
+    padding: 8px;
+}
+
+.sidebar-disclosure > title {
+    border-radius: 6px;
+    min-height: 26px;
+}
+
+.sidebar-disclosure > title:hover {
+    background-color: #202024;
+    color: #fafafa;
+}
+
+button.sidebar-action {
+    padding: 4px 8px;
+}
+
+button.sidebar-action.sidebar-tmux-current {
+    color: #fafafa;
+    background-color: #202024;
+}
