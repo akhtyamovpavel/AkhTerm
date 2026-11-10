@@ -147,83 +147,158 @@ pub fn save_ssh_hosts(hosts: &[SshHostEntry]) {
     }
 }
 
+fn parse_stat_groups(stat: &str) -> Option<(i32, i32)> {
+    let (_, rest) = stat.rsplit_once(") ")?;
+    let mut fields = rest.split_whitespace();
+    let pgrp = fields.nth(2)?.parse().ok()?;
+    let tpgid = fields.nth(2)?.parse().ok()?;
+    Some((pgrp, tpgid))
+}
+
+fn read_proc_groups(pid: i32) -> Option<(i32, i32)> {
+    if pid <= 0 {
+        return None;
+    }
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parse_stat_groups(&stat)
+}
+
+fn read_proc_cwd(pid: i32) -> Option<String> {
+    if pid <= 0 {
+        return None;
+    }
+    let path = fs::read_link(format!("/proc/{pid}/cwd")).ok()?;
+    path.into_os_string().into_string().ok()
+}
+
+fn read_proc_cmdline(pid: i32) -> Option<Vec<String>> {
+    let raw = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let parts: Vec<String> = raw
+        .split(|&b| b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect();
+    (!parts.is_empty()).then_some(parts)
+}
+
+fn push_proc_children(pid: i32, queue: &mut Vec<i32>) {
+    let Ok(tasks) = fs::read_dir(format!("/proc/{pid}/task")) else {
+        return;
+    };
+    for task in tasks.flatten() {
+        if let Ok(ch_str) = fs::read_to_string(task.path().join("children")) {
+            queue.extend(ch_str.split_whitespace().filter_map(|t| t.parse::<i32>().ok()));
+        }
+    }
+}
+
+fn collect_proc_tree(root_pid: i32) -> (HashSet<i32>, Vec<Vec<String>>) {
+    let mut visited = HashSet::new();
+    let mut queue = vec![root_pid];
+    let mut cmds = Vec::new();
+    while let Some(pid) = queue.pop() {
+        if !visited.insert(pid) {
+            continue;
+        }
+        if pid != root_pid {
+            if let Some(parts) = read_proc_cmdline(pid) {
+                cmds.push(parts);
+            }
+        }
+        push_proc_children(pid, &mut queue);
+    }
+    (visited, cmds)
+}
+
+fn fallback_group_cwd(root_pid: i32, tpgid: i32, tree: Option<&HashSet<i32>>) -> Option<String> {
+    let owned;
+    let pids = match tree {
+        Some(set) => set,
+        None => {
+            owned = collect_proc_tree(root_pid).0;
+            &owned
+        }
+    };
+    pids.iter()
+        .copied()
+        .filter(|&pid| pid != root_pid)
+        .filter(|&pid| read_proc_groups(pid).is_some_and(|(pg, _)| pg == tpgid))
+        .find_map(read_proc_cwd)
+}
+
+fn resolve_foreground_cwd(root_pid: i32, tree: Option<&HashSet<i32>>) -> Option<String> {
+    if let Some((root_pgrp, tpgid)) = read_proc_groups(root_pid) {
+        if tpgid > 0 && tpgid != root_pid && tpgid != root_pgrp {
+            if let Some(cwd) = read_proc_cwd(tpgid) {
+                return Some(cwd);
+            }
+            if let Some(cwd) = fallback_group_cwd(root_pid, tpgid, tree) {
+                return Some(cwd);
+            }
+        }
+    }
+    read_proc_cwd(root_pid)
+}
+
+pub fn foreground_cwd(root_pid: i32) -> Option<String> {
+    if root_pid <= 0 {
+        return None;
+    }
+    resolve_foreground_cwd(root_pid, None)
+}
+
+fn detect_proc_agent(exe: &str, low: &str) -> Option<&'static str> {
+    if matches!(exe, "deepseek" | "deepseek-cli") {
+        Some("DeepSeek")
+    } else if exe == "agy" || low.contains("/agy") || low.contains("antigravity") {
+        Some("AGY")
+    } else if exe == "codex" || low.contains("codex") {
+        Some("Codex")
+    } else if exe == "dsh" || low.contains("/dsh") {
+        Some("DSH")
+    } else if exe == "kimi" || low.contains("kimi") {
+        Some("Kimi")
+    } else if exe == "claude" || low.contains("claude") {
+        Some("Claude")
+    } else {
+        None
+    }
+}
+
+fn apply_proc_cmd(info: &mut ProcInfo, parts: &[String]) {
+    let low = parts.join(" ").to_lowercase();
+    let exe = Path::new(&parts[0])
+        .file_name()
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if exe == "ssh" {
+        if let Some(tok) = parts[1..].iter().find(|t| !t.starts_with('-') && !t.contains(' ')) {
+            info.ssh_host.clone_from(tok);
+        }
+    }
+    if exe == "tmux" || low.contains("tmux ") {
+        info.has_tmux = "tmux".to_string();
+    }
+    if let Some(agent) = detect_proc_agent(&exe, &low) {
+        info.agent = agent.to_string();
+    }
+    if !matches!(exe.as_str(), "zsh" | "bash" | "sh") {
+        info.fg_cmd = exe;
+    }
+}
+
 pub fn inspect_proc_tree(root_pid: i32) -> ProcInfo {
     let mut info = ProcInfo::default();
     if root_pid <= 0 {
         return info;
     }
-    if let Ok(cwd_path) = fs::read_link(format!("/proc/{root_pid}/cwd")) {
-        info.cwd = shorten_home(&cwd_path.to_string_lossy());
+    let (visited, cmds) = collect_proc_tree(root_pid);
+    if let Some(cwd) = resolve_foreground_cwd(root_pid, Some(&visited)) {
+        info.cwd = shorten_home(&cwd);
     }
-
-    let mut visited = HashSet::new();
-    let mut queue = vec![root_pid];
-    let mut cmds: Vec<Vec<String>> = Vec::new();
-
-    while let Some(pid) = queue.pop() {
-        if !visited.insert(pid) {
-            continue;
-        }
-        if let Ok(raw) = fs::read(format!("/proc/{pid}/cmdline")) {
-            let parts: Vec<String> = raw
-                .split(|&b| b == 0)
-                .filter(|s| !s.is_empty())
-                .map(|s| String::from_utf8_lossy(s).into_owned())
-                .collect();
-            if !parts.is_empty() && pid != root_pid {
-                if let Ok(cwd_p) = fs::read_link(format!("/proc/{pid}/cwd")) {
-                    info.cwd = shorten_home(&cwd_p.to_string_lossy());
-                }
-                cmds.push(parts);
-            }
-        }
-        let children_file = format!("/proc/{pid}/task/{pid}/children");
-        if let Ok(ch_str) = fs::read_to_string(children_file) {
-            for tok in ch_str.split_whitespace() {
-                if let Ok(cpid) = tok.parse::<i32>() {
-                    queue.push(cpid);
-                }
-            }
-        }
-    }
-
     for parts in &cmds {
-        let joined = parts.join(" ");
-        let low = joined.to_lowercase();
-        let exe = Path::new(&parts[0])
-            .file_name()
-            .map(|s| s.to_string_lossy().to_lowercase())
-            .unwrap_or_default();
-
-        if exe == "ssh" {
-            for tok in &parts[1..] {
-                if !tok.starts_with('-') && !tok.contains(' ') {
-                    info.ssh_host = tok.clone();
-                    break;
-                }
-            }
-        }
-        if exe == "tmux" || low.contains("tmux ") {
-            info.has_tmux = "tmux".to_string();
-        }
-        if matches!(exe.as_str(), "deepseek" | "deepseek-cli") {
-            info.agent = "DeepSeek".to_string();
-        } else if exe == "agy" || low.contains("/agy") || low.contains("antigravity") {
-            info.agent = "AGY".to_string();
-        } else if exe == "codex" || low.contains("codex") {
-            info.agent = "Codex".to_string();
-        } else if exe == "dsh" || low.contains("/dsh") {
-            info.agent = "DSH".to_string();
-        } else if exe == "kimi" || low.contains("kimi") {
-            info.agent = "Kimi".to_string();
-        } else if exe == "claude" || low.contains("claude") {
-            info.agent = "Claude".to_string();
-        }
-        if !["zsh", "bash", "sh"].contains(&exe.as_str()) {
-            info.fg_cmd = exe;
-        }
+        apply_proc_cmd(&mut info, parts);
     }
-
     info
 }
 
@@ -718,5 +793,46 @@ mod tests {
 
         verify_image_clipboard_paste();
         unsafe { gtk_widget_destroy(win) };
+    }
+
+    #[test]
+    fn parses_proc_stat_groups_with_spaces_and_parens() {
+        let sample = "4210 (gitstatusd (bg)) S 4200 4200 4200 34818 5123 4194304 0 0";
+        assert_eq!(parse_stat_groups(sample), Some((4200, 5123)));
+        assert_eq!(parse_stat_groups("broken stat"), None);
+    }
+
+    #[test]
+    fn background_child_does_not_freeze_shell_cwd_after_cd() {
+        use std::io::{BufRead, BufReader};
+        let base = std::env::temp_dir().join(format!("akhterm_cwd_{}", std::process::id()));
+        let dir_a = base.join("old_repo");
+        let dir_b = base.join("new_project");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&dir_a).unwrap();
+        fs::create_dir_all(&dir_b).unwrap();
+
+        let script = "cd \"$1\" && sleep 10 & bg=$!; cd \"$2\" && echo ready && read _ ; kill $bg 2>/dev/null";
+        let mut child = Command::new("sh")
+            .args(["-c", script, "--"])
+            .arg(&dir_a)
+            .arg(&dir_b)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let mut line = String::new();
+        BufReader::new(child.stdout.as_mut().unwrap()).read_line(&mut line).unwrap();
+        assert_eq!(line.trim(), "ready");
+
+        let pid = child.id() as i32;
+        let expected = shorten_home(&dir_b.to_string_lossy());
+        assert_eq!(inspect_proc_tree(pid).cwd, expected);
+        assert_eq!(foreground_cwd(pid).as_deref(), dir_b.to_str());
+
+        drop(child.stdin.take());
+        let _ = child.wait();
+        let _ = fs::remove_dir_all(&base);
     }
 }

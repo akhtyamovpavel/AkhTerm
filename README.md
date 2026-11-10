@@ -9,7 +9,7 @@ AkhTerm is a native Linux terminal built with Rust, GTK 3 and VTE. It puts local
 The `amd64` package was tested on Ubuntu 24.04 and 26.04. Open the `.deb` in your graphical package installer, or install it with APT from the directory containing the file.
 
 ```sh
-sudo apt install ./akhterm_0.2.0-1_amd64.deb
+sudo apt install ./akhterm_0.2.1-1_amd64.deb
 ```
 
 Start **AkhTerm** from the application menu or run `akhterm`. Remove it with `sudo apt remove akhterm`. Your configuration and saved tabs stay in your home directory.

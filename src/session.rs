@@ -1,12 +1,12 @@
 //! VTE-2.91 terminal widget creation, clickable link matching, and session metadata.
 
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
-use std::fs;
 use std::ptr;
 use std::time::Instant;
 
 use crate::ffi::*;
-use crate::proc_radar::{open_external_link, ProcInfo};
+use crate::paths::expand_home;
+use crate::proc_radar::{foreground_cwd, open_external_link, ProcInfo};
 use crate::sidebar::SidebarRow;
 use crate::tab_strip::TabView;
 use crate::tabs::{RemoteConnection, Tab};
@@ -39,6 +39,7 @@ pub enum WorkState {
 pub struct TermSession {
     pub id: usize,
     pub base_title: String,
+    pub profile_cwd: String,
     pub title: String,
     pub osc_title: String,
     pub custom_title: bool,
@@ -68,20 +69,15 @@ impl TermSession {
 
     pub fn snapshot_tab(&mut self) -> Tab {
         if let Tab::Local { cwd, .. } = &mut self.tab {
-            if let Some(current) = child_cwd(self.child_pid) {
+            if let Some(current) = foreground_cwd(self.child_pid) {
+                self.cwd.clone_from(&current);
                 *cwd = current;
+            } else if !self.cwd.is_empty() {
+                cwd.clone_from(&self.cwd);
             }
         }
         self.tab.clone()
     }
-}
-
-fn child_cwd(pid: i32) -> Option<String> {
-    if pid <= 0 {
-        return None;
-    }
-    let path = fs::read_link(format!("/proc/{pid}/cwd")).ok()?;
-    path.into_os_string().into_string().ok()
 }
 
 const URL_PATTERNS: &[&str] = &[
@@ -220,72 +216,134 @@ pub fn detect_agent_name(raw: &str) -> Option<&'static str> {
     }
 }
 
+fn folder_name(path: &str) -> &str {
+    if path == "/" {
+        return "/";
+    }
+    path.trim_end_matches('/').rsplit('/').next().unwrap_or("")
+}
+
+fn normalize_dir(path: &str) -> String {
+    let expanded = expand_home(path);
+    if expanded.len() > 1 {
+        expanded.trim_end_matches('/').to_owned()
+    } else {
+        expanded
+    }
+}
+
+fn moved_from_profile(current_cwd: &str, profile_cwd: &str) -> bool {
+    !current_cwd.is_empty()
+        && !profile_cwd.is_empty()
+        && normalize_dir(current_cwd) != normalize_dir(profile_cwd)
+}
+
+fn format_project_title(
+    base_title: &str,
+    profile_cwd: &str,
+    current_cwd: &str,
+    agent: &str,
+    osc_title: &str,
+) -> String {
+    let folder = folder_name(current_cwd);
+    let moved = moved_from_profile(current_cwd, profile_cwd) && !folder.is_empty();
+    let short_base = if moved {
+        folder
+    } else {
+        base_title.split(" · ").next().unwrap_or(base_title)
+    };
+    let osc = (!osc_title.is_empty() && osc_title != short_base).then_some(osc_title);
+    match (agent.is_empty(), osc) {
+        (false, Some(osc)) => format!("{short_base} · {agent} · {osc}"),
+        (false, None) => format!("{short_base} · {agent}"),
+        (true, Some(osc)) => format!("{short_base} · {osc}"),
+        (true, None) if moved => folder.to_owned(),
+        (true, None) => base_title.to_owned(),
+    }
+}
+
+fn format_remote_title(host: &str, sess: &str, win: &str, folder: &str, agent: &str) -> String {
+    let clean_folder = if !folder.is_empty() && folder != "~" {
+        format!(" · {folder}")
+    } else {
+        String::new()
+    };
+    if !agent.is_empty() {
+        format!("{host}{clean_folder} · {agent} (tmux:{sess})")
+    } else {
+        format!("{host}{clean_folder} · tmux:{sess}/{win}")
+    }
+}
+
+fn update_detected_agent(s: &mut TermSession) {
+    if !s.proc_info.agent.is_empty() {
+        return;
+    }
+    if let Some((_, ref win, ref cmd, _)) = s.remote_tmux {
+        if let Some(a) = detect_agent_name(cmd).or_else(|| detect_agent_name(win)) {
+            s.proc_info.agent = a.to_string();
+            return;
+        }
+    }
+    if !s.osc_title.is_empty() {
+        if let Some(a) = detect_agent_name(&s.osc_title) {
+            s.proc_info.agent = a.to_string();
+        }
+    }
+}
+
 pub fn refresh_smart_title(s: &mut TermSession) {
     if s.custom_title {
         return;
     }
-
-    if s.proc_info.agent.is_empty() {
-        if let Some((_, ref win, ref cmd, _)) = s.remote_tmux {
-            if let Some(a) = detect_agent_name(cmd).or_else(|| detect_agent_name(win)) {
-                s.proc_info.agent = a.to_string();
-            }
-        }
-        if s.proc_info.agent.is_empty() && !s.osc_title.is_empty() {
-            if let Some(a) = detect_agent_name(&s.osc_title) {
-                s.proc_info.agent = a.to_string();
-            }
-        }
-    }
-
-    let folder = s
-        .remote_tmux
-        .as_ref()
-        .map(|(_, _, _, p)| p.as_str())
-        .or_else(|| {
-            if !s.proc_info.cwd.is_empty() {
-                Some(s.proc_info.cwd.as_str())
-            } else {
-                Some(s.cwd.as_str())
-            }
-        })
-        .and_then(|p| p.trim_end_matches('/').rsplit('/').next())
-        .unwrap_or("");
+    update_detected_agent(s);
+    let current_cwd = if !s.proc_info.cwd.is_empty() {
+        s.proc_info.cwd.as_str()
+    } else {
+        s.cwd.as_str()
+    };
 
     match s.category {
         SessionCategory::Remote => {
-            let host_lbl = s.remote().map_or("SSH", |remote| remote.host.as_str());
-            if let Some((ref sess, ref win, _, _)) = s.remote_tmux {
-                let clean_folder = if !folder.is_empty() && folder != "~" {
-                    format!(" · {folder}")
-                } else {
-                    String::new()
-                };
-                if !s.proc_info.agent.is_empty() {
-                    s.title = format!("{host_lbl}{clean_folder} · {} (tmux:{sess})", s.proc_info.agent);
-                } else {
-                    s.title = format!("{host_lbl}{clean_folder} · tmux:{sess}/{win}");
-                }
+            let host = s.remote().map_or("SSH", |remote| remote.host.as_str());
+            if let Some((ref sess, ref win, _, ref path)) = s.remote_tmux {
+                let folder = folder_name(path);
+                s.title = format_remote_title(host, sess, win, folder, &s.proc_info.agent);
             }
         }
         SessionCategory::Project => {
-            let short_base = s
-                .base_title
-                .split(" · ")
-                .next()
-                .unwrap_or(&s.base_title);
-            if !s.proc_info.agent.is_empty() {
-                if !s.osc_title.is_empty() {
-                    s.title = format!("{short_base} · {} · {}", s.proc_info.agent, s.osc_title);
-                } else {
-                    s.title = format!("{short_base} · {}", s.proc_info.agent);
-                }
-            } else if !s.osc_title.is_empty() {
-                s.title = format!("{short_base} · {}", s.osc_title);
-            } else {
-                s.title = s.base_title.clone();
-            }
+            s.title = format_project_title(
+                &s.base_title,
+                &s.profile_cwd,
+                current_cwd,
+                &s.proc_info.agent,
+                &s.osc_title,
+            );
         }
         SessionCategory::Daemon => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_title_tracks_directory_changes_and_restores_profile_name() {
+        let base = "Productivity · Новая";
+        let prof = "/home/user/Productivity";
+        assert_eq!(format_project_title(base, prof, prof, "", ""), "Productivity · Новая");
+        assert_eq!(
+            format_project_title(base, prof, "/home/user/Development/VoiceDetector", "", ""),
+            "VoiceDetector"
+        );
+        assert_eq!(
+            format_project_title(base, prof, "/home/user/Учёба/Курс ЦУ/", "Claude", ""),
+            "Курс ЦУ · Claude"
+        );
+        assert_eq!(
+            format_project_title(base, prof, "/home/user/Productivity/", "", ""),
+            "Productivity · Новая"
+        );
     }
 }

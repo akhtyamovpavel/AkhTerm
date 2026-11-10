@@ -303,7 +303,7 @@ extern "C" fn on_vte_title_changed(vte: *mut GtkWidget, user_data: *mut c_void) 
                         s.osc_title.clear();
                     }
                 }
-                refresh_smart_title(s);
+                sync_session_proc(s, None);
             }
         }
     });
@@ -471,7 +471,7 @@ fn open_tab(tab: Tab) -> usize {
             let title = remote.title();
             let args = remote.argv();
             let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-            add_tab(&title, &home_dir(), SessionCategory::Remote, &argv, tab)
+            add_tab(&title, "", &home_dir(), SessionCategory::Remote, &argv, tab)
         }
     }
 }
@@ -489,7 +489,7 @@ fn open_local_tab(profile: String, cwd: &str) -> usize {
     } else {
         (SessionCategory::Project, shell.as_str())
     };
-    add_tab(&info.title, &cwd, category, &[command], tab)
+    add_tab(&info.title, &info.directory, &cwd, category, &[command], tab)
 }
 
 fn create_terminal(cwd: &str, argv: &[&str], sid: usize, scale: f64) -> (*mut GtkWidget, i32) {
@@ -511,6 +511,7 @@ fn create_terminal(cwd: &str, argv: &[&str], sid: usize, scale: f64) -> (*mut Gt
 
 fn add_tab(
     title: &str,
+    profile_cwd: &str,
     cwd: &str,
     category: SessionCategory,
     argv: &[&str],
@@ -537,9 +538,10 @@ fn add_tab(
 
                 gtk_widget_show_all(term_scroll);
 
-                app.sessions.push(TermSession {
+                let mut session = TermSession {
                     id: sid,
                     base_title: title.to_string(),
+                    profile_cwd: profile_cwd.to_string(),
                     title: title.to_string(),
                     osc_title: String::new(),
                     custom_title: false,
@@ -557,7 +559,9 @@ fn add_tab(
                     tab,
                     remote_tmux: None,
                     tmux_title_from_vte: false,
-                });
+                };
+                refresh_smart_title(&mut session);
+                app.sessions.push(session);
                 app.active_id = sid;
             }
         }
@@ -731,9 +735,7 @@ extern "C" fn on_radar_tick(_data: *mut c_void) -> c_int {
             let now = Instant::now();
             let active = app.active_id;
             for s in &mut app.sessions {
-                s.proc_info = inspect_proc_tree(s.child_pid);
-                update_remote_proc_info(s, &box_snap);
-                refresh_smart_title(s);
+                sync_session_proc(s, Some(&box_snap));
                 if s.category != SessionCategory::Daemon
                     && s.state == WorkState::Working
                     && now.duration_since(s.last_output).as_millis() > 2200
@@ -756,6 +758,21 @@ extern "C" fn on_radar_tick(_data: *mut c_void) -> c_int {
     refresh_ui();
     save_tabs();
     1
+}
+
+fn sync_session_proc(s: &mut TermSession, telemetry: Option<&BoxTelemetry>) {
+    s.proc_info = inspect_proc_tree(s.child_pid);
+    if s.remote().is_none() && !s.proc_info.cwd.is_empty() {
+        s.cwd = expand_home(&s.proc_info.cwd);
+    }
+    if let Some(box_snap) = telemetry {
+        update_remote_proc_info(s, box_snap);
+    } else if let Tab::Remote(remote) = &s.tab {
+        if s.child_pid > 0 {
+            s.proc_info.ssh_host.clone_from(&remote.host);
+        }
+    }
+    refresh_smart_title(s);
 }
 
 fn update_remote_proc_info(s: &mut TermSession, telemetry: &BoxTelemetry) {
