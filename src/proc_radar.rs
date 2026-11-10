@@ -1,11 +1,14 @@
 //! Process tree radar (/proc/<pid>), ~/.ssh/config parser, multi-server tmux tracker, and link launcher.
 
 use std::collections::HashSet;
+use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::ptr;
 use std::thread;
 
+use crate::ffi::*;
 use crate::paths::{home_dir, shorten_home, state_dir, write_state_file};
 use crate::tabs::{is_ssh_host, Tab};
 
@@ -407,83 +410,313 @@ fn upload_bytes_to_ssh(ssh_host: &str, remote_path: &str, bytes: &[u8]) -> bool 
     child.wait().map(|s| s.success()).unwrap_or(false)
 }
 
-pub fn try_paste_clipboard_image(ssh_host: &str, force_image: bool) -> Option<(String, String)> {
-    let targets_out = Command::new("xclip")
-        .args(["-selection", "clipboard", "-t", "TARGETS", "-o"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    let targets = String::from_utf8_lossy(&targets_out.stdout);
-    let has_png = targets.lines().any(|l| l.trim() == "image/png");
-    let has_text = targets
-        .lines()
-        .any(|l| matches!(l.trim(), "UTF8_STRING" | "STRING" | "text/plain"));
+#[derive(Clone, Copy)]
+struct ClipboardTargets {
+    has_image: bool,
+    has_text: bool,
+    has_uri: bool,
+}
 
+fn take_glib_string(ptr: *mut c_char) -> Option<String> {
+    if ptr.is_null() {
+        return None;
+    }
+    let text = unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() };
+    unsafe { g_free(ptr as *mut c_void) };
+    Some(text)
+}
+
+fn clipboard_targets(clipboard: *mut GtkClipboard) -> Option<ClipboardTargets> {
+    let mut targets: *mut GdkAtom = ptr::null_mut();
+    let mut count: c_int = 0;
+    let ok = unsafe { gtk_clipboard_wait_for_targets(clipboard, &mut targets, &mut count) };
+    if ok == 0 || targets.is_null() || count <= 0 {
+        unsafe { g_free(targets as *mut c_void) };
+        return None;
+    }
+    let info = unsafe {
+        ClipboardTargets {
+            has_image: gtk_targets_include_image(targets, count, 0) != 0,
+            has_text: gtk_targets_include_text(targets, count) != 0,
+            has_uri: gtk_targets_include_uri(targets, count) != 0,
+        }
+    };
+    unsafe { g_free(targets as *mut c_void) };
+    Some(info)
+}
+
+fn pixbuf_to_png(pixbuf: *mut GdkPixbuf) -> Option<Vec<u8>> {
+    let mut buf: *mut c_char = ptr::null_mut();
+    let mut size: usize = 0;
+    let saved = unsafe {
+        gdk_pixbuf_save_to_bufferv(
+            pixbuf,
+            &mut buf,
+            &mut size,
+            c"png".as_ptr(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+        )
+    };
+    if saved == 0 || buf.is_null() || size == 0 {
+        unsafe { g_free(buf as *mut c_void) };
+        return None;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(buf as *const u8, size).to_vec() };
+    unsafe { g_free(buf as *mut c_void) };
+    Some(bytes)
+}
+
+fn clipboard_png_bytes(clipboard: *mut GtkClipboard) -> Option<Vec<u8>> {
+    let pixbuf = unsafe { gtk_clipboard_wait_for_image(clipboard) };
+    if pixbuf.is_null() {
+        return None;
+    }
+    let bytes = pixbuf_to_png(pixbuf);
+    unsafe { g_object_unref(pixbuf) };
+    bytes
+}
+
+fn clipboard_first_uri(clipboard: *mut GtkClipboard) -> Option<String> {
+    let uris = unsafe { gtk_clipboard_wait_for_uris(clipboard) };
+    if uris.is_null() {
+        return None;
+    }
+    let first = unsafe {
+        (!(*uris).is_null()).then(|| CStr::from_ptr(*uris).to_string_lossy().into_owned())
+    };
+    unsafe { g_strfreev(uris) };
+    first
+}
+
+fn clipboard_text_or_uri(clipboard: *mut GtkClipboard, targets: ClipboardTargets) -> Option<String> {
+    if targets.has_text {
+        let text = take_glib_string(unsafe { gtk_clipboard_wait_for_text(clipboard) });
+        if let Some(t) = text.filter(|s| !s.trim().is_empty()) {
+            return Some(t);
+        }
+    }
+    targets.has_uri.then(|| clipboard_first_uri(clipboard)).flatten()
+}
+
+fn uri_to_local_path(uri: &str) -> Option<PathBuf> {
+    let c_uri = CString::new(uri).ok()?;
+    let ptr = unsafe { g_filename_from_uri(c_uri.as_ptr(), ptr::null_mut(), ptr::null_mut()) };
+    take_glib_string(ptr).map(PathBuf::from)
+}
+
+fn parse_clipboard_image_file(raw: &str) -> Option<(PathBuf, String)> {
+    let first_line = raw.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let path = if first_line.starts_with("file://") {
+        uri_to_local_path(first_line)
+            .unwrap_or_else(|| PathBuf::from(first_line.trim_start_matches("file://")))
+    } else {
+        PathBuf::from(first_line)
+    };
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif") && path.is_file() {
+        Some((path, ext))
+    } else {
+        None
+    }
+}
+
+fn save_or_upload_image(
+    ssh_host: &str,
+    bytes: &[u8],
+    ext: &str,
+    kind: &str,
+    ts: u64,
+) -> Option<(String, String)> {
+    let target_path = format!("/tmp/akhterm_paste_{ts}.{ext}");
+    let kb = (bytes.len() / 1024).max(1);
+    if !ssh_host.is_empty() {
+        if kind == "Скриншот" {
+            let _ = fs::write(&target_path, bytes);
+        }
+        return upload_bytes_to_ssh(ssh_host, &target_path, bytes).then(|| {
+            (
+                format!("{target_path} "),
+                format!("🖼 {kind} ({kb} КБ) загружен по SSH на {ssh_host}:{target_path}"),
+            )
+        });
+    }
+    fs::write(&target_path, bytes).ok()?;
+    Some((
+        format!("{target_path} "),
+        format!("🖼 {kind} ({kb} КБ) сохранён в {target_path}"),
+    ))
+}
+
+pub fn try_paste_clipboard_image(ssh_host: &str, force_image: bool) -> Option<(String, String)> {
+    let clipboard = unsafe { gtk_clipboard_get(GDK_SELECTION_CLIPBOARD) };
+    if clipboard.is_null() {
+        return None;
+    }
+    let targets = clipboard_targets(clipboard)?;
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    // 1. Direct screenshot / copied image in clipboard (image/png)
-    if has_png && (force_image || !has_text) {
-        let img_out = Command::new("xclip")
-            .args(["-selection", "clipboard", "-t", "image/png", "-o"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output()
-            .ok()?;
-        let bytes = img_out.stdout;
-        if bytes.is_empty() {
-            return None;
-        }
-        let target_path = format!("/tmp/akhterm_paste_{ts}.png");
-        let _ = fs::write(&target_path, &bytes);
-        let kb = (bytes.len() / 1024).max(1);
-
-        if !ssh_host.is_empty() {
-            if upload_bytes_to_ssh(ssh_host, &target_path, &bytes) {
-                return Some((
-                    format!("{target_path} "),
-                    format!("🖼 Скриншот ({kb} КБ) загружен по SSH на {ssh_host}:{target_path}"),
-                ));
-            }
-            return None;
-        }
-        return Some((
-            format!("{target_path} "),
-            format!("🖼 Скриншот ({kb} КБ) сохранён в {target_path}"),
-        ));
+    if targets.has_image && (force_image || !targets.has_text) {
+        let bytes = clipboard_png_bytes(clipboard)?;
+        return save_or_upload_image(ssh_host, &bytes, "png", "Скриншот", ts);
     }
 
-    // 2. Copied local image file path or URI pasted into a remote SSH session
-    if !ssh_host.is_empty() && has_text {
-        let txt_out = Command::new("xclip")
-            .args(["-selection", "clipboard", "-o"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output()
-            .ok()?;
-        let raw_txt = String::from_utf8_lossy(&txt_out.stdout);
-        let first_line = raw_txt.lines().next()?.trim();
-        let clean_path = first_line.strip_prefix("file://").unwrap_or(first_line);
-        let p = Path::new(clean_path);
-        let ext = p
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_lowercase())?;
-        if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif") && p.is_file() {
-            let bytes = fs::read(p).ok()?;
-            let kb = (bytes.len() / 1024).max(1);
-            let target_path = format!("/tmp/akhterm_paste_{ts}.{ext}");
-            if upload_bytes_to_ssh(ssh_host, &target_path, &bytes) {
-                return Some((
-                    format!("{target_path} "),
-                    format!("🖼 Файл ({kb} КБ) загружен по SSH на {ssh_host}:{target_path}"),
-                ));
-            }
-        }
+    if !ssh_host.is_empty() && (targets.has_text || targets.has_uri) {
+        let raw = clipboard_text_or_uri(clipboard, targets)?;
+        let (path, ext) = parse_clipboard_image_file(&raw)?;
+        let bytes = fs::read(path).ok()?;
+        return save_or_upload_image(ssh_host, &bytes, &ext, "Файл", ts);
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Child;
+    use std::time::{Duration, Instant};
+
+    struct BroadwayGuard {
+        child: Child,
+        dir: PathBuf,
+    }
+
+    impl Drop for BroadwayGuard {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn spawn_broadway(dir: &Path) -> Option<Child> {
+        let http_sock = dir.join("http.sock");
+        Command::new("broadwayd")
+            .arg("-u")
+            .arg(&http_sock)
+            .arg(":7")
+            .env("XDG_RUNTIME_DIR", dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()
+    }
+
+    fn start_headless_gtk() -> Option<BroadwayGuard> {
+        let dir = std::env::temp_dir().join(format!("akhterm_bway_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).ok()?;
+        let child = spawn_broadway(&dir)?;
+        let gdk_sock = dir.join("broadway8.socket");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !gdk_sock.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        std::env::set_var("XDG_RUNTIME_DIR", &dir);
+        std::env::set_var("GDK_BACKEND", "broadway");
+        std::env::set_var("BROADWAY_DISPLAY", ":7");
+        let ok = unsafe { gtk_init_check(ptr::null_mut(), ptr::null_mut()) };
+        (ok != 0).then_some(BroadwayGuard { child, dir })
+    }
+
+    fn pump_gtk_events() {
+        for _ in 0..60 {
+            if unsafe { gtk_events_pending() } == 0 {
+                break;
+            }
+            unsafe { gtk_main_iteration_do(0) };
+        }
+    }
+
+    fn create_two_vte_window() -> (*mut GtkWidget, *mut GtkWidget, *mut GtkWidget) {
+        unsafe {
+            let win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+            let vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+            let tab1 = vte_terminal_new();
+            let tab2 = vte_terminal_new();
+            gtk_box_pack_start(vbox, tab1, 1, 1, 0);
+            gtk_box_pack_start(vbox, tab2, 1, 1, 0);
+            gtk_container_add(win, vbox);
+            gtk_widget_show_all(win);
+            pump_gtk_events();
+            (win, tab1, tab2)
+        }
+    }
+
+    fn verify_image_clipboard_paste() {
+        unsafe {
+            let clip = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+            let pix = gdk_pixbuf_new(0, 1, 8, 4, 4);
+            gtk_clipboard_set_image(clip, pix);
+            g_object_unref(pix);
+            pump_gtk_events();
+        }
+        let (pasted_img, status) = try_paste_clipboard_image("", false).expect("png saved");
+        let saved_path = pasted_img.trim();
+        let png_bytes = fs::read(saved_path).unwrap();
+        assert!(png_bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(status.contains("Скриншот"));
+        let _ = fs::remove_file(saved_path);
+    }
+
+    #[test]
+    fn parses_local_image_paths_and_encoded_file_uris() {
+        let dir = std::env::temp_dir().join(format!("akhterm_clip_uri_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let img = dir.join("Снимок экрана 1.png");
+        let txt = dir.join("notes.txt");
+        fs::write(&img, b"\x89PNG\r\n\x1a\n").unwrap();
+        fs::write(&txt, b"plain").unwrap();
+
+        let (resolved, ext) = parse_clipboard_image_file(&img.to_string_lossy()).unwrap();
+        assert_eq!(resolved, img);
+        assert_eq!(ext, "png");
+
+        let encoded = format!(
+            "file://{}/%D0%A1%D0%BD%D0%B8%D0%BC%D0%BE%D0%BA%20%D1%8D%D0%BA%D1%80%D0%B0%D0%BD%D0%B0%201.png\r\n",
+            dir.to_string_lossy()
+        );
+        let (from_uri, ext_uri) = parse_clipboard_image_file(&encoded).unwrap();
+        assert_eq!(from_uri, img);
+        assert_eq!(ext_uri, "png");
+        assert!(parse_clipboard_image_file(&txt.to_string_lossy()).is_none());
+        assert!(parse_clipboard_image_file("cargo test --offline").is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vte_copy_and_paste_between_tabs_does_not_deadlock() {
+        let Some(_guard) = start_headless_gtk() else { return };
+        let (win, tab1, tab2) = create_two_vte_window();
+        let sample = "привет из первой вкладки";
+        unsafe {
+            vte_terminal_feed(tab1, sample.as_ptr() as *const c_char, sample.len() as isize);
+        }
+        thread::sleep(Duration::from_millis(40));
+        pump_gtk_events();
+        unsafe {
+            vte_terminal_select_all(tab1);
+            vte_terminal_copy_clipboard_format(tab1, 1);
+            pump_gtk_events();
+        }
+
+        assert!(try_paste_clipboard_image("", false).is_none());
+        assert!(try_paste_clipboard_image("", true).is_none());
+        assert!(try_paste_clipboard_image("unreachable-ssh-host", false).is_none());
+
+        let clip = unsafe { gtk_clipboard_get(GDK_SELECTION_CLIPBOARD) };
+        let copied = take_glib_string(unsafe { gtk_clipboard_wait_for_text(clip) }).unwrap();
+        assert!(copied.contains(sample), "copied: {copied:?}");
+        unsafe { vte_terminal_paste_clipboard(tab2) };
+        pump_gtk_events();
+
+        verify_image_clipboard_paste();
+        unsafe { gtk_widget_destroy(win) };
+    }
 }

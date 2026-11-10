@@ -26,7 +26,7 @@ cargo build --release --offline --locked
 ./target/release/akhterm
 ```
 
-Cargo needs no external Rust crates. AkhTerm runs in a Linux graphical session. SSH tabs use the `ssh` executable, and remote tmux tabs require `tmux` on the remote host. The optional system monitor uses `htop`, and image paste uses `xclip` on X11.
+Cargo needs no external Rust crates. AkhTerm runs in a Linux graphical session. SSH tabs use the `ssh` executable, and remote tmux tabs require `tmux` on the remote host. The optional system monitor uses `htop`.
 
 To build the `.deb` on an Ubuntu 24.04 base, install `dpkg-dev` and run the packaging script from the source directory. It writes the package to `target/deb/`.
 

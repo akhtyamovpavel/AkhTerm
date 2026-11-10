@@ -16,11 +16,16 @@ pub type GtkStyleContext = c_void;
 pub type GtkCssProvider = c_void;
 pub type GtkSettings = c_void;
 pub type GtkHeaderBar = c_void;
+pub type GtkClipboard = c_void;
 pub type GdkScreen = c_void;
 pub type GdkEvent = c_void;
+pub type GdkPixbuf = c_void;
+pub type GdkAtom = *mut c_void;
 pub type VteTerminal = c_void;
 pub type VteRegex = c_void;
 pub type PangoFontDescription = c_void;
+
+pub const GDK_SELECTION_CLIPBOARD: GdkAtom = 69usize as GdkAtom;
 
 pub const PCRE2_MULTILINE_UTF: c_uint = 0x0008_0400; // PCRE2_UTF (0x80000) | PCRE2_MULTILINE (0x400)
 
@@ -71,6 +76,12 @@ extern "C" {
 
     // GLib / GObject
     pub fn g_free(mem: *mut c_void);
+    pub fn g_strfreev(str_array: *mut *mut c_char);
+    pub fn g_filename_from_uri(
+        uri: *const c_char,
+        hostname: *mut *mut c_char,
+        error: *mut *mut c_void,
+    ) -> *mut c_char;
     pub fn g_object_set(object: *mut c_void, first_property_name: *const c_char, ...);
     pub fn g_object_unref(object: *mut c_void);
     pub fn g_timeout_add(interval: c_uint, function: extern "C" fn(*mut c_void) -> c_int, data: *mut c_void) -> c_uint;
@@ -202,9 +213,50 @@ extern "C" {
         dest_y: *mut c_int,
     ) -> c_int;
     pub fn gtk_widget_set_tooltip_text(widget: *mut GtkWidget, text: *const c_char);
+    pub fn gtk_init_check(argc: *mut c_int, argv: *mut *mut *mut c_char) -> c_int;
+    pub fn gtk_events_pending() -> c_int;
+    pub fn gtk_main_iteration_do(blocking: c_int) -> c_int;
+
+    // GTK3 Clipboard & GdkPixbuf
+    pub fn gtk_clipboard_get(selection: GdkAtom) -> *mut GtkClipboard;
+    pub fn gtk_clipboard_set_text(clipboard: *mut GtkClipboard, text: *const c_char, len: c_int);
+    pub fn gtk_clipboard_set_image(clipboard: *mut GtkClipboard, pixbuf: *mut GdkPixbuf);
+    pub fn gtk_clipboard_wait_for_targets(
+        clipboard: *mut GtkClipboard,
+        targets: *mut *mut GdkAtom,
+        n_targets: *mut c_int,
+    ) -> c_int;
+    pub fn gtk_clipboard_wait_for_image(clipboard: *mut GtkClipboard) -> *mut GdkPixbuf;
+    pub fn gtk_clipboard_wait_for_text(clipboard: *mut GtkClipboard) -> *mut c_char;
+    pub fn gtk_clipboard_wait_for_uris(clipboard: *mut GtkClipboard) -> *mut *mut c_char;
+    pub fn gtk_targets_include_text(targets: *const GdkAtom, n_targets: c_int) -> c_int;
+    pub fn gtk_targets_include_image(
+        targets: *const GdkAtom,
+        n_targets: c_int,
+        writable: c_int,
+    ) -> c_int;
+    pub fn gtk_targets_include_uri(targets: *const GdkAtom, n_targets: c_int) -> c_int;
+    pub fn gdk_pixbuf_new(
+        colorspace: c_int,
+        has_alpha: c_int,
+        bits_per_sample: c_int,
+        width: c_int,
+        height: c_int,
+    ) -> *mut GdkPixbuf;
+    pub fn gdk_pixbuf_save_to_bufferv(
+        pixbuf: *mut GdkPixbuf,
+        buffer: *mut *mut c_char,
+        buffer_size: *mut usize,
+        img_type: *const c_char,
+        option_keys: *mut *mut c_char,
+        option_values: *mut *mut c_char,
+        error: *mut *mut c_void,
+    ) -> c_int;
 
     // VTE-2.91
     pub fn vte_terminal_new() -> *mut GtkWidget;
+    pub fn vte_terminal_feed(terminal: *mut VteTerminal, data: *const c_char, length: isize);
+    pub fn vte_terminal_select_all(terminal: *mut VteTerminal);
     pub fn vte_terminal_spawn_sync(
         terminal: *mut VteTerminal,
         pty_flags: c_int,

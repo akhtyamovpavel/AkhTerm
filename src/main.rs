@@ -11,7 +11,7 @@ mod theme;
 mod ui_font;
 mod ui_text;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
 use std::fs;
@@ -77,6 +77,7 @@ struct AppState {
 
 thread_local! {
     static APP: RefCell<Option<AppState>> = const { RefCell::new(None) };
+    static PASTE_BUSY: Cell<bool> = const { Cell::new(false) };
 }
 
 fn entry_text_lower(entry: *mut GtkWidget) -> String {
@@ -948,35 +949,69 @@ extern "C" fn on_handoff_inject(_btn: *mut GtkWidget, idx_ptr: *mut c_void) {
     }
 }
 
-fn paste_smart(force_image: bool) -> bool {
-    let mut handled = false;
-    APP.with(|cell| {
-        if let Some(app) = cell.borrow().as_ref() {
-            if let Some(s) = app.sessions.iter().find(|s| s.id == app.active_id) {
-                let ssh_host = s.remote().map_or(&s.proc_info.ssh_host, |r| &r.host);
+struct PasteGuard;
 
-                if let Some((pasted_path, status_msg)) =
-                    try_paste_clipboard_image(ssh_host, force_image)
-                {
-                    if let Ok(c) = CString::new(pasted_path.as_str()) {
-                        unsafe {
-                            vte_terminal_feed_child(s.vte, c.as_ptr(), pasted_path.len() as isize);
-                            gtk_widget_grab_focus(s.vte);
-                        }
-                    }
-                    set_label_text(app.footer_status, &status_msg);
-                    handled = true;
-                } else if !force_image {
-                    unsafe {
-                        vte_terminal_paste_clipboard(s.vte);
-                        gtk_widget_grab_focus(s.vte);
-                    }
-                    handled = true;
-                }
-            }
+impl Drop for PasteGuard {
+    fn drop(&mut self) {
+        PASTE_BUSY.with(|busy| busy.set(false));
+    }
+}
+
+fn active_paste_context() -> Option<(usize, String)> {
+    APP.with(|cell| {
+        let state = cell.borrow();
+        let app = state.as_ref()?;
+        let s = app.sessions.iter().find(|s| s.id == app.active_id)?;
+        let host = s.remote().map_or(&s.proc_info.ssh_host, |r| &r.host).clone();
+        Some((s.id, host))
+    })
+}
+
+fn session_paste_widgets(sid: usize) -> Option<(*mut GtkWidget, *mut GtkWidget)> {
+    APP.with(|cell| {
+        let state = cell.borrow();
+        let app = state.as_ref()?;
+        let s = app.sessions.iter().find(|s| s.id == sid)?;
+        Some((s.vte, app.footer_status))
+    })
+}
+
+fn finish_paste(vte: *mut GtkWidget, footer: *mut GtkWidget, image: Option<(String, String)>) {
+    if let Some((path, status)) = image {
+        if let Ok(c) = CString::new(path.as_str()) {
+            unsafe { vte_terminal_feed_child(vte, c.as_ptr(), path.len() as isize) };
         }
+        set_label_text(footer, &status);
+    } else {
+        unsafe { vte_terminal_paste_clipboard(vte) };
+    }
+    unsafe { gtk_widget_grab_focus(vte) };
+}
+
+fn paste_smart(force_image: bool) -> bool {
+    if PASTE_BUSY.with(|busy| busy.replace(true)) {
+        return !force_image;
+    }
+    let _guard = PasteGuard;
+    let Some((sid, host)) = active_paste_context() else { return false };
+    let image = try_paste_clipboard_image(&host, force_image);
+    if image.is_none() && force_image {
+        return false;
+    }
+    let Some((vte, footer)) = session_paste_widgets(sid) else { return false };
+    finish_paste(vte, footer, image);
+    true
+}
+
+fn copy_active_selection() {
+    let vte = APP.with(|cell| {
+        let state = cell.borrow();
+        let app = state.as_ref()?;
+        app.sessions.iter().find(|s| s.id == app.active_id).map(|s| s.vte)
     });
-    handled
+    if let Some(vte) = vte {
+        unsafe { vte_terminal_copy_clipboard_format(vte, 1) };
+    }
 }
 
 extern "C" fn on_paste_image_clicked(_btn: *mut GtkWidget, _data: *mut c_void) {
@@ -1063,13 +1098,7 @@ extern "C" fn on_window_key_press(
                 return 1;
             }
             if keyval == b'C' as u32 || keyval == b'c' as u32 || keycode == 54 {
-                APP.with(|cell| {
-                    if let Some(app) = cell.borrow().as_ref() {
-                        if let Some(s) = app.sessions.iter().find(|s| s.id == app.active_id) {
-                            vte_terminal_copy_clipboard_format(s.vte, 1);
-                        }
-                    }
-                });
+                copy_active_selection();
                 return 1;
             }
             if keyval == b'V' as u32 || keyval == b'v' as u32 || keycode == 55 {
