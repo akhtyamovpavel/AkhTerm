@@ -10,6 +10,7 @@ pub type GtkBox = c_void;
 pub type GtkStack = c_void;
 pub type GtkPaned = c_void;
 pub type GtkButton = c_void;
+pub type GtkToggleButton = c_void;
 pub type GtkLabel = c_void;
 pub type GtkAdjustment = c_void;
 pub type GtkPopover = c_void;
@@ -28,7 +29,9 @@ pub type PangoFontDescription = c_void;
 
 pub const GDK_SELECTION_CLIPBOARD: GdkAtom = 69usize as GdkAtom;
 
+pub const PCRE2_CASELESS: c_uint = 0x0000_0008;
 pub const PCRE2_MULTILINE_UTF: c_uint = 0x0008_0400; // PCRE2_UTF (0x80000) | PCRE2_MULTILINE (0x400)
+pub const PCRE2_SEARCH_CASELESS: c_uint = PCRE2_MULTILINE_UTF | PCRE2_CASELESS; // 0x0008_0408
 
 pub const GTK_WINDOW_TOPLEVEL: c_int = 0;
 pub const GTK_ORIENTATION_HORIZONTAL: c_int = 0;
@@ -182,6 +185,7 @@ extern "C" {
     pub fn gtk_entry_set_placeholder_text(entry: *mut GtkWidget, text: *const c_char);
     pub fn gtk_entry_set_text(entry: *mut GtkWidget, text: *const c_char);
     pub fn gtk_entry_get_text(entry: *mut GtkWidget) -> *const c_char;
+    pub fn gtk_editable_select_region(editable: *mut GtkWidget, start_pos: c_int, end_pos: c_int);
 
     pub fn gtk_stack_new() -> *mut GtkWidget;
     pub fn gtk_stack_add_named(stack: *mut GtkStack, child: *mut GtkWidget, name: *const c_char);
@@ -199,6 +203,9 @@ extern "C" {
     pub fn gtk_button_new_with_label(label: *const c_char) -> *mut GtkWidget;
     pub fn gtk_button_get_label(button: *mut GtkButton) -> *const c_char;
     pub fn gtk_button_set_label(button: *mut GtkButton, label: *const c_char);
+    pub fn gtk_toggle_button_new_with_label(label: *const c_char) -> *mut GtkWidget;
+    pub fn gtk_toggle_button_get_active(toggle_button: *mut GtkToggleButton) -> c_int;
+    pub fn gtk_toggle_button_set_active(toggle_button: *mut GtkToggleButton, is_active: c_int);
     pub fn gtk_image_new_from_icon_name(icon_name: *const c_char, size: c_int) -> *mut GtkWidget;
     pub fn gtk_image_set_from_icon_name(image: *mut GtkWidget, icon_name: *const c_char, size: c_int);
     pub fn gtk_expander_new(label: *const c_char) -> *mut GtkWidget;
@@ -290,6 +297,8 @@ extern "C" {
     pub fn vte_terminal_new() -> *mut GtkWidget;
     pub fn vte_terminal_feed(terminal: *mut VteTerminal, data: *const c_char, length: isize);
     pub fn vte_terminal_select_all(terminal: *mut VteTerminal);
+    pub fn vte_terminal_unselect_all(terminal: *mut VteTerminal);
+    pub fn vte_terminal_get_has_selection(terminal: *mut VteTerminal) -> c_int;
     pub fn vte_terminal_spawn_sync(
         terminal: *mut VteTerminal,
         pty_flags: c_int,
@@ -323,7 +332,21 @@ extern "C" {
         flags: c_uint,
         error: *mut *mut c_void,
     ) -> *mut VteRegex;
+    pub fn vte_regex_new_for_search(
+        pattern: *const c_char,
+        pattern_length: isize,
+        flags: c_uint,
+        error: *mut *mut c_void,
+    ) -> *mut VteRegex;
     pub fn vte_regex_unref(regex: *mut VteRegex);
+    pub fn vte_terminal_search_set_regex(
+        terminal: *mut VteTerminal,
+        regex: *mut VteRegex,
+        flags: c_uint,
+    );
+    pub fn vte_terminal_search_set_wrap_around(terminal: *mut VteTerminal, wrap_around: c_int);
+    pub fn vte_terminal_search_find_previous(terminal: *mut VteTerminal) -> c_int;
+    pub fn vte_terminal_search_find_next(terminal: *mut VteTerminal) -> c_int;
     pub fn vte_terminal_match_add_regex(terminal: *mut VteTerminal, regex: *mut VteRegex, flags: c_uint) -> c_int;
     pub fn vte_terminal_match_set_cursor_name(terminal: *mut VteTerminal, tag: c_int, cursor_name: *const c_char);
     pub fn vte_terminal_match_check_event(

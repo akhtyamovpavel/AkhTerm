@@ -29,6 +29,7 @@ pub enum PaletteKind {
     Agent,
     Handoff,
     Theme,
+    Search,
 }
 
 impl PaletteKind {
@@ -42,6 +43,7 @@ impl PaletteKind {
             Self::Agent => text::PALETTE_BADGE_AGENT,
             Self::Handoff => text::PALETTE_BADGE_HANDOFF,
             Self::Theme => text::PALETTE_BADGE_THEME,
+            Self::Search => text::PALETTE_BADGE_SEARCH,
         }
     }
 
@@ -49,7 +51,7 @@ impl PaletteKind {
         match self {
             Self::Tab => "palette-badge-tab",
             Self::RemoteTmux => "palette-badge-tmux",
-            Self::Profile | Self::Theme => "palette-badge",
+            Self::Profile | Self::Theme | Self::Search => "palette-badge",
             Self::SshPlain | Self::SshTmux => "palette-badge-ssh",
             Self::Agent => "palette-badge-agent",
             Self::Handoff => "palette-badge-handoff",
@@ -66,6 +68,7 @@ pub enum PaletteAction {
     RunAgent(usize),
     InjectHandoff(PathBuf),
     ToggleTheme,
+    OpenSearch,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -294,9 +297,17 @@ fn push_theme_item(out: &mut Vec<PaletteItem>) {
     out.push(make_theme_palette_item(current_theme_mode()));
 }
 
+fn push_search_item(out: &mut Vec<PaletteItem>) {
+    let title = text::PALETTE_SEARCH_TITLE.to_string_lossy().into_owned();
+    let detail = text::PALETTE_SEARCH_DETAIL.to_string_lossy().into_owned();
+    let kw = "поиск найти выводу скроллбэк лог search find regex ctrl+shift+f".to_owned();
+    out.push(new_item(PaletteKind::Search, title, detail, kw, PaletteAction::OpenSearch));
+}
+
 pub fn collect_items(src: &PaletteSource<'_>) -> Vec<PaletteItem> {
     let mut out = Vec::new();
     push_session_items(src.sessions, &mut out);
+    push_search_item(&mut out);
     push_tmux_items(src.tmux_items, &mut out);
     push_profile_items(src.profiles, &mut out);
     push_ssh_items(src.ssh_hosts, &mut out);
@@ -830,6 +841,9 @@ mod tests {
         assert!(all.iter().any(|i| i.action == PaletteAction::OpenSsh { host: "prod".into(), tmux_session: Some("main".into()) }));
         assert!(all.iter().any(|i| matches!(i.action, PaletteAction::RunAgent(_))));
         assert!(all.iter().any(|i| i.action == PaletteAction::InjectHandoff(PathBuf::from("/tmp/plan.md"))));
+        assert!(all.iter().any(|i| i.action == PaletteAction::OpenSearch && i.title == "Поиск по выводу"));
+        let search_hits = filter_items(&all, "Поиск по выводу");
+        assert_eq!(all[search_hits[0]].action, PaletteAction::OpenSearch);
         assert_eq!(handoff_prompt(Path::new("/tmp/plan.md")), "Прочитай файл /tmp/plan.md и действуй по нему.");
     }
 
