@@ -1,12 +1,14 @@
 //! GTK widgets for the scrollable terminal tab strip.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::{c_void, CStr, CString};
 use std::ptr;
+use std::time::Instant;
 
 use crate::connect_click;
 use crate::ffi::*;
 use crate::session::{SessionCategory, TermSession};
+use crate::telemetry::{format_turn_duration, format_working_badge};
 use crate::theme::set_agent_accent;
 use crate::ui_text as text;
 
@@ -87,6 +89,7 @@ pub struct TabView {
     label: *mut GtkWidget,
     status: *mut GtkWidget,
     icon_cat: Cell<SessionCategory>,
+    last_tip: RefCell<String>,
 }
 
 impl TabView {
@@ -126,6 +129,7 @@ impl TabView {
                 label,
                 status,
                 icon_cat: Cell::new(category),
+                last_tip: RefCell::new(String::new()),
             }
         }
     }
@@ -137,7 +141,22 @@ impl TabView {
         })
     }
 
+    fn take_tooltip_change(&self, tip: &str) -> Option<String> {
+        let mut prev = self.last_tip.try_borrow_mut().ok()?;
+        if prev.as_str() == tip {
+            None
+        } else {
+            prev.clear();
+            prev.push_str(tip);
+            Some(tip.to_owned())
+        }
+    }
+
     pub fn prepare_update(&self, session: &TermSession, active: bool) -> TabUpdate {
+        let now = Instant::now();
+        let needs_approval = session.state.needs_approval();
+        let working_secs = session.live_turn_secs(now);
+        let tip = tooltip_for_session(session, needs_approval, working_secs);
         TabUpdate {
             widget: self.widget,
             select: self.select,
@@ -145,11 +164,13 @@ impl TabView {
             label: self.label,
             status: self.status,
             new_icon: self.take_icon_change(session.effective_category()),
+            new_tip: self.take_tooltip_change(&tip),
             title: session.title.clone(),
             agent: session.proc_info.agent.clone(),
             active,
             unread: session.unread,
-            needs_approval: session.state.needs_approval(),
+            needs_approval,
+            working_secs,
         }
     }
 
@@ -171,6 +192,7 @@ impl TabView {
             label: ptr::null_mut(),
             status: ptr::null_mut(),
             icon_cat: Cell::new(category),
+            last_tip: RefCell::new(String::new()),
         }
     }
 
@@ -187,11 +209,13 @@ pub struct TabUpdate {
     label: *mut GtkWidget,
     status: *mut GtkWidget,
     new_icon: Option<&'static CStr>,
+    new_tip: Option<String>,
     title: String,
     agent: String,
     active: bool,
     unread: bool,
     needs_approval: bool,
+    working_secs: Option<u64>,
 }
 
 impl TabUpdate {
@@ -203,16 +227,11 @@ impl TabUpdate {
         set_class(self.widget, "tab-active", self.active);
         set_class(self.widget, "tab-approval", self.needs_approval);
         set_class(self.widget, "tab-ready", self.unread && !self.active && !self.needs_approval);
-        let vis_now = i32::from(self.needs_approval);
-        let vis_changed = unsafe { gtk_widget_get_visible(self.status) } != vis_now;
-        unsafe { gtk_widget_set_visible(self.status, vis_now) };
-        sync_tab_title_and_tip(
-            self.label,
-            self.select,
-            &self.title,
-            self.needs_approval,
-            vis_changed,
-        );
+        let _ = sync_status_badge(self.status, self.needs_approval, self.working_secs);
+        sync_tab_title(self.label, &self.title);
+        if let Some(tip) = &self.new_tip {
+            set_tooltip(self.select, tip);
+        }
     }
 }
 
@@ -246,28 +265,88 @@ fn create_close_button(data: *mut c_void, on_close: ClickHandler) -> *mut GtkWid
     }
 }
 
-fn format_tab_tooltip(title: &str, needs_approval: bool) -> String {
-    if needs_approval {
+fn sync_status_badge(
+    status: *mut GtkWidget,
+    needs_approval: bool,
+    working_secs: Option<u64>,
+) -> bool {
+    let show = needs_approval || working_secs.is_some();
+    set_class(status, "tab-timer", !needs_approval && working_secs.is_some());
+    let text_changed = if needs_approval {
+        sync_label_cstr(status, text::STATUS_APPROVAL)
+    } else if let Some(secs) = working_secs {
+        let badge = format_working_badge(secs);
+        CString::new(badge).ok().is_some_and(|c| sync_label_cstr(status, &c))
+    } else {
+        false
+    };
+    let vis_now = i32::from(show);
+    let vis_changed = unsafe { gtk_widget_get_visible(status) } != vis_now;
+    unsafe { gtk_widget_set_visible(status, vis_now) };
+    vis_changed || text_changed
+}
+
+fn sync_label_cstr(label: *mut GtkWidget, next: &CStr) -> bool {
+    let cur_ptr = unsafe { gtk_label_get_text(label) };
+    let changed = cur_ptr.is_null() || unsafe { CStr::from_ptr(cur_ptr) != next };
+    if changed {
+        unsafe { gtk_label_set_text(label, next.as_ptr()) };
+    }
+    changed
+}
+
+fn tooltip_for_session(
+    session: &TermSession,
+    needs_approval: bool,
+    working_secs: Option<u64>,
+) -> String {
+    let ctx_badge = session.telemetry.snapshot().compact_context_badge();
+    format_tab_tooltip(
+        &session.title,
+        needs_approval,
+        working_secs.or_else(|| session.settled_turn_secs()),
+        ctx_badge.as_deref(),
+    )
+}
+
+fn format_tab_tooltip(
+    title: &str,
+    needs_approval: bool,
+    turn_secs: Option<u64>,
+    ctx_badge: Option<&str>,
+) -> String {
+    let mut out = if needs_approval {
         format!("{title} — {}", text::APPROVAL_TAB_TIP.to_string_lossy())
     } else {
         title.to_owned()
+    };
+    if let Some(secs) = turn_secs {
+        out.push_str(&format!(" · ⏱ {}", format_turn_duration(secs)));
+    }
+    if let Some(ctx) = ctx_badge {
+        out.push_str(&format!(" · {ctx}"));
+    }
+    out
+}
+
+fn sync_tab_title(label: *mut GtkWidget, title: &str) {
+    if let Ok(title_c) = CString::new(title) {
+        let _ = sync_label_cstr(label, &title_c);
     }
 }
 
-fn sync_tab_title_and_tip(
-    label: *mut GtkWidget,
-    select: *mut GtkWidget,
-    title: &str,
-    needs_approval: bool,
-    approval_changed: bool,
-) {
-    let Ok(title_c) = CString::new(title) else { return };
-    let cur_ptr = unsafe { gtk_label_get_text(label) };
-    let title_changed = cur_ptr.is_null() || unsafe { CStr::from_ptr(cur_ptr) != title_c.as_c_str() };
-    if title_changed {
-        unsafe { gtk_label_set_text(label, title_c.as_ptr()) };
-    }
-    if title_changed || approval_changed {
-        set_tooltip(select, &format_tab_tooltip(title, needs_approval));
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_tab_tooltip_with_turn_timer_and_context() {
+        assert_eq!(format_tab_tooltip("AkhTerm", false, None, None), "AkhTerm");
+        assert_eq!(
+            format_tab_tooltip("AkhTerm · AGY", false, Some(134), Some("ctx 84k")),
+            "AkhTerm · AGY · ⏱ 2m 14s · ctx 84k"
+        );
+        let tip = format_tab_tooltip("AkhTerm", true, Some(42), Some("ctx 142k"));
+        assert!(tip.contains("Ждёт апрува") && tip.ends_with("· ⏱ 42s · ctx 142k"));
     }
 }

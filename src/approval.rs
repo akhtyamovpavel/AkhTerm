@@ -221,6 +221,17 @@ fn maybe_notify_settled(
     }
 }
 
+fn record_settled_turn(session: &mut TermSession, work_span: Duration) {
+    let secs = work_span.as_secs();
+    if secs >= 1 {
+        session.last_turn_secs = Some(secs);
+    } else if matches!(session.state, WorkState::Ready | WorkState::NeedsApproval)
+        && session.last_turn_secs.is_none()
+    {
+        session.last_turn_secs = Some(1);
+    }
+}
+
 pub fn settle_working_session(
     session: &mut TermSession,
     now: Instant,
@@ -234,9 +245,11 @@ pub fn settle_working_session(
     if now.saturating_duration_since(session.last_output) <= QUIET_SETTLE_DELAY {
         return;
     }
-    let work_span = session.last_output.saturating_duration_since(session.work_started);
+    let started = session.work_started_at.take().unwrap_or(session.work_started);
+    let work_span = session.last_output.saturating_duration_since(started);
     let classified = classify_vte_state(session.active_vte());
     apply_settled_state(session, classified, active_id);
+    record_settled_turn(session, work_span);
     maybe_notify_settled(session, now, classified, work_span, win, window_active);
 }
 

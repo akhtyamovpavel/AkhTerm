@@ -97,6 +97,12 @@ pub const DROP_SCP_DONE: &CStr = c"📎 Загружено по SCP на";
 pub const DROP_SCP_ERROR: &CStr = c"⚠ Ошибка SCP при загрузке на";
 pub const DROP_SCP_NO_FILE: &CStr = c"⚠ Ошибка SCP: локальный файл недоступен";
 
+pub const TOKENS: &CStr = c"Токены ▾";
+pub const TOKENS_TIP: &CStr = c"Расход токенов, контекст и таймер хода агентов по вкладкам";
+pub const TOKENS_HEADER: &CStr = c"ТОКЕНЫ · КОНТЕКСТ И ДЛИТЕЛЬНОСТЬ ХОДА";
+pub const TOKENS_EMPTY: &CStr =
+    c"Нет данных о токенах для открытых вкладок.\nЗапустите агента (AGY, Claude Code, Codex CLI) или сессию с индикатором контекста.";
+
 pub fn theme_toggle_icon(is_light: bool) -> &'static CStr {
     if is_light { THEME_DARK_ICON } else { THEME_LIGHT_ICON }
 }

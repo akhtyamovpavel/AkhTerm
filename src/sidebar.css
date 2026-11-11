@@ -101,6 +101,15 @@ button.sidebar-action:focus {
     color: @mi_b;
 }
 
+.sidebar-metric.sidebar-metric-warn {
+    color: @mi_b;
+}
+
+.sidebar-metric.sidebar-metric-high {
+    color: @mi_c;
+    font-weight: 600;
+}
+
 .sidebar-empty {
     padding: 8px;
 }

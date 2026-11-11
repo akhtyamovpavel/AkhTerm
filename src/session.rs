@@ -12,6 +12,7 @@ use crate::sidebar::SidebarRow;
 use crate::split_pane::TabPanes;
 use crate::tab_strip::TabView;
 use crate::tabs::{RemoteConnection, Tab};
+use crate::telemetry::SessionTelemetry;
 use crate::theme::{apply_vte_colors, current_theme_mode};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,11 +65,14 @@ pub struct TermSession {
     pub unread: bool,
     pub last_output: Instant,
     pub work_started: Instant,
+    pub work_started_at: Option<Instant>,
+    pub last_turn_secs: Option<u64>,
     pub last_notified: Option<Instant>,
     pub proc_info: ProcInfo,
     pub tab: Tab,
     pub remote_tmux: Option<(String, String, String, String)>,
     pub tmux_title_from_vte: bool,
+    pub telemetry: SessionTelemetry,
 }
 
 impl TermSession {
@@ -154,6 +158,36 @@ impl TermSession {
         } else {
             clean_local_osc_title(clean)
         };
+    }
+
+    pub fn live_turn_secs(&self, now: Instant) -> Option<u64> {
+        if self.category == SessionCategory::Daemon
+            || self.state != WorkState::Working
+            || self.active_pid() <= 0
+        {
+            return None;
+        }
+        let started = self.work_started_at.unwrap_or(self.work_started);
+        Some(now.saturating_duration_since(started).as_secs())
+    }
+
+    pub fn settled_turn_secs(&self) -> Option<u64> {
+        resolve_settled_turn_secs(
+            self.category,
+            self.state,
+            self.active_pid(),
+            self.last_turn_secs,
+        )
+    }
+
+    pub fn effective_agent(&self) -> String {
+        if !self.proc_info.agent.is_empty() {
+            return self.proc_info.agent.clone();
+        }
+        detect_agent_name(&self.title)
+            .or_else(|| detect_agent_name(&self.osc_title))
+            .unwrap_or("")
+            .to_owned()
     }
 
     pub fn snapshot_tab(&mut self) -> Tab {
@@ -381,6 +415,17 @@ pub fn create_vte_widget(cwd: &str, argv_strs: &[&str]) -> (*mut GtkWidget, i32)
     }
 }
 
+pub fn resolve_settled_turn_secs(
+    category: SessionCategory,
+    state: WorkState,
+    active_pid: i32,
+    last_turn_secs: Option<u64>,
+) -> Option<u64> {
+    (category != SessionCategory::Daemon && state != WorkState::Working && active_pid > 0)
+        .then_some(last_turn_secs)
+        .flatten()
+}
+
 pub fn detect_agent_name(raw: &str) -> Option<&'static str> {
     let low = raw.to_lowercase();
     let first_word = low.split_whitespace().next().map(|word| word.trim_end_matches(':'));
@@ -546,8 +591,9 @@ mod tests {
             cwd: dir.to_owned(), category: cat, vte: ptr::null_mut(), scroll_wrap: ptr::null_mut(),
             panes: empty_panes(), sidebar_row: SidebarRow::empty_for_test(cat),
             top_tab: TabView::empty_for_test(cat), child_pid: 0, state: WorkState::Idle,
-            unread: false, last_output: now, work_started: now, last_notified: None,
-            proc_info: ProcInfo::default(), tab, remote_tmux: None, tmux_title_from_vte: false,
+            unread: false, last_output: now, work_started: now, work_started_at: None,
+            last_turn_secs: None, last_notified: None, proc_info: ProcInfo::default(), tab,
+            remote_tmux: None, tmux_title_from_vte: false, telemetry: SessionTelemetry::default(),
         }
     }
 
@@ -581,6 +627,34 @@ mod tests {
         assert!(!s.tmux_title_from_vte && s.remote_tmux.is_none() && s.osc_title.is_empty());
         assert_eq!(s.title, "Productivity · Новая");
         assert_eq!(s.active_local_cwd().as_deref(), Some("/tmp/proj"));
+    }
+
+    #[test]
+    fn settled_turn_secs_persists_on_idle_ready_and_approval_tabs() {
+        assert_eq!(
+            resolve_settled_turn_secs(SessionCategory::Project, WorkState::Idle, 42, Some(134)),
+            Some(134)
+        );
+        assert_eq!(
+            resolve_settled_turn_secs(SessionCategory::Project, WorkState::Ready, 42, Some(134)),
+            Some(134)
+        );
+        assert_eq!(
+            resolve_settled_turn_secs(SessionCategory::Remote, WorkState::NeedsApproval, 42, Some(18)),
+            Some(18)
+        );
+        assert_eq!(
+            resolve_settled_turn_secs(SessionCategory::Project, WorkState::Working, 42, Some(134)),
+            None
+        );
+        assert_eq!(
+            resolve_settled_turn_secs(SessionCategory::Daemon, WorkState::Idle, 42, Some(134)),
+            None
+        );
+        assert_eq!(
+            resolve_settled_turn_secs(SessionCategory::Project, WorkState::Idle, 0, Some(134)),
+            None
+        );
     }
 
     #[test]
