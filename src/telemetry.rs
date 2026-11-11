@@ -5,12 +5,17 @@ use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use crate::approval::read_vte_visible_text;
 use crate::connect_click;
 use crate::ffi::*;
 use crate::session::{SessionCategory, TermSession};
+pub use crate::telemetry_agy::parse_vte_context_panel;
+use crate::telemetry_agy::{
+    discover_agy_by_fd, discover_agy_transcript, is_vte_breakdown_line, metadata_stamp,
+    trim_trailing_slash,
+};
 use crate::theme_mode::{ThemeMode, TokensMarkupColors};
 use crate::ui_text as text;
 
@@ -22,7 +27,6 @@ pub const HIGH_CONTEXT_TOKENS: u64 = 180_000;
 pub const WARN_CONTEXT_PCT: u8 = 75;
 pub const HIGH_CONTEXT_PCT: u8 = 90;
 const DISCOVERY_TTL: Duration = Duration::from_secs(3);
-const AGY_HEAD_BYTES: u64 = 65_536;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TelemetrySource {
@@ -186,15 +190,67 @@ fn read_next_complete_line(reader: &mut BufReader<File>, buf: &mut Vec<u8>) -> i
 pub struct SessionTelemetry {
     pub tailer: TranscriptTailer,
     pub vte_fallback: TokenSnapshot,
+    pub vte_panel_override: Option<(u64, Option<u8>, u64)>,
+    effective: TokenSnapshot,
     last_discovery: Option<Instant>,
 }
 
 impl SessionTelemetry {
     pub fn snapshot(&self) -> &TokenSnapshot {
-        if self.tailer.snapshot.has_data() {
+        if self.vte_panel_override.is_some() {
+            &self.effective
+        } else if self.tailer.snapshot.has_data() {
             &self.tailer.snapshot
         } else {
             &self.vte_fallback
+        }
+    }
+
+    pub fn effective_snapshot(&self) -> TokenSnapshot {
+        let mut snap = if self.tailer.snapshot.has_data() {
+            self.tailer.snapshot.clone()
+        } else {
+            self.vte_fallback.clone()
+        };
+        if let Some((toks, pct, captured_offset)) = self.vte_panel_override {
+            if self.tailer.offset <= captured_offset {
+                apply_panel_override(&mut snap, toks, pct);
+            }
+        }
+        snap
+    }
+
+    pub fn sync_effective(&mut self) {
+        self.effective = self.effective_snapshot();
+    }
+
+    pub fn observe_vte_text(&mut self, visible: &str) {
+        if let Some((toks, pct)) = parse_vte_context_panel(visible) {
+            self.record_panel_hit(toks, pct);
+        } else {
+            self.record_status_fallback(visible);
+        }
+        self.sync_effective();
+    }
+
+    fn record_panel_hit(&mut self, toks: u64, pct: Option<u8>) {
+        self.vte_panel_override = Some((toks, pct, self.tailer.offset));
+        if !self.tailer.snapshot.has_data() {
+            self.vte_fallback = TokenSnapshot {
+                source: TelemetrySource::VteFallback,
+                context_tokens: toks,
+                context_pct: pct,
+                ..Default::default()
+            };
+        }
+    }
+
+    fn record_status_fallback(&mut self, visible: &str) {
+        if !self.tailer.snapshot.has_data() {
+            if let Some(parsed) = parse_vte_status_fallback(visible) {
+                self.vte_fallback = parsed;
+                self.vte_panel_override = None;
+            }
         }
     }
 
@@ -204,6 +260,16 @@ impl SessionTelemetry {
         }
         self.last_discovery
             .is_none_or(|prev| now.saturating_duration_since(prev) >= DISCOVERY_TTL)
+    }
+}
+
+fn apply_panel_override(snap: &mut TokenSnapshot, toks: u64, pct: Option<u8>) {
+    if snap.source == TelemetrySource::None {
+        snap.source = TelemetrySource::VteFallback;
+    }
+    snap.context_tokens = toks;
+    if pct.is_some() {
+        snap.context_pct = pct;
     }
 }
 
@@ -252,6 +318,7 @@ pub fn should_poll_vte_fallback(
 fn reset_local_tailer(telem: &mut SessionTelemetry) {
     if telem.tailer.path.is_some() || telem.tailer.snapshot.has_data() {
         telem.tailer = TranscriptTailer::default();
+        telem.vte_panel_override = None;
         telem.last_discovery = None;
     }
 }
@@ -267,20 +334,29 @@ pub fn run_poll_job(mut job: SessionPollJob, home: &Path, now: Instant) -> (usiz
         reset_local_tailer(&mut job.telemetry);
     }
     if should_poll_vte_fallback(local_cwd, job.has_tmux, &job.agent) {
-        refresh_vte_fallback_if_needed(&mut job.telemetry, job.vte);
+        refresh_vte_telemetry(&mut job.telemetry, job.vte);
     } else {
         job.telemetry.vte_fallback = TokenSnapshot::default();
+        job.telemetry.vte_panel_override = None;
     }
+    job.telemetry.sync_effective();
     (job.sid, job.telemetry)
 }
 
-fn refresh_vte_fallback_if_needed(telem: &mut SessionTelemetry, vte: *mut GtkWidget) {
-    if telem.tailer.snapshot.has_data() || vte.is_null() {
+fn refresh_vte_telemetry(telem: &mut SessionTelemetry, vte: *mut GtkWidget) {
+    if vte.is_null() {
         return;
     }
     let visible = read_vte_visible_text(vte);
-    if let Some(parsed) = parse_vte_status_fallback(&visible) {
-        telem.vte_fallback = parsed;
+    telem.observe_vte_text(&visible);
+}
+
+fn invalidate_panel_override_if_advanced(telem: &mut SessionTelemetry, prev_path: Option<&Path>) {
+    if let Some((_, _, captured_offset)) = telem.vte_panel_override {
+        let switched = prev_path.is_some() && telem.tailer.path.as_deref() != prev_path;
+        if telem.tailer.offset != captured_offset || switched {
+            telem.vte_panel_override = None;
+        }
     }
 }
 
@@ -292,10 +368,12 @@ fn refresh_local_jsonl(
     agent: &str,
     now: Instant,
 ) {
+    let prev_path = telem.tailer.path.clone();
     if telem.should_rediscover(now) {
         telem.last_discovery = Some(now);
         if let Some((path, kind)) = discover_transcript(home, cwd, root_pid, agent) {
             let _ = telem.tailer.poll_file(&path, kind);
+            invalidate_panel_override_if_advanced(telem, prev_path.as_deref());
             return;
         }
     }
@@ -303,21 +381,7 @@ fn refresh_local_jsonl(
         let kind = telem.tailer.kind;
         let _ = telem.tailer.poll_file(&path, kind);
     }
-}
-
-fn metadata_stamp(meta: &fs::Metadata) -> u64 {
-    meta.modified()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map_or(0, |d| d.as_nanos() as u64)
-}
-
-fn trim_trailing_slash(path: &str) -> &str {
-    if path.len() > 1 {
-        path.trim_end_matches('/')
-    } else {
-        path
-    }
+    invalidate_panel_override_if_advanced(telem, prev_path.as_deref());
 }
 
 pub fn encode_claude_cwd(cwd: &str) -> String {
@@ -348,139 +412,6 @@ pub fn discover_transcript(
         return discover_codex_transcript(home, norm_cwd).map(|p| (p, TelemetrySource::Codex));
     }
     discover_agy_by_fd(root_pid, home).map(|p| (p, TelemetrySource::Agy))
-}
-
-fn collect_tree_pids(root_pid: i32) -> Vec<i32> {
-    if root_pid <= 0 {
-        return Vec::new();
-    }
-    let mut visited = Vec::new();
-    let mut queue = vec![root_pid];
-    while let Some(pid) = queue.pop() {
-        if visited.len() < 64 && !visited.contains(&pid) {
-            visited.push(pid);
-            push_child_pids(pid, &mut queue);
-        }
-    }
-    visited
-}
-
-fn push_child_pids(pid: i32, queue: &mut Vec<i32>) {
-    let Ok(tasks) = fs::read_dir(format!("/proc/{pid}/task")) else { return };
-    for task in tasks.flatten() {
-        if let Ok(raw) = fs::read_to_string(task.path().join("children")) {
-            queue.extend(raw.split_whitespace().filter_map(|s| s.parse::<i32>().ok()));
-        }
-    }
-}
-
-pub fn transcript_from_fd_target(target: &Path, brain_root: &Path) -> Option<PathBuf> {
-    let rel = target.strip_prefix(brain_root).ok()?;
-    let id = rel.components().next()?.as_os_str();
-    if id.is_empty() {
-        return None;
-    }
-    let candidate = brain_root.join(id).join(".system_generated/logs/transcript.jsonl");
-    candidate.is_file().then_some(candidate)
-}
-
-fn discover_agy_by_fd(root_pid: i32, home: &Path) -> Option<PathBuf> {
-    let brain_root = home.join(".gemini/antigravity-cli/brain");
-    if !brain_root.is_dir() {
-        return None;
-    }
-    let mut fallback: Option<(u64, PathBuf)> = None;
-    for pid in collect_tree_pids(root_pid) {
-        if let Some(exact) = scan_pid_fds_for_agy(pid, &brain_root, &mut fallback) {
-            return Some(exact);
-        }
-    }
-    fallback.map(|(_, path)| path)
-}
-
-fn scan_pid_fds_for_agy(
-    pid: i32,
-    brain_root: &Path,
-    fallback: &mut Option<(u64, PathBuf)>,
-) -> Option<PathBuf> {
-    let entries = fs::read_dir(format!("/proc/{pid}/fd")).ok()?;
-    for entry in entries.flatten() {
-        let Ok(target) = fs::read_link(entry.path()) else { continue };
-        let Some(transcript) = transcript_from_fd_target(&target, brain_root) else { continue };
-        if target.file_name().is_some_and(|n| n.to_string_lossy().starts_with("transcript")) {
-            return Some(transcript);
-        }
-        let stamp = fs::metadata(&transcript).map_or(0, |m| metadata_stamp(&m));
-        if fallback.as_ref().is_none_or(|(best, _)| stamp > *best) {
-            *fallback = Some((stamp, transcript));
-        }
-    }
-    None
-}
-
-fn is_path_ident_char(ch: char) -> bool {
-    ch.is_alphanumeric() || matches!(ch, '-' | '_' | '.')
-}
-
-pub fn text_mentions_workspace(text: &str, cwd: &str) -> Option<bool> {
-    let clean = trim_trailing_slash(cwd);
-    if clean.is_empty() {
-        return None;
-    }
-    let mut sub = false;
-    for (idx, _) in text.match_indices(clean) {
-        match text[idx + clean.len()..].chars().next() {
-            Some('/') => sub = true,
-            Some(c) if is_path_ident_char(c) => {}
-            _ => return Some(true),
-        }
-    }
-    sub.then_some(false)
-}
-
-fn read_head_string(path: &Path, max_bytes: u64) -> Option<String> {
-    let file = File::open(path).ok()?;
-    let mut buf = Vec::new();
-    file.take(max_bytes).read_to_end(&mut buf).ok()?;
-    Some(String::from_utf8_lossy(&buf).into_owned())
-}
-
-fn collect_agy_candidates(brain_root: &Path) -> Vec<(u64, PathBuf)> {
-    let Ok(entries) = fs::read_dir(brain_root) else { return Vec::new() };
-    let mut list = Vec::new();
-    for entry in entries.flatten() {
-        let candidate = entry.path().join(".system_generated/logs/transcript.jsonl");
-        if let Ok(meta) = fs::metadata(&candidate) {
-            if meta.is_file() {
-                list.push((metadata_stamp(&meta), candidate));
-            }
-        }
-    }
-    list.sort_by(|a, b| b.0.cmp(&a.0));
-    list.truncate(16);
-    list
-}
-
-fn discover_agy_transcript(home: &Path, cwd: &str, root_pid: i32) -> Option<PathBuf> {
-    if let Some(found) = discover_agy_by_fd(root_pid, home) {
-        return Some(found);
-    }
-    let brain_root = home.join(".gemini/antigravity-cli/brain");
-    let canon = fs::canonicalize(cwd).ok().map(|p| p.to_string_lossy().into_owned());
-    let mut sub_match = None;
-    for (_, path) in collect_agy_candidates(&brain_root) {
-        match match_agy_candidate(&path, cwd, canon.as_deref()) {
-            Some(true) => return Some(path),
-            Some(false) if sub_match.is_none() => sub_match = Some(path),
-            _ => {}
-        }
-    }
-    sub_match
-}
-
-fn match_agy_candidate(path: &Path, cwd: &str, canon: Option<&str>) -> Option<bool> {
-    let head = read_head_string(path, AGY_HEAD_BYTES)?;
-    text_mentions_workspace(&head, cwd).or_else(|| canon.and_then(|c| text_mentions_workspace(&head, c)))
 }
 
 fn is_jsonl_file(path: &Path) -> bool {
@@ -782,22 +713,38 @@ pub fn apply_jsonl_line(
     }
 }
 
-fn apply_agy_line(line: &str, snap: &mut TokenSnapshot) {
-    if json_str(line, "type").as_deref() != Some("PLANNER_RESPONSE") {
-        return;
-    }
-    let in_tok = json_u64(line, "input_tokens").unwrap_or(0);
-    let cache_tok = json_u64(line, "cache_read_tokens").unwrap_or(0);
-    let out_tok = json_u64(line, "output_tokens").unwrap_or(0);
+fn accumulate_agy_usage(snap: &mut TokenSnapshot, in_tok: u64, cache_tok: u64, out_tok: u64) -> bool {
     if in_tok.saturating_add(cache_tok).saturating_add(out_tok) == 0 {
-        return;
+        return false;
     }
     snap.source = TelemetrySource::Agy;
     snap.input_tokens = snap.input_tokens.saturating_add(in_tok);
     snap.cache_tokens = snap.cache_tokens.saturating_add(cache_tok);
     snap.output_tokens = snap.output_tokens.saturating_add(out_tok);
-    if in_tok.saturating_add(cache_tok) > 0 {
-        snap.context_tokens = in_tok.saturating_add(cache_tok);
+    true
+}
+
+fn apply_agy_line(line: &str, snap: &mut TokenSnapshot) {
+    let in_tok = json_u64(line, "input_tokens").unwrap_or(0);
+    let cache_tok = json_u64(line, "cache_read_tokens").unwrap_or(0);
+    let out_tok = json_u64(line, "output_tokens").unwrap_or(0);
+    match json_str(line, "type").as_deref() {
+        Some("PLANNER_RESPONSE") => {
+            if accumulate_agy_usage(snap, in_tok, cache_tok, out_tok) {
+                let prompt = in_tok.saturating_add(cache_tok);
+                if prompt > 0 {
+                    snap.context_tokens = prompt.saturating_add(out_tok);
+                }
+            }
+        }
+        Some("CHECKPOINT") => {
+            let _ = accumulate_agy_usage(snap, in_tok, cache_tok, out_tok);
+            if out_tok > 0 {
+                snap.context_tokens = out_tok;
+            }
+            snap.context_pct = None;
+        }
+        _ => {}
     }
 }
 
@@ -946,11 +893,11 @@ fn apply_codex_step(step: CodexUsage, snap: &mut TokenSnapshot) {
     }
 }
 
-fn clean_status_line(line: &str) -> &str {
+pub(crate) fn clean_status_line(line: &str) -> &str {
     line.trim_matches(|c: char| c.is_whitespace() || "│┃┆┊║╭╮╰╯┌┐└┘├┤┬┴┼─━═".contains(c))
 }
 
-fn strip_punct(raw: &str) -> &str {
+pub(crate) fn strip_punct(raw: &str) -> &str {
     raw.trim_matches(|c: char| ",;:()[]".contains(c))
 }
 
@@ -962,7 +909,7 @@ fn split_token_scale(s: &str) -> Option<(&str, f64)> {
     }
 }
 
-fn parse_human_tokens(raw: &str) -> Option<u64> {
+pub(crate) fn parse_human_tokens(raw: &str) -> Option<u64> {
     let s = strip_punct(raw);
     if s.is_empty() || s.ends_with('%') || s.starts_with('$') {
         return None;
@@ -979,7 +926,7 @@ fn parse_human_tokens(raw: &str) -> Option<u64> {
     (val > 0.0).then_some((val * mult).round() as u64)
 }
 
-fn parse_percent_token(raw: &str) -> Option<u8> {
+pub(crate) fn parse_percent_token(raw: &str) -> Option<u8> {
     let body = strip_punct(raw).strip_suffix('%')?;
     let pct = body.parse::<f64>().ok()?;
     (0.0..=100.0).contains(&pct).then_some(pct.round() as u8)
@@ -1072,6 +1019,9 @@ pub fn parse_vte_status_fallback(visible_text: &str) -> Option<TokenSnapshot> {
     bottom.reverse();
     let mut snap = TokenSnapshot { source: TelemetrySource::VteFallback, ..Default::default() };
     for line in bottom {
+        if is_vte_breakdown_line(line) {
+            continue;
+        }
         let words: Vec<&str> = line
             .split(|c: char| c.is_whitespace() || matches!(c, '|' | '·' | '•'))
             .filter(|s| !s.is_empty())
@@ -1084,11 +1034,11 @@ pub fn parse_vte_status_fallback(visible_text: &str) -> Option<TokenSnapshot> {
 }
 
 pub fn format_compact_tokens(tokens: u64) -> String {
-    if tokens >= 1_000_000 {
-        return format_scaled_unit(tokens, 1_000_000, "M");
+    if tokens >= 999_500 {
+        return format_scaled_unit(tokens.max(1_000_000), 1_000_000, "M");
     }
     if tokens >= 10_000 {
-        return format!("{}k", tokens / 1_000);
+        return format!("{}k", tokens.saturating_add(500) / 1_000);
     }
     if tokens >= 1_000 {
         return format_scaled_unit(tokens, 1_000, "k");
@@ -1379,6 +1329,7 @@ fn apply_body_markup(label: *mut GtkWidget, markup: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::telemetry_agy::{text_mentions_workspace, transcript_from_fd_target};
     use std::ffi::{c_char, CStr};
     use std::io::Write;
     use std::process::{Command, Stdio};
@@ -1402,7 +1353,7 @@ mod tests {
         let mut tailer = TranscriptTailer::default();
         assert!(tailer.poll_file(&log, TelemetrySource::Agy).unwrap());
         assert_eq!(tailer.offset, (l1.len() + l2.len()) as u64);
-        assert_eq!(tailer.snapshot.context_tokens, 25_000);
+        assert_eq!(tailer.snapshot.context_tokens, 25_600);
         assert!(!tailer.poll_file(&log, TelemetrySource::Agy).unwrap());
 
         overwrite_prefix_and_append(&log, l1.len() + l2.len() - 1);
@@ -1410,7 +1361,7 @@ mod tests {
         assert_eq!(tailer.snapshot.input_tokens, 14_500);
         assert_eq!(tailer.snapshot.cache_tokens, 94_500);
         assert_eq!(tailer.snapshot.output_tokens, 1_500);
-        assert_eq!(tailer.snapshot.context_tokens, 84_000);
+        assert_eq!(tailer.snapshot.context_tokens, 84_900);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1438,7 +1389,27 @@ mod tests {
         assert!(tailer.poll_file(&log, TelemetrySource::Agy).unwrap());
         assert_eq!(tailer.offset, short.len() as u64);
         assert_eq!(tailer.snapshot.input_tokens, 1_200);
-        assert_eq!(tailer.snapshot.context_tokens, 5_000);
+        assert_eq!(tailer.snapshot.context_tokens, 5_150);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn agy_checkpoint_resets_stale_pre_compaction_context_tokens() {
+        let dir = temp_dir("agy_ckpt");
+        let log = dir.join("transcript.jsonl");
+        let pre = "{\"step_index\":10,\"type\":\"PLANNER_RESPONSE\",\"input_tokens\":38000,\"cache_read_tokens\":218000,\"output_tokens\":2000}\n";
+        let ckpt = "{\"step_index\":11,\"type\":\"CHECKPOINT\",\"input_tokens\":258000,\"cache_read_tokens\":0,\"output_tokens\":4200}\n";
+        fs::write(&log, pre).unwrap();
+        let mut tailer = TranscriptTailer::default();
+        tailer.poll_file(&log, TelemetrySource::Agy).unwrap();
+        tailer.snapshot.context_pct = Some(26);
+        assert_eq!(tailer.snapshot.context_tokens, 258_000);
+
+        fs::write(&log, format!("{pre}{ckpt}")).unwrap();
+        tailer.poll_file(&log, TelemetrySource::Agy).unwrap();
+        assert_eq!(tailer.snapshot.context_tokens, 4_200);
+        assert_eq!(tailer.snapshot.context_pct, None);
+        assert_eq!(tailer.snapshot.output_tokens, 6_200);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1550,6 +1521,12 @@ mod tests {
         assert_eq!(format_working_badge(42), "⏱ 42s");
         assert_eq!(format_working_sidebar_status(72), "В работе · 1m 12s");
         assert_eq!(format_compact_tokens(84_200), "84k");
+        assert_eq!(format_compact_tokens(43_510), "44k");
+        assert_eq!(format_compact_tokens(130_700), "131k");
+        assert_eq!(format_compact_tokens(999_499), "999k");
+        assert_eq!(format_compact_tokens(999_500), "1M");
+        assert_eq!(format_compact_tokens(999_600), "1M");
+        assert_eq!(format_compact_tokens(1_000_000), "1M");
         assert_eq!(format_compact_tokens(4_200), "4.2k");
 
         let view = build_tokens_view(&[sample_high_row()]);
@@ -1649,8 +1626,31 @@ mod tests {
             thread::sleep(Duration::from_millis(35));
             pump_gtk();
             verify_vte_poll_and_menu(vte, menu);
+            verify_vte_context_panel_widget(vte);
             gtk_widget_destroy(win);
         }
+    }
+
+    unsafe fn verify_vte_context_panel_widget(vte: *mut GtkWidget) {
+        let panel = format!("\x1b[2J\x1b[H{}", sample_agy_context_screen().replace('\n', "\r\n"));
+        vte_terminal_feed(vte, panel.as_ptr() as *const c_char, panel.len() as isize);
+        thread::sleep(Duration::from_millis(35));
+        pump_gtk();
+        assert_vte_panel_job_override(vte);
+    }
+
+    fn assert_vte_panel_job_override(vte: *mut GtkWidget) {
+        let mut seeded = SessionTelemetry::default();
+        seeded.tailer.snapshot = TokenSnapshot {
+            source: TelemetrySource::Agy, input_tokens: 9_000, context_tokens: 43_510, ..Default::default()
+        };
+        seeded.tailer.offset = 512;
+        let job = SessionPollJob {
+            sid: 2, root_pid: 0, vte, local_cwd: Some("/nonexistent".to_owned()),
+            has_ssh: false, has_tmux: false, agent: "AGY".to_owned(), is_daemon: false, telemetry: seeded,
+        };
+        let (_, telem) = run_poll_job(job, Path::new("/nonexistent"), Instant::now());
+        assert_eq!((telem.snapshot().context_tokens, telem.snapshot().context_pct), (130_700, Some(13)));
     }
 
     fn create_test_tokens_window() -> (*mut GtkWidget, *mut GtkWidget, TokensMenu) {
@@ -1771,11 +1771,173 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
+    fn write_brain_log(brain_root: &Path, id: &str, body: &str, age_secs: u64) -> PathBuf {
+        let logs = brain_root.join(id).join(".system_generated/logs");
+        fs::create_dir_all(&logs).unwrap();
+        let path = logs.join("transcript.jsonl");
+        fs::write(&path, body).unwrap();
+        let stamp = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_760_000_000 + age_secs);
+        fs::OpenOptions::new().write(true).open(&path).unwrap().set_modified(stamp).unwrap();
+        path
+    }
+
+    fn register_subagent(brain_root: &Path, parent_id: &str, sub_id: &str) {
+        let dir = brain_root.join(parent_id).join(".system_generated/subagents");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(format!("{sub_id}.json")), "{}").unwrap();
+    }
+
+    fn seed_productivity_layout(home: &Path) -> PathBuf {
+        let prod = home.join("Productivity");
+        fs::create_dir_all(prod.join("board")).unwrap();
+        fs::create_dir_all(prod.join("akhterm-rs/.git")).unwrap();
+        fs::create_dir_all(prod.join("akhterm-wt")).unwrap();
+        fs::write(prod.join("akhterm-wt/.git"), "gitdir: /tmp/fake-wt\n").unwrap();
+        prod
+    }
+
+    fn build_large_productivity_transcript() -> String {
+        let pad = "x".repeat(70_000);
+        let head = format!("{{\"step_index\":0,\"type\":\"GENERIC\",\"content\":\"{pad}\"}}\n");
+        let ws = "{\"step_index\":40,\"type\":\"USER_INPUT\",\"content\":\"~/Productivity/board/РЕЕСТР-УЧЕБНЫХ-ССЫЛОК.md\"}\n";
+        let turn = "{\"step_index\":41,\"type\":\"PLANNER_RESPONSE\",\"input_tokens\":10000,\"cache_read_tokens\":120000,\"output_tokens\":700}\n";
+        format!("{head}{ws}{turn}")
+    }
+
+    fn seed_competing_brains(brain: &Path, prod: &Path) {
+        for idx in 0..20 {
+            let body = format!("{{\"type\":\"USER_INPUT\",\"content\":\"/tmp/unrelated-{idx}\"}}\n");
+            write_brain_log(brain, &format!("other-{idx}"), &body, 20 + idx);
+        }
+        let child = format!(
+            "{{\"content\":\"{}/src/main.rs ~/Productivity/akhterm-rs\"}}\n{{\"type\":\"PLANNER_RESPONSE\",\"input_tokens\":3000,\"cache_read_tokens\":40000,\"output_tokens\":510}}\n",
+            prod.join("akhterm-rs").display()
+        );
+        write_brain_log(brain, "akhterm-child", &child, 60);
+        write_brain_log(brain, "akhterm-wt", "{\"content\":\"~/Productivity/akhterm-wt/Cargo.toml\"}\n", 70);
+        write_brain_log(brain, "swarm-sub", "{\"content\":\"~/Productivity/board/РЕЕСТР-УЧЕБНЫХ-ССЫЛОК.md\"}\n", 90);
+        register_subagent(brain, "akhterm-child", "swarm-sub");
+    }
+
+    #[test]
+    fn selects_parent_productivity_over_nested_git_repos_and_subagents() {
+        let base = temp_dir("prod_nested");
+        let home = base.join("home");
+        let prod = seed_productivity_layout(&home);
+        let brain = home.join(".gemini/antigravity-cli/brain");
+        let prod_log = write_brain_log(&brain, "prod-main", &build_large_productivity_transcript(), 10);
+        seed_competing_brains(&brain, &prod);
+
+        let (found, kind) = discover_transcript(&home, &prod.to_string_lossy(), 0, "AGY").unwrap();
+        assert_eq!(found, prod_log);
+        assert_polled_131k(&found, kind);
+
+        fs::remove_file(&prod_log).unwrap();
+        assert!(discover_transcript(&home, &prod.to_string_lossy(), 0, "AGY").is_none());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    fn assert_polled_131k(found: &Path, kind: TelemetrySource) {
+        let mut tailer = TranscriptTailer::default();
+        tailer.poll_file(found, kind).unwrap();
+        assert_eq!(tailer.snapshot.context_tokens, 130_700);
+        assert_eq!(tailer.snapshot.compact_context_badge().as_deref(), Some("ctx 131k"));
+    }
+
+    fn sample_agy_context_screen() -> String {
+        [
+            "Context Usage",
+            "Gemini 4 Carbon (High) · 130.7k/1.0M tokens",
+            "(12.5%)",
+            "System prompt: 12.4k tokens (1.2%)",
+            "System tools: 18.2k tokens (1.7%)",
+            "Skills: 2.1k tokens (0.2%)",
+            "  SKILL.md: 24 tokens",
+            "User messages: 1.4k tokens (0.1%)",
+            "Agent responses: 42.1k tokens (4.0%)",
+            "Tool calls: 54.5k tokens (5.2%)",
+            "System messages: 0 tokens (0.0%)",
+            "Subagents: 0 tokens (0.0%)",
+            "Free space: 700.1k tokens (66.7%)",
+            "Checkpoint buffer: 169.2k tokens (16.1%)",
+            "↑/↓ Scroll · Esc Close",
+        ]
+        .join("\n")
+    }
+
+    fn make_local_agy_job(ws: &Path, telem: SessionTelemetry) -> SessionPollJob {
+        SessionPollJob {
+            sid: 1,
+            root_pid: 0,
+            vte: ptr::null_mut(),
+            local_cwd: Some(ws.to_string_lossy().into_owned()),
+            has_ssh: false,
+            has_tmux: false,
+            agent: "AGY".to_owned(),
+            is_daemon: false,
+            telemetry: telem,
+        }
+    }
+
+    #[test]
+    fn syncs_multiline_context_panel_and_persists_until_jsonl_advances() {
+        let base = temp_dir("ctx_panel");
+        let home = base.join("home");
+        let ws = home.join("Productivity");
+        fs::create_dir_all(&ws).unwrap();
+        let init = "{\"type\":\"USER_INPUT\",\"content\":\"~/Productivity/ДОСКА.md\"}\n{\"type\":\"PLANNER_RESPONSE\",\"input_tokens\":8000,\"cache_read_tokens\":118000,\"output_tokens\":500}\n";
+        let log = write_brain_log(&home.join(".gemini/antigravity-cli/brain"), "s1", init, 10);
+
+        let (_, mut telem) = run_poll_job(make_local_agy_job(&ws, SessionTelemetry::default()), &home, Instant::now());
+        assert_eq!(telem.snapshot().context_tokens, 126_500);
+        assert_panel_capture(&mut telem);
+        assert_panel_close_and_advance(&home, &ws, &log, telem);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    fn assert_panel_capture(telem: &mut SessionTelemetry) {
+        telem.observe_vte_text(&sample_agy_context_screen());
+        assert_eq!(telem.snapshot().context_tokens, 130_700);
+        assert_eq!(telem.snapshot().context_pct, Some(13));
+        assert_eq!(telem.snapshot().compact_context_badge().as_deref(), Some("ctx 131k"));
+        assert_eq!(telem.snapshot().input_tokens, 8_000);
+        assert_eq!(telem.snapshot().source, TelemetrySource::Agy);
+    }
+
+    fn assert_panel_close_and_advance(home: &Path, ws: &Path, log: &Path, mut telem: SessionTelemetry) {
+        telem.observe_vte_text("agy > ready for next prompt\n");
+        let (_, closed) = run_poll_job(make_local_agy_job(ws, telem), home, Instant::now());
+        assert_eq!(closed.snapshot().context_tokens, 130_700);
+        assert_eq!(closed.snapshot().compact_context_badge().as_deref(), Some("ctx 131k"));
+
+        let mut f = fs::OpenOptions::new().append(true).open(log).unwrap();
+        writeln!(f, "{{\"type\":\"PLANNER_RESPONSE\",\"input_tokens\":9000,\"cache_read_tokens\":130000,\"output_tokens\":800}}").unwrap();
+        let (_, advanced) = run_poll_job(make_local_agy_job(ws, closed), home, Instant::now());
+        assert!(advanced.vte_panel_override.is_none());
+        assert_eq!(advanced.snapshot().context_tokens, 139_800);
+    }
+
+    #[test]
+    fn guards_status_fallback_and_panel_against_breakdown_lines() {
+        let screen = sample_agy_context_screen();
+        assert_eq!(parse_vte_context_panel(&screen), Some((130_700, Some(13))));
+        assert!(parse_vte_status_fallback(&screen).is_none());
+
+        let tail_only = "  SKILL.md: 24 tokens\nFree space: 700.1k tokens\nCheckpoint buffer: 169.2k tokens\n↑/↓ Scroll\n";
+        assert!(parse_vte_context_panel(tail_only).is_none());
+        assert!(parse_vte_status_fallback(tail_only).is_none());
+
+        let no_pct = "Model · 85k/200k токенов\nSystem prompt: 8.2k tokens (0.8%)\n";
+        assert_eq!(parse_vte_context_panel(no_pct), Some((85_000, Some(43))));
+    }
+
     #[test]
     fn maintainability_index_stays_above_targets() {
         let (_, _, tel_mi) = crate::mi::compute_file_mi(include_str!("telemetry.rs"));
+        let (_, _, agy_mi) = crate::mi::compute_file_mi(include_str!("telemetry_agy.rs"));
         let (_, _, main_mi) = crate::mi::compute_file_mi(include_str!("main.rs"));
         assert!(tel_mi >= 58.0, "telemetry.rs MI {tel_mi:.2} must be >= 58.0");
+        assert!(agy_mi >= 62.0, "telemetry_agy.rs MI {agy_mi:.2} must be >= 62.0");
         assert!(main_mi >= 54.87, "main.rs MI {main_mi:.2} must be >= 54.87");
     }
 }
