@@ -1,8 +1,12 @@
 [Desktop Entry]
 Type=Application
 Name=AkhTerm
+GenericName=Terminal Emulator
+GenericName[ru]=Терминал
 Comment=Local shells, SSH and remote tmux sessions
 Comment[ru]=Локальные оболочки, SSH и удалённые сессии tmux
+Keywords=terminal;shell;ssh;tmux;wayland;kde;
+Keywords[ru]=терминал;консоль;оболочка;ssh;tmux;wayland;kde;
 Exec=/usr/bin/akhterm
 TryExec=/usr/bin/akhterm
 Icon=org.akhterm.AkhTerm
