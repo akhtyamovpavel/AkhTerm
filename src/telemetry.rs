@@ -21,7 +21,7 @@ use crate::ui_text as text;
 
 pub type ClickHandler = extern "C" fn(*mut GtkWidget, *mut c_void);
 
-pub const VTE_FALLBACK_LINES: usize = 4;
+pub const VTE_FALLBACK_LINES: usize = 8;
 pub const WARN_CONTEXT_TOKENS: u64 = 120_000;
 pub const HIGH_CONTEXT_TOKENS: u64 = 180_000;
 pub const WARN_CONTEXT_PCT: u8 = 75;
@@ -117,14 +117,14 @@ pub struct TranscriptTailer {
 }
 
 impl TranscriptTailer {
-    fn reset_for(&mut self, path: PathBuf, kind: TelemetrySource) {
+    pub fn reset_for(&mut self, path: PathBuf, kind: TelemetrySource) {
         self.path = Some(path);
         self.kind = kind;
         self.mtime_len = (0, 0);
         self.reset_after_truncate();
     }
 
-    fn reset_after_truncate(&mut self) {
+    pub fn reset_after_truncate(&mut self) {
         self.offset = 0;
         self.snapshot = TokenSnapshot { source: self.kind, ..Default::default() };
         self.last_msg_id.clear();
@@ -164,7 +164,7 @@ impl TranscriptTailer {
         Ok(self.offset != start_offset)
     }
 
-    fn consume_line(&mut self, line: &str) {
+    pub fn consume_line(&mut self, line: &str) {
         apply_jsonl_line(
             self.kind,
             line,
@@ -189,6 +189,7 @@ fn read_next_complete_line(reader: &mut BufReader<File>, buf: &mut Vec<u8>) -> i
 #[derive(Clone, Debug, Default)]
 pub struct SessionTelemetry {
     pub tailer: TranscriptTailer,
+    pub remote_tailer: crate::remote_telemetry::RemoteTailer,
     pub vte_fallback: TokenSnapshot,
     pub vte_panel_override: Option<(u64, Option<u8>, u64)>,
     effective: TokenSnapshot,
@@ -199,21 +200,39 @@ impl SessionTelemetry {
     pub fn snapshot(&self) -> &TokenSnapshot {
         if self.vte_panel_override.is_some() {
             &self.effective
-        } else if self.tailer.snapshot.has_data() {
+        } else {
+            self.active_snapshot()
+        }
+    }
+
+    pub fn active_snapshot(&self) -> &TokenSnapshot {
+        if self.tailer.snapshot.has_data() {
             &self.tailer.snapshot
+        } else if self.remote_tailer.snapshot.has_data() {
+            &self.remote_tailer.snapshot
         } else {
             &self.vte_fallback
         }
     }
 
-    pub fn effective_snapshot(&self) -> TokenSnapshot {
-        let mut snap = if self.tailer.snapshot.has_data() {
-            self.tailer.snapshot.clone()
+    pub fn active_jsonl_offset(&self) -> u64 {
+        if self.tailer.path.is_some() || self.tailer.snapshot.has_data() {
+            self.tailer.offset
+        } else if !self.remote_tailer.remote_path.is_empty() || self.remote_tailer.snapshot.has_data() {
+            self.remote_tailer.remote_offset
         } else {
-            self.vte_fallback.clone()
-        };
+            0
+        }
+    }
+
+    pub fn has_jsonl_data(&self) -> bool {
+        self.tailer.snapshot.has_data() || self.remote_tailer.snapshot.has_data()
+    }
+
+    pub fn effective_snapshot(&self) -> TokenSnapshot {
+        let mut snap = self.active_snapshot().clone();
         if let Some((toks, pct, captured_offset)) = self.vte_panel_override {
-            if self.tailer.offset <= captured_offset {
+            if self.active_jsonl_offset() == captured_offset {
                 apply_panel_override(&mut snap, toks, pct);
             }
         }
@@ -234,8 +253,8 @@ impl SessionTelemetry {
     }
 
     fn record_panel_hit(&mut self, toks: u64, pct: Option<u8>) {
-        self.vte_panel_override = Some((toks, pct, self.tailer.offset));
-        if !self.tailer.snapshot.has_data() {
+        self.vte_panel_override = Some((toks, pct, self.active_jsonl_offset()));
+        if !self.has_jsonl_data() {
             self.vte_fallback = TokenSnapshot {
                 source: TelemetrySource::VteFallback,
                 context_tokens: toks,
@@ -246,11 +265,20 @@ impl SessionTelemetry {
     }
 
     fn record_status_fallback(&mut self, visible: &str) {
-        if !self.tailer.snapshot.has_data() {
+        if !self.has_jsonl_data() {
             if let Some(parsed) = parse_vte_status_fallback(visible) {
                 self.vte_fallback = parsed;
                 self.vte_panel_override = None;
             }
+        }
+    }
+
+    pub fn detected_agent_label(&self) -> Option<&'static str> {
+        match self.snapshot().source {
+            TelemetrySource::Agy | TelemetrySource::Claude | TelemetrySource::Codex => {
+                Some(self.snapshot().source.label())
+            }
+            TelemetrySource::None | TelemetrySource::VteFallback => None,
         }
     }
 
@@ -323,15 +351,47 @@ fn reset_local_tailer(telem: &mut SessionTelemetry) {
     }
 }
 
-pub fn run_poll_job(mut job: SessionPollJob, home: &Path, now: Instant) -> (usize, SessionTelemetry) {
+fn reset_remote_tailer(telem: &mut SessionTelemetry) {
+    if !telem.remote_tailer.remote_path.is_empty() || telem.remote_tailer.snapshot.has_data() {
+        telem.remote_tailer = Default::default();
+        telem.vte_panel_override = None;
+    }
+}
+
+fn apply_remote_tailer(telem: &mut SessionTelemetry, rt: crate::remote_telemetry::RemoteTailer) {
+    let prev_path = telem.remote_tailer.remote_path.clone();
+    telem.remote_tailer = rt;
+    if let Some((_, _, captured_offset)) = telem.vte_panel_override {
+        let switched = !prev_path.is_empty() && telem.remote_tailer.remote_path != prev_path;
+        if telem.remote_tailer.remote_offset != captured_offset || switched {
+            telem.vte_panel_override = None;
+        }
+    }
+}
+
+#[cfg(test)]
+pub fn run_poll_job(job: SessionPollJob, home: &Path, now: Instant) -> (usize, SessionTelemetry) {
+    run_poll_job_with_remote(job, None, home, now)
+}
+
+pub fn run_poll_job_with_remote(
+    mut job: SessionPollJob,
+    remote_tailer: Option<crate::remote_telemetry::RemoteTailer>,
+    home: &Path,
+    now: Instant,
+) -> (usize, SessionTelemetry) {
     if job.is_daemon {
         return (job.sid, job.telemetry);
     }
     let local_cwd = (!has_live_ssh(&job)).then_some(job.local_cwd.as_deref()).flatten();
     if let Some(cwd) = local_cwd {
+        reset_remote_tailer(&mut job.telemetry);
         refresh_local_jsonl(&mut job.telemetry, home, cwd, job.root_pid, &job.agent, now);
     } else {
         reset_local_tailer(&mut job.telemetry);
+        if let Some(rt) = remote_tailer {
+            apply_remote_tailer(&mut job.telemetry, rt);
+        }
     }
     if should_poll_vte_fallback(local_cwd, job.has_tmux, &job.agent) {
         refresh_vte_telemetry(&mut job.telemetry, job.vte);
@@ -593,7 +653,7 @@ fn step_delim_scan(
     }
 }
 
-fn is_complete_json_object(line: &str) -> bool {
+pub(crate) fn is_complete_json_object(line: &str) -> bool {
     let trimmed = line.trim();
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
         return false;
@@ -688,13 +748,13 @@ fn json_str(obj: &str, key: &str) -> Option<String> {
     Some(unescape_json_str(inner))
 }
 
-fn json_u64(obj: &str, key: &str) -> Option<u64> {
+pub(crate) fn json_u64(obj: &str, key: &str) -> Option<u64> {
     let val = json_direct_value(obj, key)?;
     let digits: String = val.chars().take_while(char::is_ascii_digit).collect();
     (!digits.is_empty()).then(|| digits.parse::<u64>().ok()).flatten()
 }
 
-fn json_obj<'a>(obj: &'a str, key: &str) -> Option<&'a str> {
+pub(crate) fn json_obj<'a>(obj: &'a str, key: &str) -> Option<&'a str> {
     json_direct_value(obj, key).filter(|v| v.starts_with('{'))
 }
 
@@ -893,12 +953,61 @@ fn apply_codex_step(step: CodexUsage, snap: &mut TokenSnapshot) {
     }
 }
 
+pub fn strip_ansi_escapes(raw: &str) -> String {
+    if !raw.contains('\x1b') {
+        return raw.to_owned();
+    }
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            consume_ansi_seq(&mut chars);
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn consume_ansi_seq(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    match chars.next() {
+        Some('[') => {
+            for c in chars.by_ref() {
+                if ('@'..='~').contains(&c) {
+                    break;
+                }
+            }
+        }
+        Some(']') => consume_osc_seq(chars),
+        Some('(' | ')' | '*' | '+') => {
+            let _ = chars.next();
+        }
+        _ => {}
+    }
+}
+
+fn consume_osc_seq(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    while let Some(c) = chars.next() {
+        if c == '\x07' {
+            break;
+        }
+        if c == '\x1b' && chars.peek() == Some(&'\\') {
+            let _ = chars.next();
+            break;
+        }
+    }
+}
+
 pub(crate) fn clean_status_line(line: &str) -> &str {
     line.trim_matches(|c: char| c.is_whitespace() || "│┃┆┊║╭╮╰╯┌┐└┘├┤┬┴┼─━═".contains(c))
 }
 
 pub(crate) fn strip_punct(raw: &str) -> &str {
     raw.trim_matches(|c: char| ",;:()[]".contains(c))
+}
+
+fn has_token_scale(raw: &str) -> bool {
+    matches!(strip_punct(raw).as_bytes().last(), Some(b'k' | b'K' | b'm' | b'M'))
 }
 
 fn split_token_scale(s: &str) -> Option<(&str, f64)> {
@@ -942,18 +1051,40 @@ fn parse_dollar_token(raw: &str) -> Option<f64> {
     digits_ok.then(|| rest.parse::<f64>().ok()).flatten()
 }
 
+fn apply_ratio_sides(used_s: &str, limit_s: &str, require_scale: bool, snap: &mut TokenSnapshot) {
+    let Some(used) = parse_human_tokens(used_s) else { return };
+    let Some(lim) = parse_human_tokens(limit_s).filter(|l| *l > 0) else { return };
+    if used > lim.saturating_mul(2) {
+        return;
+    }
+    if require_scale && !has_token_scale(used_s) && !has_token_scale(limit_s) && lim < 4_000 {
+        return;
+    }
+    snap.context_tokens = used;
+    snap.context_pct = Some(((used.saturating_mul(100)) / lim).min(100) as u8);
+}
+
 fn apply_token_pair(raw: &str, snap: &mut TokenSnapshot) {
-    if let Some((used_s, limit_s)) = raw.split_once('/') {
-        let Some(used) = parse_human_tokens(used_s) else { return };
-        snap.context_tokens = used;
-        if snap.context_pct.is_none() {
-            if let Some(lim) = parse_human_tokens(limit_s).filter(|l| *l > 0) {
-                snap.context_pct = Some(((used.saturating_mul(100)) / lim).min(100) as u8);
-            }
-        }
+    if let Some((used_s, limit_s)) = strip_punct(raw).split_once('/') {
+        apply_ratio_sides(used_s, limit_s, false, snap);
     } else if let Some(toks) = parse_human_tokens(raw) {
         snap.context_tokens = toks;
     }
+}
+
+fn apply_standalone_ratio(words: &[&str], idx: usize, snap: &mut TokenSnapshot) {
+    let w = strip_punct(words[idx]);
+    if w == "/" {
+        let prev = idx.checked_sub(1).and_then(|i| words.get(i)).copied();
+        if let (Some(lhs), Some(&rhs)) = (prev, words.get(idx + 1)) {
+            apply_ratio_sides(lhs, rhs, true, snap);
+        }
+        return;
+    }
+    let Some((lhs, rhs)) = w.split_once('/') else { return };
+    let used_s = if lhs.is_empty() { idx.checked_sub(1).and_then(|i| words.get(i)).copied().unwrap_or("") } else { lhs };
+    let lim_s = if rhs.is_empty() { words.get(idx + 1).copied().unwrap_or("") } else { rhs };
+    apply_ratio_sides(used_s, lim_s, true, snap);
 }
 
 fn apply_value_token(val: &str, snap: &mut TokenSnapshot) {
@@ -986,6 +1117,7 @@ fn apply_word_at(words: &[&str], idx: usize, snap: &mut TokenSnapshot) {
         snap.cost_usd = Some(cost);
     }
     apply_colon_kv(w, snap);
+    apply_standalone_ratio(words, idx, snap);
     let low = w.trim_matches(|c: char| ",;()[]".contains(c)).to_ascii_lowercase();
     if matches!(low.as_str(), "tokens" | "token" | "tok" | "токенов") && idx > 0 {
         apply_token_pair(words[idx - 1], snap);
@@ -1009,7 +1141,8 @@ fn apply_preceding_pct(words: &[&str], idx: usize, snap: &mut TokenSnapshot) {
 }
 
 pub fn parse_vte_status_fallback(visible_text: &str) -> Option<TokenSnapshot> {
-    let mut bottom: Vec<&str> = visible_text
+    let stripped = strip_ansi_escapes(visible_text);
+    let mut bottom: Vec<&str> = stripped
         .lines()
         .rev()
         .map(clean_status_line)
@@ -1276,6 +1409,11 @@ impl TokensMenu {
         self.popover
     }
 
+    #[cfg(test)]
+    pub fn button_widget(&self) -> *mut GtkWidget {
+        self.button
+    }
+
     pub fn apply(&self, view: &TokensViewData) {
         if self.button.is_null() || self.body_label.is_null() {
             return;
@@ -1495,7 +1633,7 @@ mod tests {
 
     #[test]
     fn parses_vte_status_bar_fallback_patterns() {
-        let screen = "999k tokens · 99% context · $9.99\nl1\nl2\nl3\nl4\n╭──────────────────────╮\n│ sonnet · 142k tokens · 68% context · $0.42 │\n╰──────────────────────╯\n\n";
+        let screen = "999k tokens · 99% context · $9.99\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n╭──────────────────────╮\n│ sonnet · 142k tokens · 68% context · $0.42 │\n╰──────────────────────╯\n\n";
         let snap = parse_vte_status_fallback(screen).unwrap();
         assert_eq!(snap.context_tokens, 142_000);
         assert_eq!(snap.context_pct, Some(68));
@@ -1510,6 +1648,27 @@ mod tests {
         assert_eq!(snap3.context_tokens, 84_000);
         assert_eq!(snap3.cost_usd, Some(1.05));
         assert!(parse_vte_status_fallback("user@host:~/repo$ ls -la\n-rw-r--r-- 1 u u 12400 a.txt\n").is_none());
+    }
+
+    #[test]
+    fn parses_ansi_and_ratio_vte_status_patterns() {
+        let ansi = "\x1b]0;remote-claude\x07\x1b[38;5;244mmodel · 84.5k/200k · $0.42\x1b[0m\n\nl1\nl2\nl3\nl4\nl5\n";
+        let s1 = parse_vte_status_fallback(ansi).unwrap();
+        assert_eq!(s1.context_tokens, 84_500);
+        assert_eq!(s1.context_pct, Some(42));
+        assert_eq!(s1.cost_usd, Some(0.42));
+
+        let spaced = parse_vte_status_fallback("\x1b[1m84k / 200k\x1b[0m\n").unwrap();
+        assert_eq!(spaced.context_tokens, 84_000);
+        assert_eq!(spaced.context_pct, Some(42));
+
+        let named = parse_vte_status_fallback("Context: 64% · ctx: 84.2k\n").unwrap();
+        assert_eq!(named.context_tokens, 84_200);
+        assert_eq!(named.context_pct, Some(64));
+
+        let comma_tok = parse_vte_status_fallback("ctx 84k | 120,450 tok\n").unwrap();
+        assert_eq!(comma_tok.context_tokens, 120_450);
+        assert!(parse_vte_status_fallback("[1/3] Compiling crate v0.4.0\n").is_none());
     }
 
     #[test]
@@ -1927,8 +2086,47 @@ mod tests {
         assert!(parse_vte_context_panel(tail_only).is_none());
         assert!(parse_vte_status_fallback(tail_only).is_none());
 
-        let no_pct = "Model · 85k/200k токенов\nSystem prompt: 8.2k tokens (0.8%)\n";
+        let no_pct = "\x1b[1mModel\x1b[0m · \x1b[36m85k/200k\x1b[0m токенов\nSystem prompt: 8.2k tokens (0.8%)\n";
         assert_eq!(parse_vte_context_panel(no_pct), Some((85_000, Some(43))));
+    }
+
+    fn make_remote_agy_tailer(offset_body: &str) -> crate::remote_telemetry::RemoteTailer {
+        let mut rt = crate::remote_telemetry::RemoteTailer::default();
+        let bytes = offset_body.as_bytes().to_vec();
+        rt.apply_frame(&crate::remote_telemetry::RemoteProbeFrame {
+            sid: 5,
+            mode: crate::remote_telemetry::FrameMode::Full,
+            kind: TelemetrySource::Agy,
+            size: bytes.len() as u64,
+            mtime: 1,
+            path: "/remote/.gemini/antigravity-cli/brain/r1/.system_generated/logs/transcript.jsonl".into(),
+            head: Vec::new(),
+            body: bytes,
+        });
+        rt
+    }
+
+    fn make_remote_agy_job(telem: SessionTelemetry) -> SessionPollJob {
+        SessionPollJob {
+            sid: 5, root_pid: 0, vte: ptr::null_mut(), local_cwd: None,
+            has_ssh: true, has_tmux: true, agent: "AGY".to_owned(), is_daemon: false, telemetry: telem,
+        }
+    }
+
+    #[test]
+    fn honors_vte_context_panel_on_remote_tailer_until_remote_offset_advances() {
+        let b1 = "{\"type\":\"PLANNER_RESPONSE\",\"input_tokens\":8000,\"cache_read_tokens\":118000,\"output_tokens\":500}\n";
+        let rt1 = make_remote_agy_tailer(b1);
+        let (_, mut telem) = run_poll_job_with_remote(make_remote_agy_job(SessionTelemetry::default()), Some(rt1.clone()), Path::new("/tmp"), Instant::now());
+        assert_eq!(telem.snapshot().context_tokens, 126_500);
+        telem.observe_vte_text(&sample_agy_context_screen());
+        assert_eq!((telem.snapshot().context_tokens, telem.detected_agent_label()), (130_700, Some("AGY")));
+
+        let (_, kept) = run_poll_job_with_remote(make_remote_agy_job(telem), Some(rt1), Path::new("/tmp"), Instant::now());
+        assert_eq!(kept.snapshot().context_tokens, 130_700);
+        let b2 = format!("{b1}{{\"type\":\"PLANNER_RESPONSE\",\"input_tokens\":9000,\"cache_read_tokens\":130000,\"output_tokens\":800}}\n");
+        let (_, next) = run_poll_job_with_remote(make_remote_agy_job(kept), Some(make_remote_agy_tailer(&b2)), Path::new("/tmp"), Instant::now());
+        assert_eq!((next.vte_panel_override, next.snapshot().context_tokens), (None, 139_800));
     }
 
     #[test]
@@ -1936,8 +2134,8 @@ mod tests {
         let (_, _, tel_mi) = crate::mi::compute_file_mi(include_str!("telemetry.rs"));
         let (_, _, agy_mi) = crate::mi::compute_file_mi(include_str!("telemetry_agy.rs"));
         let (_, _, main_mi) = crate::mi::compute_file_mi(include_str!("main.rs"));
-        assert!(tel_mi >= 58.0, "telemetry.rs MI {tel_mi:.2} must be >= 58.0");
+        assert!(tel_mi >= 58.5, "telemetry.rs MI {tel_mi:.2} must be >= 58.5");
         assert!(agy_mi >= 62.0, "telemetry_agy.rs MI {agy_mi:.2} must be >= 62.0");
-        assert!(main_mi >= 54.87, "main.rs MI {main_mi:.2} must be >= 54.87");
+        assert!(main_mi >= 55.0, "main.rs MI {main_mi:.2} must be >= 55.0");
     }
 }

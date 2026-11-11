@@ -212,7 +212,7 @@ impl TabView {
             new_icon: self.take_icon_change(session.effective_category()),
             new_tip: self.take_tooltip_change(&tip),
             title: session.title.clone(),
-            agent: session.proc_info.agent.clone(),
+            agent: session.effective_agent(),
             active,
             unread: session.unread,
             needs_approval,

@@ -188,6 +188,7 @@ impl TermSession {
         }
         detect_agent_name(&self.title)
             .or_else(|| detect_agent_name(&self.osc_title))
+            .or_else(|| self.telemetry.detected_agent_label())
             .unwrap_or("")
             .to_owned()
     }
