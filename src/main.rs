@@ -22,6 +22,7 @@ mod tab_order;
 mod tab_strip;
 mod tabs;
 mod telemetry;
+mod telemetry_agy;
 mod theme;
 mod theme_mode;
 mod ui_font;
@@ -3834,9 +3835,12 @@ mod tests {
                     | "ssh_detect.rs"
                     | "tab_order.rs"
                     | "telemetry.rs"
+                    | "telemetry_agy.rs"
                     | "theme_mode.rs"
             );
-            if is_new_v04 {
+            if name == "telemetry_agy.rs" {
+                assert!(*score >= 62.0, "telemetry_agy.rs MI {score:.2} < 62.0");
+            } else if is_new_v04 {
                 assert!(*score >= 58.0, "{name} MI {score:.2} < 58.0");
             }
         }
