@@ -13,6 +13,21 @@ pub fn is_multimodal_tui_agent(agent: &str) -> bool {
     matches!(agent, "AGY" | "Claude" | "Codex")
 }
 
+pub fn resolve_pane_agent(
+    detected: Option<&str>,
+    is_primary_pane: bool,
+    session_agent: &str,
+) -> String {
+    if let Some(agent) = detected.filter(|a| !a.is_empty()) {
+        return agent.to_owned();
+    }
+    if is_primary_pane {
+        session_agent.to_owned()
+    } else {
+        String::new()
+    }
+}
+
 pub fn choose_paste_route(plain_ctrl_v: bool, remote_host: &str, agent: &str) -> PasteRoute {
     if plain_ctrl_v && remote_host.is_empty() && is_multimodal_tui_agent(agent) {
         PasteRoute::PassThroughToPty
@@ -69,6 +84,13 @@ mod tests {
                 PasteRoute::InterceptClipboardImage
             );
         }
+    }
+
+    #[test]
+    fn resolves_split_pane_agent_with_primary_fallback_only() {
+        assert_eq!(resolve_pane_agent(Some("AGY"), false, "Claude"), "AGY");
+        assert_eq!(resolve_pane_agent(None, true, "Claude"), "Claude");
+        assert_eq!(resolve_pane_agent(None, false, "Claude"), "");
     }
 
     #[test]

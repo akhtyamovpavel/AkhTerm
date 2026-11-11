@@ -8,6 +8,7 @@ pub type GtkWindow = c_void;
 pub type GtkContainer = c_void;
 pub type GtkBox = c_void;
 pub type GtkStack = c_void;
+pub type GtkPaned = c_void;
 pub type GtkButton = c_void;
 pub type GtkLabel = c_void;
 pub type GtkAdjustment = c_void;
@@ -84,6 +85,7 @@ extern "C" {
         error: *mut *mut c_void,
     ) -> *mut c_char;
     pub fn g_object_set(object: *mut c_void, first_property_name: *const c_char, ...);
+    pub fn g_object_ref(object: *mut c_void) -> *mut c_void;
     pub fn g_object_unref(object: *mut c_void);
     pub fn g_timeout_add(interval: c_uint, function: extern "C" fn(*mut c_void) -> c_int, data: *mut c_void) -> c_uint;
     pub fn g_idle_add(function: extern "C" fn(*mut c_void) -> c_int, data: *mut c_void) -> c_uint;
@@ -177,6 +179,14 @@ extern "C" {
     pub fn gtk_stack_add_named(stack: *mut GtkStack, child: *mut GtkWidget, name: *const c_char);
     pub fn gtk_stack_set_visible_child_name(stack: *mut GtkStack, name: *const c_char);
 
+    pub fn gtk_paned_new(orientation: c_int) -> *mut GtkWidget;
+    pub fn gtk_paned_pack1(paned: *mut GtkPaned, child: *mut GtkWidget, resize: c_int, shrink: c_int);
+    pub fn gtk_paned_pack2(paned: *mut GtkPaned, child: *mut GtkWidget, resize: c_int, shrink: c_int);
+    pub fn gtk_paned_get_child1(paned: *mut GtkPaned) -> *mut GtkWidget;
+    pub fn gtk_paned_get_child2(paned: *mut GtkPaned) -> *mut GtkWidget;
+    pub fn gtk_paned_set_position(paned: *mut GtkPaned, position: c_int);
+    pub fn gtk_paned_set_wide_handle(paned: *mut GtkPaned, wide: c_int);
+
     pub fn gtk_button_new() -> *mut GtkWidget;
     pub fn gtk_button_new_with_label(label: *const c_char) -> *mut GtkWidget;
     pub fn gtk_button_set_label(button: *mut GtkButton, label: *const c_char);
@@ -214,6 +224,9 @@ extern "C" {
     pub fn gtk_widget_set_valign(widget: *mut GtkWidget, align: c_int);
     pub fn gtk_widget_get_allocated_width(widget: *mut GtkWidget) -> c_int;
     pub fn gtk_widget_get_allocated_height(widget: *mut GtkWidget) -> c_int;
+    pub fn gtk_widget_get_parent(widget: *mut GtkWidget) -> *mut GtkWidget;
+    pub fn gtk_widget_is_focus(widget: *mut GtkWidget) -> c_int;
+    pub fn gtk_widget_has_focus(widget: *mut GtkWidget) -> c_int;
     pub fn gtk_widget_translate_coordinates(
         source: *mut GtkWidget,
         destination: *mut GtkWidget,

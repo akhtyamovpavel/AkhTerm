@@ -1,13 +1,15 @@
 //! VTE-2.91 terminal widget creation, clickable link matching, and session metadata.
 
+use std::cell::Cell;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::ptr;
 use std::time::Instant;
 
 use crate::ffi::*;
 use crate::paths::expand_home;
-use crate::proc_radar::{foreground_cwd, open_external_link, ProcInfo};
+use crate::proc_radar::{foreground_cwd, open_external_link, resolve_link_target, ProcInfo};
 use crate::sidebar::SidebarRow;
+use crate::split_pane::TabPanes;
 use crate::tab_strip::TabView;
 use crate::tabs::{RemoteConnection, Tab};
 use crate::theme::{TERM_BG, TERM_CURSOR, TERM_FG, TERM_PALETTE};
@@ -54,6 +56,7 @@ pub struct TermSession {
     pub category: SessionCategory,
     pub vte: *mut GtkWidget,
     pub scroll_wrap: *mut GtkWidget,
+    pub panes: TabPanes,
     pub sidebar_row: SidebarRow,
     pub top_tab: TabView,
     pub child_pid: i32,
@@ -76,6 +79,31 @@ impl TermSession {
         }
     }
 
+    pub fn active_vte(&self) -> *mut GtkWidget {
+        self.panes.active_vte(self.vte)
+    }
+
+    pub fn active_pid(&self) -> i32 {
+        self.panes.active_pid(self.vte, self.child_pid)
+    }
+
+    pub fn has_vte(&self, vte: *mut GtkWidget) -> bool {
+        self.vte == vte || self.panes.contains_vte(vte)
+    }
+
+    pub fn active_local_cwd(&self) -> Option<String> {
+        if self.remote().is_some() {
+            return None;
+        }
+        let fallback = if !self.proc_info.cwd.is_empty() && self.active_vte() == self.vte {
+            expand_home(&self.proc_info.cwd)
+        } else {
+            self.cwd.clone()
+        };
+        let cwd = self.panes.active_cwd(self.vte, self.child_pid, &fallback);
+        (!cwd.is_empty()).then_some(cwd)
+    }
+
     pub fn snapshot_tab(&mut self) -> Tab {
         if let Tab::Local { cwd, .. } = &mut self.tab {
             if let Some(current) = foreground_cwd(self.child_pid) {
@@ -93,98 +121,129 @@ const URL_PATTERNS: &[&str] = &[
     r"https?://[^\s\x22'<>()`│┃┆┊║]+",
     r"file://[^\s\x22'<>()`│┃┆┊║]+",
     r"\b(localhost|127\.0\.0\.1|0\.0\.0\.0):[0-9]{2,5}(/[^\s\x22'<>()`│┃┆┊║]*)?",
-    r"(~|/home/[a-zA-Z0-9_.-]+)/[^\s\x22'<>():`│┃┆┊║]+",
+    r"(~|/home/[a-zA-Z0-9_.-]+)/[^\s\x22'<>():`│┃┆┊║]+(?::[0-9]+){0,2}",
+    r"(?<![^\s\x22'<>(\[{=`│┃┆┊║])(?:(?:[^\s\x22'<>():`│┃┆┊║/\[\]{};,]+/)+[^\s\x22'<>():`│┃┆┊║/\[\]{};,]+\.[a-zA-Z][a-zA-Z0-9]{0,9}(?::[0-9]+){0,2}|(?:[^\s\x22'<>():`│┃┆┊║/\[\]{};,]*[^\s\x22'<>():`│┃┆┊║/\[\]{};,.])\.[a-zA-Z][a-zA-Z0-9]{0,9}:[0-9]+(?::[0-9]+)?)",
 ];
+
+pub enum LinkCwd {
+    Unmanaged,
+    Remote,
+    Local(String),
+}
+
+struct VteLinkCtx {
+    pid: i32,
+    fallback_cwd: String,
+}
+
+thread_local! {
+    static LINK_CWD_FN: Cell<Option<fn(*mut GtkWidget) -> LinkCwd>> = const { Cell::new(None) };
+}
+
+pub fn register_link_cwd_lookup(lookup: fn(*mut GtkWidget) -> LinkCwd) {
+    LINK_CWD_FN.with(|slot| slot.set(Some(lookup)));
+}
+
+extern "C" fn drop_vte_link_ctx(data: *mut c_void, _closure: *mut c_void) {
+    if !data.is_null() {
+        unsafe { drop(Box::from_raw(data.cast::<VteLinkCtx>())) };
+    }
+}
+
+fn resolve_vte_cwd(vte: *mut GtkWidget, user_data: *mut c_void) -> Option<String> {
+    if let Some(lookup) = LINK_CWD_FN.with(Cell::get) {
+        match lookup(vte) {
+            LinkCwd::Local(dir) => return Some(dir),
+            LinkCwd::Remote => return None,
+            LinkCwd::Unmanaged => {}
+        }
+    }
+    if user_data.is_null() {
+        return None;
+    }
+    let ctx = unsafe { &*user_data.cast::<VteLinkCtx>() };
+    foreground_cwd(ctx.pid)
+        .or_else(|| (!ctx.fallback_cwd.is_empty()).then(|| ctx.fallback_cwd.clone()))
+}
+
+fn take_c_string(ptr: *mut c_char) -> Option<String> {
+    if ptr.is_null() {
+        return None;
+    }
+    let text = unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() };
+    unsafe { g_free(ptr as *mut c_void) };
+    Some(text)
+}
 
 extern "C" fn on_vte_button_press(
     vte: *mut GtkWidget,
     event: *const GdkEvent,
-    _user_data: *mut c_void,
+    user_data: *mut c_void,
 ) -> c_int {
     unsafe {
-        if gdk_event_get_event_type(event) != GDK_BUTTON_PRESS {
-            return 0;
-        }
         let mut button: u32 = 0;
-        if gdk_event_get_button(event, &mut button) == 0 || button != 1 {
+        if gdk_event_get_event_type(event) != GDK_BUTTON_PRESS
+            || gdk_event_get_button(event, &mut button) == 0
+            || button != 1
+        {
             return 0;
         }
-
-        let hlink = vte_terminal_hyperlink_check_event(vte, event);
-        if !hlink.is_null() {
-            let s = CStr::from_ptr(hlink).to_string_lossy().into_owned();
-            g_free(hlink as *mut c_void);
-            open_external_link(&s);
-            return 1;
+        let cwd = resolve_vte_cwd(vte, user_data);
+        if let Some(hlink) = take_c_string(vte_terminal_hyperlink_check_event(vte, event)) {
+            if let Some(target) = resolve_link_target(&hlink, cwd.as_deref()) {
+                open_external_link(&target);
+                return 1;
+            }
         }
-
         let mut tag: c_int = -1;
-        let matched = vte_terminal_match_check_event(vte, event, &mut tag);
-        if !matched.is_null() {
-            let s = CStr::from_ptr(matched).to_string_lossy().into_owned();
-            g_free(matched as *mut c_void);
-            open_external_link(&s);
-            return 1;
+        if let Some(matched) = take_c_string(vte_terminal_match_check_event(vte, event, &mut tag)) {
+            if let Some(target) = resolve_link_target(&matched, cwd.as_deref()) {
+                open_external_link(&target);
+                return 1;
+            }
         }
     }
     0
 }
 
-pub fn create_vte_widget(cwd: &str, argv_strs: &[&str]) -> (*mut GtkWidget, i32) {
+fn apply_vte_style(vte: *mut GtkWidget) {
     unsafe {
-        let vte = vte_terminal_new();
         vte_terminal_set_scrollback_lines(vte, 15_000);
         vte_terminal_set_allow_hyperlink(vte, 1);
         vte_terminal_set_colors(vte, &TERM_FG, &TERM_BG, TERM_PALETTE.as_ptr(), 16);
         vte_terminal_set_color_cursor(vte, &TERM_CURSOR);
-
-        if let Ok(fstr) = CString::new("DejaVu Sans Mono 10.5") {
-            let desc = pango_font_description_from_string(fstr.as_ptr());
-            if !desc.is_null() {
-                vte_terminal_set_font(vte, desc);
-                pango_font_description_free(desc);
-            }
+        let desc = pango_font_description_from_string(c"DejaVu Sans Mono 10.5".as_ptr());
+        if !desc.is_null() {
+            vte_terminal_set_font(vte, desc);
+            pango_font_description_free(desc);
         }
+    }
+}
 
-        let pointer_c = CString::new("pointer").unwrap();
+fn register_vte_url_matches(vte: *mut GtkWidget) {
+    unsafe {
         for pat in URL_PATTERNS {
-            if let Ok(pat_c) = CString::new(*pat) {
-                let vreg = vte_regex_new_for_match(
-                    pat_c.as_ptr(),
-                    -1,
-                    PCRE2_MULTILINE_UTF,
-                    ptr::null_mut(),
-                );
-                if !vreg.is_null() {
-                    let tag = vte_terminal_match_add_regex(vte, vreg, 0);
-                    if tag >= 0 {
-                        vte_terminal_match_set_cursor_name(vte, tag, pointer_c.as_ptr());
-                    }
-                    vte_regex_unref(vreg);
+            let Ok(pat_c) = CString::new(*pat) else { continue };
+            let vreg = vte_regex_new_for_match(pat_c.as_ptr(), -1, PCRE2_MULTILINE_UTF, ptr::null_mut());
+            if !vreg.is_null() {
+                let tag = vte_terminal_match_add_regex(vte, vreg, 0);
+                if tag >= 0 {
+                    vte_terminal_match_set_cursor_name(vte, tag, c"pointer".as_ptr());
                 }
+                vte_regex_unref(vreg);
             }
         }
+    }
+}
 
-        let sig_btn = CString::new("button-press-event").unwrap();
-        g_signal_connect_data(
-            vte,
-            sig_btn.as_ptr(),
-            on_vte_button_press as *const c_void,
-            ptr::null_mut(),
-            ptr::null(),
-            0,
-        );
-
-        let c_cwd = CString::new(cwd).unwrap_or_else(|_| CString::new("/tmp").unwrap());
-        let c_args: Vec<CString> = argv_strs
-            .iter()
-            .filter_map(|s| CString::new(*s).ok())
-            .collect();
-        let mut ptrs: Vec<*const c_char> = c_args.iter().map(|s| s.as_ptr()).collect();
-        ptrs.push(ptr::null());
-
-        let mut pid: i32 = 0;
-        let spawned = vte_terminal_spawn_sync(
+fn spawn_vte_command(vte: *mut GtkWidget, cwd: &str, argv_strs: &[&str]) -> i32 {
+    let c_cwd = CString::new(cwd).unwrap_or_else(|_| CString::new("/tmp").unwrap());
+    let c_args: Vec<CString> = argv_strs.iter().filter_map(|s| CString::new(*s).ok()).collect();
+    let mut ptrs: Vec<*const c_char> = c_args.iter().map(|s| s.as_ptr()).collect();
+    ptrs.push(ptr::null());
+    let mut pid: i32 = 0;
+    let spawned = unsafe {
+        vte_terminal_spawn_sync(
             vte,
             0,
             c_cwd.as_ptr(),
@@ -196,11 +255,29 @@ pub fn create_vte_widget(cwd: &str, argv_strs: &[&str]) -> (*mut GtkWidget, i32)
             &mut pid,
             ptr::null_mut(),
             ptr::null_mut(),
-        );
-        if spawned == 0 {
-            pid = 0;
-        }
+        )
+    };
+    if spawned == 0 { 0 } else { pid }
+}
 
+pub fn create_vte_widget(cwd: &str, argv_strs: &[&str]) -> (*mut GtkWidget, i32) {
+    unsafe {
+        let vte = vte_terminal_new();
+        apply_vte_style(vte);
+        register_vte_url_matches(vte);
+        let pid = spawn_vte_command(vte, cwd, argv_strs);
+        let ctx = Box::into_raw(Box::new(VteLinkCtx {
+            pid,
+            fallback_cwd: expand_home(cwd),
+        }));
+        g_signal_connect_data(
+            vte,
+            c"button-press-event".as_ptr(),
+            on_vte_button_press as *const c_void,
+            ctx.cast(),
+            drop_vte_link_ctx as *const c_void,
+            0,
+        );
         (vte, pid)
     }
 }
@@ -354,5 +431,44 @@ mod tests {
             format_project_title(base, prof, "/home/user/Productivity/", "", ""),
             "Productivity · Новая"
         );
+    }
+
+    #[test]
+    fn all_vte_url_patterns_compile_with_pcre2_multiline_utf() {
+        extern "C" {
+            fn vte_regex_substitute(
+                regex: *mut VteRegex,
+                subject: *const c_char,
+                replacement: *const c_char,
+                flags: u32,
+                error: *mut *mut c_void,
+            ) -> *mut c_char;
+        }
+        for pat in URL_PATTERNS {
+            let pat_c = CString::new(*pat).unwrap();
+            let vreg = unsafe {
+                vte_regex_new_for_match(pat_c.as_ptr(), -1, PCRE2_MULTILINE_UTF, ptr::null_mut())
+            };
+            assert!(!vreg.is_null(), "failed to compile VTE regex: {pat}");
+            unsafe { vte_regex_unref(vreg) };
+        }
+        let rel_pat = CString::new(*URL_PATTERNS.last().unwrap()).unwrap();
+        let vreg = unsafe {
+            vte_regex_new_for_match(rel_pat.as_ptr(), -1, PCRE2_MULTILINE_UTF, ptr::null_mut())
+        };
+        for (line, expected) in [
+            ("  --> src/session.rs:241:5", "  --> <src/session.rs:241:5>"),
+            ("at (./app/main.py:42:5)", "at (<./app/main.py:42:5>)"),
+            ("see crates/core/lib.rs now", "see <crates/core/lib.rs> now"),
+            ("ошибка в учёба/модуль.py:18:3!", "ошибка в <учёба/модуль.py:18:3>!"),
+            ("version v0.2.1 on 127.0.0.1", "version v0.2.1 on 127.0.0.1"),
+        ] {
+            let subj = CString::new(line).unwrap();
+            let out = unsafe {
+                take_c_string(vte_regex_substitute(vreg, subj.as_ptr(), c"<$0>".as_ptr(), 0, ptr::null_mut()))
+            };
+            assert_eq!(out.as_deref(), Some(expected));
+        }
+        unsafe { vte_regex_unref(vreg) };
     }
 }

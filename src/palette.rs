@@ -157,6 +157,8 @@ fn session_cwd(s: &TermSession) -> &str {
 fn session_location_label(s: &TermSession) -> String {
     if let Some((sess, win, _, path)) = &s.remote_tmux {
         format!("tmux:{sess}/{win} · {}", shorten_home(path))
+    } else if let Some(cwd) = s.active_local_cwd() {
+        shorten_home(&cwd)
     } else {
         shorten_home(session_cwd(s))
     }
@@ -182,9 +184,10 @@ fn push_session_items(sessions: &[TermSession], out: &mut Vec<PaletteItem>) {
     for (idx, s) in sessions.iter().enumerate() {
         let detail = format_session_detail(idx, s);
         let host = session_host(s);
+        let live_cwd = s.active_local_cwd().unwrap_or_default();
         let kw = format!(
-            "вкладка открытая tab open {} {} {} {}",
-            s.cwd, s.proc_info.cwd, host, s.proc_info.agent
+            "вкладка открытая tab open {} {} {} {} {}",
+            s.cwd, s.proc_info.cwd, live_cwd, host, s.proc_info.agent
         );
         let act = PaletteAction::SelectTab(s.id);
         out.push(new_item(PaletteKind::Tab, s.title.clone(), detail, kw, act));

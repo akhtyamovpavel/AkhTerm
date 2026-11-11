@@ -226,3 +226,13 @@ scrollbar slider:hover {
     color: #c4b5fd;
     font-size: 0.9em;
 }
+
+paned > separator {
+    background-color: @border;
+    min-width: 2px;
+    min-height: 2px;
+}
+
+paned > separator:hover {
+    background-color: @focus;
+}
