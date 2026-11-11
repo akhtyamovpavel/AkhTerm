@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 //! Minimal, safe-wrapped C FFI bindings for GTK3, GDK3, GLib, Pango, and VTE-2.91.
 
-use std::ffi::{c_char, c_int, c_uint, c_void, CString};
+use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
 
 pub type GtkWidget = c_void;
 pub type GtkWindow = c_void;
@@ -165,6 +165,7 @@ extern "C" {
     pub fn gtk_box_new(orientation: c_int, spacing: c_int) -> *mut GtkWidget;
     pub fn gtk_box_pack_start(box_: *mut GtkBox, child: *mut GtkWidget, expand: c_int, fill: c_int, padding: c_uint);
     pub fn gtk_box_pack_end(box_: *mut GtkBox, child: *mut GtkWidget, expand: c_int, fill: c_int, padding: c_uint);
+    pub fn gtk_box_reorder_child(box_: *mut GtkBox, child: *mut GtkWidget, position: c_int);
 
     pub fn gtk_scrolled_window_new(hadj: *mut c_void, vadj: *mut c_void) -> *mut GtkWidget;
     pub fn gtk_scrolled_window_set_policy(sw: *mut GtkWidget, hpol: c_int, vpol: c_int);
@@ -199,6 +200,7 @@ extern "C" {
     pub fn gtk_button_get_label(button: *mut GtkButton) -> *const c_char;
     pub fn gtk_button_set_label(button: *mut GtkButton, label: *const c_char);
     pub fn gtk_image_new_from_icon_name(icon_name: *const c_char, size: c_int) -> *mut GtkWidget;
+    pub fn gtk_image_set_from_icon_name(image: *mut GtkWidget, icon_name: *const c_char, size: c_int);
     pub fn gtk_expander_new(label: *const c_char) -> *mut GtkWidget;
     pub fn gtk_expander_set_expanded(expander: *mut GtkWidget, expanded: c_int);
     pub fn gtk_expander_set_label_widget(expander: *mut GtkWidget, label: *mut GtkWidget);
@@ -389,5 +391,11 @@ pub fn set_label_text(widget: *mut GtkWidget, text: &str) {
 pub fn set_tooltip(widget: *mut GtkWidget, text: &str) {
     if let Ok(text) = CString::new(text) {
         unsafe { gtk_widget_set_tooltip_text(widget, text.as_ptr()) };
+    }
+}
+
+pub fn set_image_icon(image: *mut GtkWidget, icon: &CStr) {
+    if !image.is_null() {
+        unsafe { gtk_image_set_from_icon_name(image, icon.as_ptr(), GTK_ICON_SIZE_MENU) };
     }
 }

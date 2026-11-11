@@ -10,6 +10,7 @@ use std::thread;
 
 use crate::ffi::*;
 use crate::paths::{expand_home, home_dir, shorten_home, state_dir, write_state_file};
+use crate::ssh_detect::{detect_active_ssh, exe_basename, ProcEntry};
 use crate::tabs::{is_ssh_host, Tab};
 
 #[derive(Clone, Debug, Default)]
@@ -181,33 +182,38 @@ fn read_proc_cmdline(pid: i32) -> Option<Vec<String>> {
     (!parts.is_empty()).then_some(parts)
 }
 
-fn push_proc_children(pid: i32, queue: &mut Vec<i32>) {
-    let Ok(tasks) = fs::read_dir(format!("/proc/{pid}/task")) else {
-        return;
-    };
+fn push_proc_children(pid: i32, queue: &mut Vec<(i32, i32)>) {
+    let Ok(tasks) = fs::read_dir(format!("/proc/{pid}/task")) else { return };
     for task in tasks.flatten() {
         if let Ok(ch_str) = fs::read_to_string(task.path().join("children")) {
-            queue.extend(ch_str.split_whitespace().filter_map(|t| t.parse::<i32>().ok()));
+            queue.extend(ch_str.split_whitespace().filter_map(|t| t.parse::<i32>().ok().map(|c| (c, pid))));
         }
     }
 }
 
-fn collect_proc_tree(root_pid: i32) -> (HashSet<i32>, Vec<Vec<String>>) {
+fn read_proc_entry(pid: i32, ppid: i32) -> Option<ProcEntry> {
+    if pid <= 0 {
+        return None;
+    }
+    let argv = read_proc_cmdline(pid)?;
+    let pgrp = read_proc_groups(pid).map_or(0, |(pg, _)| pg);
+    Some(ProcEntry { pid, ppid, pgrp, argv })
+}
+
+fn collect_proc_tree(root_pid: i32) -> (HashSet<i32>, Vec<ProcEntry>) {
     let mut visited = HashSet::new();
-    let mut queue = vec![root_pid];
-    let mut cmds = Vec::new();
-    while let Some(pid) = queue.pop() {
+    let mut queue = vec![(root_pid, 0)];
+    let mut procs = Vec::new();
+    while let Some((pid, ppid)) = queue.pop() {
         if !visited.insert(pid) {
             continue;
         }
-        if pid != root_pid {
-            if let Some(parts) = read_proc_cmdline(pid) {
-                cmds.push(parts);
-            }
+        if let Some(entry) = read_proc_entry(pid, ppid) {
+            procs.push(entry);
         }
         push_proc_children(pid, &mut queue);
     }
-    (visited, cmds)
+    (visited, procs)
 }
 
 fn fallback_group_cwd(root_pid: i32, tpgid: i32, tree: Option<&HashSet<i32>>) -> Option<String> {
@@ -267,16 +273,8 @@ fn detect_proc_agent(exe: &str, low: &str) -> Option<&'static str> {
 
 fn apply_proc_cmd(info: &mut ProcInfo, parts: &[String]) {
     let low = parts.join(" ").to_lowercase();
-    let exe = Path::new(&parts[0])
-        .file_name()
-        .map(|s| s.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    if exe == "ssh" {
-        if let Some(tok) = parts[1..].iter().find(|t| !t.starts_with('-') && !t.contains(' ')) {
-            info.ssh_host.clone_from(tok);
-        }
-    }
-    if exe == "tmux" || low.contains("tmux ") {
+    let exe = exe_basename(&parts[0]);
+    if exe != "ssh" && (exe == "tmux" || low.contains("tmux ")) {
         info.has_tmux = "tmux".to_string();
     }
     if let Some(agent) = detect_proc_agent(&exe, &low) {
@@ -292,12 +290,16 @@ pub fn inspect_proc_tree(root_pid: i32) -> ProcInfo {
     if root_pid <= 0 {
         return info;
     }
-    let (visited, cmds) = collect_proc_tree(root_pid);
+    let (visited, procs) = collect_proc_tree(root_pid);
     if let Some(cwd) = resolve_foreground_cwd(root_pid, Some(&visited)) {
         info.cwd = shorten_home(&cwd);
     }
-    for parts in &cmds {
-        apply_proc_cmd(&mut info, parts);
+    let tpgid = read_proc_groups(root_pid).map_or(0, |(_, tp)| tp);
+    info.ssh_host = detect_active_ssh(root_pid, tpgid, &procs).unwrap_or_default();
+    for entry in &procs {
+        if entry.pid != root_pid {
+            apply_proc_cmd(&mut info, &entry.argv);
+        }
     }
     info
 }
