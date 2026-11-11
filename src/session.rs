@@ -29,11 +29,18 @@ impl SessionCategory {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkState {
     Idle,
     Working,
     Ready,
+    NeedsApproval,
+}
+
+impl WorkState {
+    pub fn needs_approval(self) -> bool {
+        matches!(self, Self::NeedsApproval)
+    }
 }
 
 pub struct TermSession {
@@ -53,6 +60,8 @@ pub struct TermSession {
     pub state: WorkState,
     pub unread: bool,
     pub last_output: Instant,
+    pub work_started: Instant,
+    pub last_notified: Option<Instant>,
     pub proc_info: ProcInfo,
     pub tab: Tab,
     pub remote_tmux: Option<(String, String, String, String)>,

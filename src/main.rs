@@ -1,3 +1,4 @@
+mod approval;
 mod config;
 mod ffi;
 mod mi;
@@ -22,6 +23,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
+use approval::{
+    find_next_session_attention, is_jump_attention_shortcut, settle_working_session,
+    sync_window_focus_urgency,
+};
 use config::WorkspaceConfig;
 use ffi::*;
 use mi::{analyze_project_mi, ProjectMiReport};
@@ -238,9 +243,11 @@ extern "C" fn on_vte_contents_changed(vte: *mut GtkWidget, user_data: *mut c_voi
             let active = app.active_id;
             let session = app.sessions.iter_mut().find(|s| s.id == sid && s.vte == vte);
             if let Some(s) = session.filter(|s| s.child_pid > 0) {
-                s.last_output = Instant::now();
+                let now = Instant::now();
+                s.last_output = now;
                 if s.category != SessionCategory::Daemon && s.state != WorkState::Working {
                     s.state = WorkState::Working;
+                    s.work_started = now;
                 }
                 if sid == active {
                     s.unread = false;
@@ -557,6 +564,8 @@ fn add_tab(
                     state: WorkState::Idle,
                     unread: false,
                     last_output: Instant::now(),
+                    work_started: Instant::now(),
+                    last_notified: None,
                     proc_info: inspect_proc_tree(pid),
                     tab,
                     remote_tmux: None,
@@ -663,7 +672,7 @@ pub fn refresh_ui() {
                 .map(|r| (r.avg_mi, r.grade));
 
             s.sidebar_row.update(idx, s, mi_badge, is_act);
-            s.top_tab.update(&s.title, &s.proc_info.agent, is_act, s.unread);
+            s.top_tab.update(&s.title, &s.proc_info.agent, is_act, s.unread, s.state.needs_approval());
         }
         filter_sidebar(app);
         unsafe { gtk_widget_set_sensitive(app.reconnect_btn, i32::from(can_reconnect)) };
@@ -736,20 +745,10 @@ extern "C" fn on_radar_tick(_data: *mut c_void) -> c_int {
             }
             let now = Instant::now();
             let active = app.active_id;
+            let win_active = sync_window_focus_urgency(app.win);
             for s in &mut app.sessions {
                 sync_session_proc(s, Some(&box_snap));
-                if s.category != SessionCategory::Daemon
-                    && s.state == WorkState::Working
-                    && now.duration_since(s.last_output).as_millis() > 2200
-                {
-                    if s.id != active {
-                        s.state = WorkState::Ready;
-                        s.unread = true;
-                    } else {
-                        s.state = WorkState::Idle;
-                        s.unread = false;
-                    }
-                }
+                settle_working_session(s, now, active, app.win, win_active);
             }
             if !box_snap.gpu_lines.is_empty() {
                 set_label_text(app.box_gpu_label, &box_snap.gpu_lines.join("\n"));
@@ -908,7 +907,9 @@ fn replace_terminal(sid: usize, vte: *mut GtkWidget, pid: i32, title: String) {
         s.title = title;
         s.state = WorkState::Idle;
         s.unread = false;
-        s.last_output = Instant::now();
+        let now = Instant::now();
+        s.last_output = now;
+        s.work_started = now;
         (old_vte, s.scroll_wrap)
     });
     unsafe {
@@ -1143,7 +1144,22 @@ extern "C" fn on_window_key_press(
     0
 }
 
+fn jump_next_attention() {
+    let next_sid = APP.with(|cell| {
+        let state = cell.borrow();
+        let app = state.as_ref()?;
+        find_next_session_attention(&app.sessions, app.active_id)
+    });
+    if let Some(sid) = next_sid {
+        select_session(sid);
+    }
+}
+
 fn handle_tab_shortcut(keyval: c_uint, keycode: u16) -> bool {
+    if is_jump_attention_shortcut(keyval, keycode) {
+        jump_next_attention();
+        return true;
+    }
     match (char::from_u32(keyval), keycode) {
         (Some('T' | 't'), _) | (_, 28) => open_default_tab(),
         (Some('W' | 'w'), _) | (_, 25) => close_session(active_session_id()),

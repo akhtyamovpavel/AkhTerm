@@ -41,9 +41,9 @@ sudo apt install dpkg-dev
 2. Close AkhTerm and run it again. The tab opens in that directory and focus returns to the previously active tab.
 3. If you already have an alias in `~/.ssh/config`, open the «Профили / SSH» menu. Choose `ssh` for a remote shell or `tmux:main` for a persistent session. Use `Ctrl+Shift+R` to reconnect the active SSH tab and return to its tmux session.
 
-`Ctrl+Shift+W` closes the active tab. The `×` button closes its own tab, and `Alt+1` through `Alt+9` select tabs by position. The interface labels are in Russian.
+`Ctrl+Shift+W` closes the active tab, and `Ctrl+Shift+U` jumps to the next tab waiting for approval («Ждёт апрува») or with unread output («Готово»). The `×` button closes its own tab, and `Alt+1` through `Alt+9` select tabs by position. The interface labels are in Russian.
 
-In a shell tab, open «Агенты» and choose **Claude Code** to run `claude` in that shell. Install the [Claude Code CLI](https://code.claude.com/docs/en/quickstart) on the machine where the shell runs.
+In a shell tab, open «Агенты» and choose **Claude Code** to run `claude` in that shell. Install the [Claude Code CLI](https://code.claude.com/docs/en/quickstart) on the machine where the shell runs. When an agent pauses on a confirmation prompt or finishes a long run while the window is unfocused, AkhTerm highlights the tab and sends a desktop notification if `notify-send` is installed.
 
 ## Local configuration
 

@@ -84,6 +84,11 @@ button.sidebar-action:focus {
     font-size: 12px;
 }
 
+.sidebar-status.sidebar-approval {
+    color: #fbbf24;
+    font-weight: 600;
+}
+
 .sidebar-status.sidebar-ready {
     color: @ready;
 }

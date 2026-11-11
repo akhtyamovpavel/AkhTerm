@@ -7,6 +7,7 @@ use crate::ffi::*;
 use crate::paths::shorten_home;
 use crate::session::{SessionCategory, TermSession, WorkState};
 use crate::theme::set_agent_accent;
+use crate::ui_text as text;
 use crate::{connect_click, connect_entry_changed};
 
 type WidgetHandler = extern "C" fn(*mut GtkWidget, *mut c_void);
@@ -228,11 +229,7 @@ impl SidebarRow {
     ) {
         set_agent_accent(self.icon, &session.proc_info.agent);
         set_class(self.widget, "sidebar-selected", active);
-        let (status, style) = status_for(session);
-        for class in ["sidebar-ready", "sidebar-working", "sidebar-ended"] {
-            set_class(self.status, class, style == class);
-        }
-        set_label_text(self.status, status);
+        apply_row_status(self.status, session);
         set_label_text(self.title, &session.title);
         let detail = tab_detail(session);
         set_label_text(self.detail, &detail);
@@ -256,14 +253,23 @@ impl SidebarRow {
     }
 }
 
-fn status_for(session: &TermSession) -> (&'static str, &'static str) {
+fn apply_row_status(status_label: *mut GtkWidget, session: &TermSession) {
+    let (status, style) = status_for(session);
+    for class in ["sidebar-approval", "sidebar-ready", "sidebar-working", "sidebar-ended"] {
+        set_class(status_label, class, style == class);
+    }
+    unsafe { gtk_label_set_text(status_label, status.as_ptr()) };
+}
+
+fn status_for(session: &TermSession) -> (&'static CStr, &'static str) {
     match session.category {
-        SessionCategory::Remote if session.child_pid == 0 => ("Нет связи", "sidebar-ended"),
-        _ if session.child_pid == 0 => ("Завершена", "sidebar-ended"),
-        _ if session.unread => ("Готово", "sidebar-ready"),
-        SessionCategory::Daemon => ("Онлайн", "sidebar-working"),
-        _ if session.state == WorkState::Working => ("В работе", "sidebar-working"),
-        _ => ("", ""),
+        SessionCategory::Remote if session.child_pid == 0 => (c"Нет связи", "sidebar-ended"),
+        _ if session.child_pid == 0 => (c"Завершена", "sidebar-ended"),
+        _ if session.state == WorkState::NeedsApproval => (text::STATUS_APPROVAL, "sidebar-approval"),
+        _ if session.unread => (c"Готово", "sidebar-ready"),
+        SessionCategory::Daemon => (c"Онлайн", "sidebar-working"),
+        _ if session.state == WorkState::Working => (c"В работе", "sidebar-working"),
+        _ => (c"", ""),
     }
 }
 
