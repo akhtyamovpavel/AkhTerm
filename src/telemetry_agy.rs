@@ -367,7 +367,8 @@ fn parse_panel_line(words: &[&str], prev_last: Option<&str>, next_line: Option<&
 }
 
 pub fn parse_vte_context_panel(visible_text: &str) -> Option<(u64, Option<u8>)> {
-    let lines: Vec<&str> = visible_text.lines().map(clean_status_line).filter(|l| !l.is_empty()).collect();
+    let stripped = crate::telemetry::strip_ansi_escapes(visible_text);
+    let lines: Vec<&str> = stripped.lines().map(clean_status_line).filter(|l| !l.is_empty()).collect();
     let mut found = None;
     let mut prev_last = None;
     for (idx, &line) in lines.iter().enumerate() {

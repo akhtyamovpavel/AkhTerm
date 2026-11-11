@@ -416,7 +416,7 @@ impl SidebarRow {
             status_lbl: self.status,
             metric_lbl: self.metric,
             new_icon: self.take_icon_change(eff_cat),
-            agent: session.proc_info.agent.clone(),
+            agent: session.effective_agent(),
             active,
             status,
             live_status,
@@ -443,6 +443,16 @@ impl SidebarRow {
 
     pub fn row_widget(&self) -> *mut GtkWidget {
         self.widget
+    }
+
+    #[cfg(test)]
+    pub fn metric_widget(&self) -> *mut GtkWidget {
+        self.metric
+    }
+
+    #[cfg(test)]
+    pub fn icon_widget(&self) -> *mut GtkWidget {
+        self.icon
     }
 
     pub fn destroy(self) {

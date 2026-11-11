@@ -13,6 +13,7 @@ mod paste_route;
 mod paths;
 mod platform;
 mod proc_radar;
+mod remote_telemetry;
 mod search_bar;
 mod session;
 mod sidebar;
@@ -76,6 +77,7 @@ use proc_radar::{
     open_external_link, query_ssh_servers, save_ssh_hosts, switch_remote_tmux_session,
     try_paste_clipboard_image, BoxTelemetry, RemoteTmuxItem, SshHostEntry,
 };
+use remote_telemetry::{RemoteSessionTarget, RemoteTailer, RemoteTelemetryScheduler};
 use session::{
     create_vte_widget, refresh_smart_title, register_link_cwd_lookup, register_vte_menu_hook,
     LinkCwd, SessionCategory, TermSession, WorkState,
@@ -85,8 +87,8 @@ use split_pane::{apply_zoom_scale, finish_split, wrap_vte_scroll, TabPanes};
 use tab_strip::{TabHandlers, TabStrip};
 use tabs::{Tab, TabStore, TabsState};
 use telemetry::{
-    build_sessions_tokens_view, run_poll_job, SessionPollJob, SessionTelemetry, TokensMenu,
-    TokensViewData,
+    build_sessions_tokens_view, run_poll_job_with_remote, SessionPollJob, SessionTelemetry,
+    TokensMenu, TokensViewData,
 };
 use ui_text as text;
 
@@ -135,6 +137,7 @@ struct AppState {
     last_tmux_keys: Vec<String>,
     mi_scheduler: MiScheduler,
     git_scheduler: GitStatusScheduler,
+    remote_telemetry: RemoteTelemetryScheduler,
     box_state: Arc<Mutex<BoxTelemetry>>,
     palette: palette::CommandPalette,
     search_bar: search_bar::SearchBar,
@@ -836,6 +839,7 @@ fn jump_to_remote_tmux(target_host: &str, target_session: &str) {
 fn retarget_remote_session(sid: usize, target_session: &str) {
     APP.with(|cell| {
         if let Some(app) = cell.borrow_mut().as_mut() {
+            app.remote_telemetry.reset_session(sid);
             if let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid) {
                 if let Tab::Remote(remote) = &mut s.tab {
                     remote.tmux_session = Some(target_session.to_owned());
@@ -1153,11 +1157,21 @@ extern "C" fn on_tokens_open(_btn: *mut GtkWidget, _pop_ptr: *mut c_void) {
     }
 }
 
-fn snapshot_telemetry_jobs() -> Vec<SessionPollJob> {
+extern "C" fn on_remote_telemetry_ready(_data: *mut c_void) -> c_int {
+    poll_all_session_telemetry();
+    refresh_ui();
+    0
+}
+
+fn snapshot_telemetry_jobs() -> (Vec<SessionPollJob>, HashMap<usize, RemoteTailer>) {
     APP.with(|cell| {
-        let Ok(state) = cell.try_borrow() else { return Vec::new() };
-        let Some(app) = state.as_ref() else { return Vec::new() };
-        app.sessions.iter().map(SessionPollJob::from_session).collect()
+        let Ok(state) = cell.try_borrow() else { return (Vec::new(), HashMap::new()) };
+        let Some(app) = state.as_ref() else { return (Vec::new(), HashMap::new()) };
+        let remote_targets: Vec<RemoteSessionTarget> =
+            app.sessions.iter().filter_map(RemoteSessionTarget::from_session).collect();
+        app.remote_telemetry.sync_targets(&remote_targets);
+        let jobs = app.sessions.iter().map(SessionPollJob::from_session).collect();
+        (jobs, app.remote_telemetry.snapshot())
     })
 }
 
@@ -1174,13 +1188,19 @@ fn apply_telemetry_updates(updated: Vec<(usize, SessionTelemetry)>) {
 }
 
 fn poll_all_session_telemetry() {
-    let jobs = snapshot_telemetry_jobs();
+    let (jobs, mut remote_map) = snapshot_telemetry_jobs();
     if jobs.is_empty() {
         return;
     }
     let home = PathBuf::from(home_dir());
     let now = Instant::now();
-    let updated = jobs.into_iter().map(|job| run_poll_job(job, &home, now)).collect();
+    let updated = jobs
+        .into_iter()
+        .map(|job| {
+            let rt = remote_map.remove(&job.sid);
+            run_poll_job_with_remote(job, rt, &home, now)
+        })
+        .collect();
     apply_telemetry_updates(updated);
 }
 
@@ -1609,6 +1629,7 @@ fn replace_terminal(sid: usize, vte: *mut GtkWidget, pid: i32, title: String) {
     let swapped = APP.with(|cell| {
         let mut state = cell.try_borrow_mut().ok()?;
         let app = state.as_mut()?;
+        app.remote_telemetry.reset_session(sid);
         let s = app.sessions.iter_mut().find(|s| s.id == sid)?;
         let old_vte = std::mem::replace(&mut s.vte, vte);
         s.panes.record_focus(vte);
@@ -3411,6 +3432,7 @@ fn run_app() {
         let mi_scheduler = MiScheduler::default();
         mi_scheduler.sync_targets(&mi_dirs, &[], &home_dir());
         let git_scheduler = GitStatusScheduler::default();
+        let remote_telemetry = RemoteTelemetryScheduler::default();
         let box_state: Arc<Mutex<BoxTelemetry>> = Arc::new(Mutex::new(BoxTelemetry::default()));
         let cmd_palette = palette::CommandPalette::new(topbar, execute_palette_action, focus_active_vte);
         let pin_pop = tab_order::TabPinPopover::new(topbar, apply_pinned_tab_title, focus_active_vte);
@@ -3461,6 +3483,7 @@ fn run_app() {
                 last_tmux_keys: Vec::new(),
                 mi_scheduler: mi_scheduler.clone(),
                 git_scheduler: git_scheduler.clone(),
+                remote_telemetry: remote_telemetry.clone(),
                 box_state: Arc::clone(&box_state),
                 palette: cmd_palette,
                 search_bar,
@@ -3485,6 +3508,16 @@ fn run_app() {
                     g_idle_add(on_git_status_ready, ptr::null_mut());
                 }
                 git_bg.wait_for_turn(Duration::from_secs(4));
+            });
+        }
+
+        {
+            let remote_bg = remote_telemetry.clone();
+            thread::spawn(move || loop {
+                if remote_bg.refresh_due(Instant::now()) > 0 {
+                    g_idle_add(on_remote_telemetry_ready, ptr::null_mut());
+                }
+                remote_bg.wait_for_turn(Duration::from_secs(2));
             });
         }
 
@@ -3574,6 +3607,7 @@ mod tests {
                 last_tmux_keys: Vec::new(),
                 mi_scheduler: MiScheduler::default(),
                 git_scheduler: GitStatusScheduler::default(),
+                remote_telemetry: RemoteTelemetryScheduler::default(),
                 box_state: Arc::new(Mutex::new(BoxTelemetry::default())),
                 palette: palette::CommandPalette::new(vbox, execute_palette_action, focus_active_vte),
                 search_bar: search_bar::SearchBar::new(
@@ -3821,7 +3855,13 @@ mod tests {
         for (name, sloc, cc, score, grade) in &rows {
             println!("{name:<18} | SLOC {sloc:>4} | CC {cc:>2} | MI {score:>6.2} | Grade {grade}");
             if name == "main.rs" {
-                assert!(*score >= 54.87, "main.rs MI {score:.2} < 54.87");
+                assert!(*score >= 55.0, "main.rs MI {score:.2} < 55.0");
+            }
+            if name == "remote_telemetry.rs" {
+                assert!(*score >= 59.0, "remote_telemetry.rs MI {score:.2} < 59.0");
+            }
+            if name == "telemetry.rs" {
+                assert!(*score >= 58.5, "telemetry.rs MI {score:.2} < 58.5");
             }
             if name == "platform.rs" {
                 assert!(*score >= 60.0, "platform.rs MI {score:.2} < 60.0");
@@ -3831,6 +3871,7 @@ mod tests {
                 "context_menu.rs"
                     | "file_drop.rs"
                     | "git_status.rs"
+                    | "remote_telemetry.rs"
                     | "search_bar.rs"
                     | "ssh_detect.rs"
                     | "tab_order.rs"
