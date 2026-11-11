@@ -13,6 +13,10 @@ pub const MI_REFACTOR: &CStr = c"Поручить рефакторинг аге�
 pub const MI_REFACTOR_TIP: &CStr = c"Отправить в активный терминал промпт на рефакторинг файлов с низким MI";
 pub const TOGGLE_SIDEBAR: &CStr = c"◧";
 pub const TOGGLE_SIDEBAR_TIP: &CStr = c"Показать или скрыть боковую панель";
+pub const THEME_DARK_ICON: &CStr = c"☾";
+pub const THEME_LIGHT_ICON: &CStr = c"☀";
+pub const THEME_TO_LIGHT_TIP: &CStr = c"Переключить на светлую тему (Ctrl+Shift+L)";
+pub const THEME_TO_DARK_TIP: &CStr = c"Переключить на тёмную тему (Ctrl+Shift+L)";
 pub const SPLIT_VERT: &CStr = c"◫";
 pub const SPLIT_VERT_TIP: &CStr = c"Разделить вкладку по вертикали (Ctrl+Shift+D)";
 pub const SPLIT_HORIZ: &CStr = c"⬒";
@@ -54,6 +58,7 @@ pub const PALETTE_BADGE_SSH: &CStr = c"SSH";
 pub const PALETTE_BADGE_SSH_TMUX: &CStr = c"SSH · tmux";
 pub const PALETTE_BADGE_AGENT: &CStr = c"Агент";
 pub const PALETTE_BADGE_HANDOFF: &CStr = c"Handoff";
+pub const PALETTE_BADGE_THEME: &CStr = c"Тема";
 
 pub const AGENT_ACTIONS: [(&CStr, &str); 5] = [
     (c"agy · Antigravity CLI", "agy\n"),
@@ -69,3 +74,11 @@ pub const HANDOFF_CAPTURE_TIP: &CStr = c"Сохранить последние �
 pub const HANDOFF_FORWARD_HEADER: &CStr = c"ПЕРЕДАТЬ ВЫВОД АКТИВНОЙ ВКЛАДКИ В СЕССИЮ";
 pub const HANDOFF_BRIEFS_HEADER: &CStr = c"БРИФЫ И СНИМКИ (.MD) — В АКТИВНУЮ ВКЛАДКУ";
 pub const HANDOFF_EMPTY: &CStr = c"Нет сохранённых .md-файлов — снимите вывод выше";
+
+pub fn theme_toggle_icon(is_light: bool) -> &'static CStr {
+    if is_light { THEME_DARK_ICON } else { THEME_LIGHT_ICON }
+}
+
+pub fn theme_toggle_tooltip(is_light: bool) -> &'static CStr {
+    if is_light { THEME_TO_DARK_TIP } else { THEME_TO_LIGHT_TIP }
+}

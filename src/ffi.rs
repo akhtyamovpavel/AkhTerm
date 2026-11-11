@@ -84,6 +84,7 @@ extern "C" {
         hostname: *mut *mut c_char,
         error: *mut *mut c_void,
     ) -> *mut c_char;
+    pub fn g_object_get(object: *mut c_void, first_property_name: *const c_char, ...);
     pub fn g_object_set(object: *mut c_void, first_property_name: *const c_char, ...);
     pub fn g_object_ref(object: *mut c_void) -> *mut c_void;
     pub fn g_object_unref(object: *mut c_void);
@@ -151,6 +152,12 @@ extern "C" {
         provider: *mut GtkCssProvider,
         priority: c_uint,
     );
+    pub fn gtk_style_context_reset_widgets(screen: *mut GdkScreen);
+    pub fn gtk_style_context_lookup_color(
+        context: *mut GtkStyleContext,
+        color_name: *const c_char,
+        color: *mut GdkRGBA,
+    ) -> c_int;
     pub fn gtk_widget_get_style_context(widget: *mut GtkWidget) -> *mut GtkStyleContext;
     pub fn gtk_style_context_add_class(context: *mut GtkStyleContext, class_name: *const c_char);
     pub fn gtk_style_context_remove_class(context: *mut GtkStyleContext, class_name: *const c_char);
@@ -189,6 +196,7 @@ extern "C" {
 
     pub fn gtk_button_new() -> *mut GtkWidget;
     pub fn gtk_button_new_with_label(label: *const c_char) -> *mut GtkWidget;
+    pub fn gtk_button_get_label(button: *mut GtkButton) -> *const c_char;
     pub fn gtk_button_set_label(button: *mut GtkButton, label: *const c_char);
     pub fn gtk_image_new_from_icon_name(icon_name: *const c_char, size: c_int) -> *mut GtkWidget;
     pub fn gtk_expander_new(label: *const c_char) -> *mut GtkWidget;

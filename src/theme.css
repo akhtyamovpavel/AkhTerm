@@ -1,12 +1,58 @@
 @define-color canvas #09090b;
+@define-color sidebar_bg #101012;
 @define-color surface #18181b;
+@define-color elevated #0c0c0f;
+@define-color control_bg #121216;
+@define-color input_bg #121217;
+@define-color palette_entry_focus #1c1c21;
 @define-color hover #202024;
 @define-color selected #27272a;
 @define-color border #27272a;
+@define-color border_strong #3f3f46;
+@define-color selected_border #52525b;
 @define-color text #fafafa;
+@define-color text_strong #ffffff;
+@define-color text_secondary #e4e4e7;
+@define-color row_text #d4d4d8;
 @define-color muted #a1a1aa;
+@define-color disabled_text #71717a;
 @define-color focus #a1a1aa;
+@define-color caret #8b5cf6;
+@define-color scroll_thumb #3f3f46;
+@define-color scroll_thumb_hover #71717a;
 @define-color ready #86d9b5;
+@define-color unread_border #10b981;
+@define-color unread_fg #6ee7b7;
+@define-color mi_b #e7c389;
+@define-color mi_c #fda4af;
+@define-color status_working #9bbcf3;
+@define-color approval_fg #fbbf24;
+@define-color approval_bg rgba(245, 158, 11, 0.10);
+@define-color approval_border rgba(245, 158, 11, 0.45);
+@define-color amber_fg #fcd34d;
+@define-color amber_tint rgba(245, 158, 11, 0.14);
+@define-color amber_border rgba(245, 158, 11, 0.55);
+@define-color amber_border_strong #f59e0b;
+@define-color gpu_bg #141419;
+@define-color gpu_fg #c4b5fd;
+@define-color agent_agy_fg #c4b5fd;
+@define-color agent_agy_bg #35274e;
+@define-color agent_deepseek_fg #60a5fa;
+@define-color agent_deepseek_bg #203b5e;
+@define-color agent_codex_fg #e4e4e7;
+@define-color agent_codex_bg #45454d;
+@define-color agent_claude_fg #fb923c;
+@define-color agent_claude_bg #4c2b1b;
+@define-color agent_kimi_fg #7dd3fc;
+@define-color agent_kimi_bg #173a47;
+@define-color badge_tab_border rgba(134, 217, 181, 0.35);
+@define-color badge_tmux_border rgba(245, 158, 11, 0.35);
+@define-color badge_agent_fg #c4b5fd;
+@define-color badge_agent_border rgba(196, 181, 253, 0.35);
+@define-color badge_ssh_fg #93c5fd;
+@define-color badge_ssh_border rgba(147, 197, 253, 0.35);
+@define-color badge_handoff_fg #fdba74;
+@define-color badge_handoff_border rgba(253, 186, 116, 0.35);
 
 .tab-icon,
 .sidebar-icon {
@@ -15,28 +61,28 @@
 }
 
 #agent-agy {
-    color: #c4b5fd;
-    background-color: #35274e;
+    color: @agent_agy_fg;
+    background-color: @agent_agy_bg;
 }
 
 #agent-deepseek {
-    color: #60a5fa;
-    background-color: #203b5e;
+    color: @agent_deepseek_fg;
+    background-color: @agent_deepseek_bg;
 }
 
 #agent-codex {
-    color: #e4e4e7;
-    background-color: #45454d;
+    color: @agent_codex_fg;
+    background-color: @agent_codex_bg;
 }
 
 #agent-claude {
-    color: #fb923c;
-    background-color: #4c2b1b;
+    color: @agent_claude_fg;
+    background-color: @agent_claude_bg;
 }
 
 #agent-kimi {
-    color: #7dd3fc;
-    background-color: #173a47;
+    color: @agent_kimi_fg;
+    background-color: @agent_kimi_bg;
 }
 
 .main-bg, popover, tooltip {
@@ -47,6 +93,19 @@
 
 .main-bg {
     background-color: @canvas;
+}
+
+tooltip,
+tooltip.background {
+    background-color: @elevated;
+    color: @text;
+    border: 1px solid @border_strong;
+    border-radius: 6px;
+}
+
+tooltip *,
+tooltip label {
+    color: @text;
 }
 
 headerbar.window-header,
@@ -85,9 +144,9 @@ headerbar.window-header {
 
 button {
     background-image: none;
-    background-color: #121216;
-    color: #e4e4e7;
-    border: 1px solid #27272a;
+    background-color: @control_bg;
+    color: @text_secondary;
+    border: 1px solid @border;
     border-radius: 6px;
     padding: 4px 10px;
     box-shadow: none;
@@ -96,8 +155,8 @@ button {
 
 button:hover {
     background-color: @hover;
-    border-color: #3f3f46;
-    color: #ffffff;
+    border-color: @border_strong;
+    color: @text_strong;
 }
 
 .topbar button {
@@ -114,12 +173,13 @@ button:hover {
 }
 
 .topbar button:disabled {
-    color: #71717a;
+    color: @disabled_text;
 }
 
 headerbar.window-header button.titlebutton {
     background-color: transparent;
     border-color: transparent;
+    color: @text;
     min-height: 26px;
     min-width: 26px;
     padding: 0;
@@ -130,8 +190,8 @@ headerbar.window-header button.titlebutton:hover {
 }
 
 button.tab-unread {
-    border: 1px solid #10b981;
-    color: #6ee7b7;
+    border: 1px solid @unread_border;
+    color: @unread_fg;
 }
 
 button.btn-mi-a {
@@ -139,53 +199,53 @@ button.btn-mi-a {
 }
 
 button.btn-mi-b {
-    color: #e7c389;
+    color: @mi_b;
 }
 
 button.btn-mi-c {
-    color: #fda4af;
+    color: @mi_c;
 }
 
 .ssh-count {
-    color: #a1a1aa;
+    color: @muted;
     font-size: 0.9em;
 }
 
 button.tmux-jump-btn {
-    background-color: #121217;
-    border: 1px solid #27272a;
+    background-color: @input_bg;
+    border: 1px solid @border;
     border-radius: 6px;
     padding: 5px 9px;
-    color: #e4e4e7;
+    color: @text_secondary;
 }
 
 button.tmux-jump-btn:hover {
-    background-color: rgba(245, 158, 11, 0.14);
-    border-color: #f59e0b;
-    color: #fcd34d;
+    background-color: @amber_tint;
+    border-color: @amber_border_strong;
+    color: @amber_fg;
 }
 
 button.tmux-jump-active {
-    background-color: rgba(245, 158, 11, 0.14);
-    border-color: rgba(245, 158, 11, 0.55);
-    color: #fcd34d;
+    background-color: @amber_tint;
+    border-color: @amber_border;
+    color: @amber_fg;
     font-weight: 600;
 }
 
 popover, .popover-box {
-    background-color: #0c0c0f;
-    color: #fafafa;
-    border: 1px solid #27272a;
+    background-color: @elevated;
+    color: @text;
+    border: 1px solid @border;
     border-radius: 8px;
     padding: 6px;
 }
 
 entry, .search-entry {
     background-image: none;
-    background-color: #121217;
-    color: #fafafa;
-    caret-color: #8b5cf6;
-    border: 1px solid #27272a;
+    background-color: @input_bg;
+    color: @text;
+    caret-color: @caret;
+    border: 1px solid @border;
     border-radius: 6px;
     padding: 5px 9px;
     box-shadow: none;
@@ -197,12 +257,12 @@ entry:focus, .search-entry:focus {
 }
 
 scrollbar {
-    background-color: #09090b;
+    background-color: @canvas;
     border: none;
 }
 
 scrollbar slider {
-    background-color: #3f3f46;
+    background-color: @scroll_thumb;
     border-radius: 99px;
     min-width: 7px;
     min-height: 30px;
@@ -210,7 +270,7 @@ scrollbar slider {
 }
 
 scrollbar slider:hover {
-    background-color: #71717a;
+    background-color: @scroll_thumb_hover;
 }
 
 .topbar button.btn-icon-sq {
@@ -219,11 +279,11 @@ scrollbar slider:hover {
 }
 
 .gpu-pill {
-    background-color: #141419;
-    border: 1px solid #27272a;
+    background-color: @gpu_bg;
+    border: 1px solid @border;
     border-radius: 6px;
     padding: 6px 10px;
-    color: #c4b5fd;
+    color: @gpu_fg;
     font-size: 0.9em;
 }
 

@@ -15,6 +15,7 @@ mod split_pane;
 mod tab_strip;
 mod tabs;
 mod theme;
+mod theme_mode;
 mod ui_font;
 mod ui_text;
 
@@ -65,6 +66,8 @@ struct AppState {
     is_fullscreen: bool,
     sidebar: Sidebar,
     sidebar_visible: bool,
+    theme_mode: theme_mode::ThemeMode,
+    theme_btn: *mut GtkWidget,
     font_scale: f64,
     zoom_btn: *mut GtkWidget,
     reconnect_btn: *mut GtkWidget,
@@ -166,6 +169,59 @@ extern "C" fn on_toggle_sidebar(_btn: *mut GtkWidget, _data: *mut c_void) {
     if let Some((panel, vis)) = toggle.filter(|(w, _)| !w.is_null()) {
         unsafe { gtk_widget_set_visible(panel, i32::from(vis)) };
     }
+}
+
+fn collect_theme_targets(mode: theme_mode::ThemeMode) -> Option<(*mut GtkWidget, Vec<*mut GtkWidget>)> {
+    APP.with(|cell| {
+        let mut state = cell.try_borrow_mut().ok()?;
+        let app = state.as_mut()?;
+        app.theme_mode = mode;
+        let mut vtes = Vec::new();
+        for s in &app.sessions {
+            s.panes.collect_vtes(s.vte, &mut vtes);
+        }
+        Some((app.theme_btn, vtes))
+    })
+}
+
+fn apply_live_theme(mode: theme_mode::ThemeMode, persist: bool) {
+    let targets = collect_theme_targets(mode);
+    if persist {
+        theme_mode::persist_theme_mode(mode);
+    }
+    theme::apply_gtk_theme_mode(mode);
+    if let Some((theme_btn, vtes)) = targets {
+        theme::apply_vte_list_colors(&vtes, mode);
+        theme::sync_theme_button(theme_btn, mode);
+    }
+    refresh_ui();
+}
+
+fn close_open_palette() {
+    let open_pal = APP.with(|cell| {
+        let state = cell.try_borrow().ok()?;
+        let app = state.as_ref()?;
+        app.palette.is_open().then(|| app.palette.clone())
+    });
+    if let Some(pal) = open_pal {
+        pal.close();
+    }
+}
+
+fn toggle_theme() {
+    close_open_palette();
+    let next = APP.with(|cell| {
+        let state = cell.try_borrow().ok()?;
+        Some(state.as_ref()?.theme_mode.toggled())
+    });
+    if let Some(mode) = next {
+        apply_live_theme(mode, true);
+        focus_active_vte();
+    }
+}
+
+extern "C" fn on_toggle_theme(_btn: *mut GtkWidget, _data: *mut c_void) {
+    toggle_theme();
 }
 
 extern "C" fn on_toggle_window_square(_btn: *mut GtkWidget, _data: *mut c_void) {
@@ -1630,7 +1686,7 @@ fn handle_tab_shortcut(keyval: c_uint, keycode: u16) -> bool {
 
 fn focus_active_vte() {
     let vte = APP.with(|cell| {
-        let state = cell.borrow();
+        let state = cell.try_borrow().ok()?;
         let app = state.as_ref()?;
         app.sessions.iter().find(|s| s.id == app.active_id).map(TermSession::active_vte)
     });
@@ -1657,6 +1713,7 @@ fn execute_palette_action(action: palette::PaletteAction) {
         palette::PaletteAction::InjectHandoff(path) => {
             handoff_file_to_session(active_session_id(), &path);
         }
+        palette::PaletteAction::ToggleTheme => toggle_theme(),
     }
 }
 
@@ -1690,6 +1747,10 @@ fn toggle_palette() {
 fn route_palette_key(keyval: c_uint, state: c_uint, keycode: u16) -> Option<c_int> {
     if palette::is_palette_shortcut(keyval, state, keycode) {
         toggle_palette();
+        return Some(1);
+    }
+    if theme_mode::is_theme_toggle_shortcut(keyval, state, keycode) {
+        toggle_theme();
         return Some(1);
     }
     let open = APP.with(|cell| cell.borrow().as_ref().is_some_and(|app| app.palette.is_open()));
@@ -1813,10 +1874,11 @@ fn run_app() {
     let _ui_font = ui_font::load().inspect_err(|error| eprintln!("AkhTerm: {error}"));
     register_link_cwd_lookup(lookup_vte_link_cwd);
     let config = WorkspaceConfig::load();
+    let initial_theme = theme_mode::load_initial_theme(config.theme);
     let mi_dirs = config.mi_directories();
     unsafe {
         gtk_init(ptr::null_mut(), ptr::null_mut());
-        theme::apply_gtk_theme();
+        theme::apply_gtk_theme_mode(initial_theme);
         const SIGTERM: c_int = 15;
         g_unix_signal_add(SIGTERM, on_terminate, ptr::null_mut());
 
@@ -1873,6 +1935,13 @@ fn run_app() {
             on_toggle_sidebar,
         );
         add_class(side_tog_btn, "btn-icon-sq");
+        let theme_btn = add_toolbar_action(
+            topbar,
+            initial_theme.toggle_icon(),
+            initial_theme.toggle_tooltip(),
+            on_toggle_theme,
+        );
+        add_class(theme_btn, "btn-icon-sq");
         let split_horiz_btn =
             add_toolbar_action(topbar, text::SPLIT_HORIZ, text::SPLIT_HORIZ_TIP, on_split_horiz);
         add_class(split_horiz_btn, "btn-icon-sq");
@@ -2098,6 +2167,8 @@ fn run_app() {
                 is_fullscreen: false,
                 sidebar,
                 sidebar_visible: true,
+                theme_mode: initial_theme,
+                theme_btn,
                 font_scale: 1.0,
                 zoom_btn,
                 reconnect_btn,

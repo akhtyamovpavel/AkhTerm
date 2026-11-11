@@ -12,7 +12,7 @@ use crate::sidebar::SidebarRow;
 use crate::split_pane::TabPanes;
 use crate::tab_strip::TabView;
 use crate::tabs::{RemoteConnection, Tab};
-use crate::theme::{TERM_BG, TERM_CURSOR, TERM_FG, TERM_PALETTE};
+use crate::theme::{apply_vte_colors, current_theme_mode};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SessionCategory {
@@ -210,8 +210,7 @@ fn apply_vte_style(vte: *mut GtkWidget) {
     unsafe {
         vte_terminal_set_scrollback_lines(vte, 15_000);
         vte_terminal_set_allow_hyperlink(vte, 1);
-        vte_terminal_set_colors(vte, &TERM_FG, &TERM_BG, TERM_PALETTE.as_ptr(), 16);
-        vte_terminal_set_color_cursor(vte, &TERM_CURSOR);
+        apply_vte_colors(vte, current_theme_mode());
         let desc = pango_font_description_from_string(c"DejaVu Sans Mono 10.5".as_ptr());
         if !desc.is_null() {
             vte_terminal_set_font(vte, desc);

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::paths::{config_path, expand_home, home_dir};
 use crate::tabs::{is_profile_key, is_ssh_host, Tab};
+use crate::theme_mode::ThemeMode;
 
 #[derive(Clone)]
 pub struct LocalProfile {
@@ -49,6 +50,7 @@ pub struct WorkspaceConfig {
     pub shell: String,
     pub briefs_dir: Option<PathBuf>,
     pub mi_root: Option<String>,
+    pub theme: Option<ThemeMode>,
     new_tab: String,
 }
 
@@ -61,6 +63,7 @@ impl Default for WorkspaceConfig {
             shell: shell_path(),
             briefs_dir: None,
             mi_root: None,
+            theme: None,
             new_tab: "shell".to_owned(),
         }
     }
@@ -122,8 +125,17 @@ impl WorkspaceConfig {
             ["shell", path] if Path::new(path).is_absolute() => self.shell = (*path).to_owned(),
             ["briefs", path] => self.briefs_dir = Some(PathBuf::from(expand_home(path))),
             ["mi-root", path] => self.mi_root = Some(expand_home(path)),
+            ["theme", mode] => return self.set_theme(mode),
             _ => return false,
         }
+        true
+    }
+
+    fn set_theme(&mut self, mode: &str) -> bool {
+        let Some(parsed) = ThemeMode::parse_config(mode) else {
+            return false;
+        };
+        self.theme = Some(parsed);
         true
     }
 
@@ -197,5 +209,15 @@ mod tests {
             ]
         );
         assert_eq!(config.watch, ["monitored"]);
+    }
+
+    #[test]
+    fn parses_optional_theme_setting_and_rejects_unknown_modes() {
+        let light = WorkspaceConfig::parse("theme | light\n", Path::new("test.conf"));
+        assert_eq!(light.theme, Some(ThemeMode::Light));
+        let dark = WorkspaceConfig::parse("theme | dark\n", Path::new("test.conf"));
+        assert_eq!(dark.theme, Some(ThemeMode::Dark));
+        let invalid = WorkspaceConfig::parse("theme | solarized\n", Path::new("test.conf"));
+        assert_eq!(invalid.theme, None);
     }
 }
