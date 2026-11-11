@@ -440,6 +440,11 @@ impl TabStore {
         (store, saved)
     }
 
+    #[cfg(test)]
+    pub fn new_for_test(path: PathBuf) -> Self {
+        Self { path, last_written: None, retry_at: Instant::now() }
+    }
+
     pub fn checkpoint(&mut self, state: TabsState) {
         if self.last_written.as_ref() == Some(&state) || Instant::now() < self.retry_at {
             return;

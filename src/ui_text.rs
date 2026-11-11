@@ -121,6 +121,24 @@ pub const TOKENS_HEADER: &CStr = c"ТОКЕНЫ · КОНТЕКСТ И ДЛИТ�
 pub const TOKENS_EMPTY: &CStr =
     c"Нет данных о токенах для открытых вкладок.\nЗапустите агента (AGY, Claude Code, Codex CLI) или сессию с индикатором контекста.";
 
+pub const CTX_COPY: &CStr = c"Копировать";
+pub const CTX_PASTE: &CStr = c"Вставить";
+pub const CTX_OPEN_LINK: &CStr = c"Открыть ссылку";
+pub const CTX_COPY_LINK: &CStr = c"Скопировать ссылку";
+pub const CTX_SEND_TO_TAB: &CStr = c"Отправить в вкладку ▸";
+pub const CTX_SPLIT_RIGHT: &CStr = c"Разделить вправо";
+pub const CTX_SPLIT_DOWN: &CStr = c"Разделить вниз";
+pub const CTX_CLOSE_PANE: &CStr = c"Закрыть панель";
+pub const CTX_CLEAR_BUFFER: &CStr = c"Очистить буфер";
+
+pub const CTX_RENAME_TAB: &CStr = c"Переименовать вкладку…";
+pub const CTX_DUPLICATE_TAB: &CStr = c"Дублировать вкладку";
+pub const CTX_COPY_PATH: &CStr = c"Скопировать путь";
+pub const CTX_CLOSE_TAB: &CStr = c"Закрыть вкладку";
+pub const CTX_CLOSE_OTHER_TABS: &CStr = c"Закрыть остальные";
+pub const RENAME_PLACEHOLDER: &CStr = c"Имя вкладки (пусто — авто)";
+pub const RENAME_SAVE: &CStr = c"Сохранить";
+
 pub fn theme_toggle_icon(is_light: bool) -> &'static CStr {
     if is_light { THEME_DARK_ICON } else { THEME_LIGHT_ICON }
 }

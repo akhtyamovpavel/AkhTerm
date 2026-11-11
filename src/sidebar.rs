@@ -20,6 +20,7 @@ use crate::ui_text as text;
 use crate::{connect_click, connect_entry_changed};
 
 type WidgetHandler = extern "C" fn(*mut GtkWidget, *mut c_void);
+type ContextHandler = extern "C" fn(*mut GtkWidget, *const GdkEvent, *mut c_void) -> c_int;
 
 #[derive(Clone, Copy)]
 pub struct Sidebar {
@@ -109,10 +110,20 @@ impl Sidebar {
         category: SessionCategory,
         sid: usize,
         on_select: WidgetHandler,
+        on_context: ContextHandler,
     ) -> SidebarRow {
         let row = SidebarRow::new(category);
-        connect_click(row.widget, on_select, sid as *mut c_void);
+        let data = sid as *mut c_void;
+        connect_click(row.widget, on_select, data);
         unsafe {
+            g_signal_connect_data(
+                row.widget,
+                c"button-press-event".as_ptr(),
+                on_context as *const c_void,
+                data,
+                ptr::null(),
+                0,
+            );
             gtk_box_pack_start(self.groups[group_index(category)].list, row.widget, 0, 1, 0);
             gtk_widget_show_all(row.widget);
         }
@@ -429,6 +440,10 @@ impl SidebarRow {
         self.prepare_update(index, session, mi, git_dirty, active).apply();
     }
 
+    pub fn row_widget(&self) -> *mut GtkWidget {
+        self.widget
+    }
+
     pub fn destroy(self) {
         if !self.widget.is_null() {
             unsafe { gtk_widget_destroy(self.widget) };
@@ -447,11 +462,6 @@ impl SidebarRow {
             group: Cell::new(group_index(category)),
             icon_cat: Cell::new(category),
         }
-    }
-
-    #[cfg(test)]
-    pub fn row_widget(&self) -> *mut GtkWidget {
-        self.widget
     }
 }
 
@@ -756,7 +766,7 @@ mod tests {
         tab: Tab,
     ) -> TermSession {
         let now = Instant::now();
-        let sidebar_row = sidebar.append_tab(category, sid, noop_handler);
+        let sidebar_row = sidebar.append_tab(category, sid, noop_handler, noop_event);
         let handlers = crate::tab_strip::TabHandlers {
             on_select: noop_handler,
             on_close: noop_handler,

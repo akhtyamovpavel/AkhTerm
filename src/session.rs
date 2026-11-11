@@ -103,15 +103,17 @@ impl TermSession {
         self.panes.active_pid(self.vte, self.child_pid)
     }
 
+    pub fn pid_for_vte(&self, vte: *mut GtkWidget) -> i32 {
+        self.panes.pid_for_vte(vte, self.vte, self.child_pid)
+    }
+
     pub fn has_vte(&self, vte: *mut GtkWidget) -> bool {
         self.vte == vte || self.panes.contains_vte(vte)
     }
 
-    pub fn pid_for_vte(&self, vte: *mut GtkWidget) -> Option<i32> {
-        if self.vte == vte {
-            return Some(self.child_pid);
-        }
-        self.panes.extra.iter().find(|p| p.vte == vte).map(|p| p.child_pid)
+    #[cfg(test)]
+    pub fn apply_rename(&mut self, raw_title: &str) {
+        self.set_pinned_title(Some(raw_title));
     }
 
     pub fn active_local_cwd(&self) -> Option<String> {
@@ -292,12 +294,19 @@ struct VteLinkCtx {
     fallback_cwd: String,
 }
 
+pub type VteMenuHook = fn(*mut GtkWidget, *const GdkEvent, Option<String>);
+
 thread_local! {
     static LINK_CWD_FN: Cell<Option<fn(*mut GtkWidget) -> LinkCwd>> = const { Cell::new(None) };
+    static VTE_MENU_FN: Cell<Option<VteMenuHook>> = const { Cell::new(None) };
 }
 
 pub fn register_link_cwd_lookup(lookup: fn(*mut GtkWidget) -> LinkCwd) {
     LINK_CWD_FN.with(|slot| slot.set(Some(lookup)));
+}
+
+pub fn register_vte_menu_hook(hook: VteMenuHook) {
+    VTE_MENU_FN.with(|slot| slot.set(Some(hook)));
 }
 
 extern "C" fn drop_vte_link_ctx(data: *mut c_void, _closure: *mut c_void) {
@@ -331,33 +340,69 @@ fn take_c_string(ptr: *mut c_char) -> Option<String> {
     Some(text)
 }
 
+pub fn check_vte_event_link(
+    vte: *mut GtkWidget,
+    event: *const GdkEvent,
+    cwd: Option<&str>,
+) -> Option<String> {
+    if vte.is_null() || event.is_null() {
+        return None;
+    }
+    unsafe {
+        if let Some(hlink) = take_c_string(vte_terminal_hyperlink_check_event(vte, event)) {
+            if let Some(target) = resolve_link_target(&hlink, cwd) {
+                return Some(target);
+            }
+        }
+        let mut tag: c_int = -1;
+        let matched = take_c_string(vte_terminal_match_check_event(vte, event, &mut tag))?;
+        resolve_link_target(&matched, cwd)
+    }
+}
+
+fn handle_vte_right_click(
+    vte: *mut GtkWidget,
+    event: *const GdkEvent,
+    user_data: *mut c_void,
+) -> c_int {
+    let mut state: u32 = 0;
+    unsafe { gdk_event_get_state(event, &mut state) };
+    if crate::context_menu::should_passthrough_vte_click(3, state) {
+        return 0;
+    }
+    let Some(hook) = VTE_MENU_FN.with(Cell::get) else {
+        return 0;
+    };
+    let cwd = resolve_vte_cwd(vte, user_data);
+    let link = check_vte_event_link(vte, event, cwd.as_deref());
+    hook(vte, event, link);
+    1
+}
+
 extern "C" fn on_vte_button_press(
     vte: *mut GtkWidget,
     event: *const GdkEvent,
     user_data: *mut c_void,
 ) -> c_int {
-    unsafe {
-        let mut button: u32 = 0;
-        if gdk_event_get_event_type(event) != GDK_BUTTON_PRESS
-            || gdk_event_get_button(event, &mut button) == 0
-            || button != 1
-        {
-            return 0;
-        }
+    let mut button: u32 = 0;
+    let is_press = unsafe {
+        !event.is_null()
+            && gdk_event_get_event_type(event) == GDK_BUTTON_PRESS
+            && gdk_event_get_button(event, &mut button) != 0
+    };
+    if !is_press {
+        return 0;
+    }
+    if button == 1 {
         let cwd = resolve_vte_cwd(vte, user_data);
-        if let Some(hlink) = take_c_string(vte_terminal_hyperlink_check_event(vte, event)) {
-            if let Some(target) = resolve_link_target(&hlink, cwd.as_deref()) {
-                open_external_link(&target);
-                return 1;
-            }
+        if let Some(target) = check_vte_event_link(vte, event, cwd.as_deref()) {
+            open_external_link(&target);
+            return 1;
         }
-        let mut tag: c_int = -1;
-        if let Some(matched) = take_c_string(vte_terminal_match_check_event(vte, event, &mut tag)) {
-            if let Some(target) = resolve_link_target(&matched, cwd.as_deref()) {
-                open_external_link(&target);
-                return 1;
-            }
-        }
+        return 0;
+    }
+    if button == 3 {
+        return handle_vte_right_click(vte, event, user_data);
     }
     0
 }
@@ -739,5 +784,85 @@ mod tests {
             assert_eq!(out.as_deref(), Some(expected));
         }
         unsafe { vte_regex_unref(vreg) };
+    }
+
+    extern "C" fn noop_click(_w: *mut GtkWidget, _d: *mut c_void) {}
+    extern "C" fn noop_ctx(_w: *mut GtkWidget, _e: *const GdkEvent, _d: *mut c_void) -> c_int {
+        0
+    }
+
+    fn assert_custom_title_preserves_agent_detection(s: &mut TermSession) {
+        s.osc_title = "claude code".to_owned();
+        s.proc_info.agent.clear();
+        refresh_smart_title(s);
+        assert_eq!(s.proc_info.agent, "Claude");
+        assert_eq!(s.title, "Сборка релиза ЦУ");
+        s.osc_title.clear();
+        s.proc_info.agent.clear();
+        s.remote_tmux = Some(("main".into(), "0".into(), "codex".into(), "/srv/app".into()));
+        refresh_smart_title(s);
+        assert_eq!(s.proc_info.agent, "Codex");
+        assert_eq!(s.title, "Сборка релиза ЦУ");
+        s.remote_tmux = None;
+        s.proc_info.agent.clear();
+    }
+
+    #[test]
+    fn custom_rename_overrides_smart_title_and_resets_when_blank() {
+        crate::proc_radar::tests::with_headless_gtk(|| unsafe {
+            let win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+            let root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+            gtk_container_add(win, root);
+            let sidebar = crate::sidebar::Sidebar::new(root, noop_click);
+            let strip = crate::tab_strip::TabStrip::new(root, noop_click);
+            let vte = vte_terminal_new();
+            let scroll = crate::split_pane::wrap_vte_scroll(vte);
+            let panes = TabPanes::new(scroll, vte);
+            gtk_box_pack_start(root, panes.root, 1, 1, 0);
+            let now = Instant::now();
+            let handlers = crate::tab_strip::TabHandlers {
+                on_select: noop_click,
+                on_close: noop_click,
+                on_press: noop_ctx,
+                on_motion: noop_ctx,
+                on_release: noop_ctx,
+            };
+            let mut s = TermSession {
+                id: 1,
+                base_title: "Проект · Новая".to_owned(),
+                profile_cwd: "/home/user/Проект".to_owned(),
+                title: "Проект · Новая".to_owned(),
+                osc_title: String::new(),
+                pinned_title: None,
+                cwd: "/home/user/ДругаяПапка".to_owned(),
+                category: SessionCategory::Project,
+                vte,
+                scroll_wrap: scroll,
+                panes,
+                sidebar_row: sidebar.append_tab(SessionCategory::Project, 1, noop_click, noop_ctx),
+                top_tab: strip.append(1, SessionCategory::Project, handlers),
+                child_pid: 0,
+                state: WorkState::Idle,
+                unread: false,
+                last_output: now,
+                work_started: now,
+                work_started_at: None,
+                last_turn_secs: None,
+                last_notified: None,
+                proc_info: ProcInfo::default(),
+                tab: Tab::local("default"),
+                remote_tmux: None,
+                tmux_title_from_vte: false,
+                telemetry: SessionTelemetry::default(),
+            };
+            s.apply_rename("  Сборка релиза ЦУ  ");
+            assert_eq!(s.pinned_title.as_deref(), Some("Сборка релиза ЦУ"));
+            assert_eq!(s.title, "Сборка релиза ЦУ");
+            assert_custom_title_preserves_agent_detection(&mut s);
+            s.apply_rename("   ");
+            assert_eq!(s.pinned_title, None);
+            assert_eq!(s.title, "ДругаяПапка");
+            gtk_widget_destroy(win);
+        });
     }
 }

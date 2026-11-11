@@ -371,3 +371,40 @@ entry.term-search-entry.term-search-entry-err {
 .term-search-status-err {
     color: @mi_c;
 }
+
+menu,
+.context-menu {
+    font-family: "Geist", sans-serif;
+    font-size: 14px;
+    background-color: @surface;
+    color: @text;
+    border: 1px solid @border;
+    border-radius: 8px;
+    padding: 4px;
+}
+
+menu menuitem {
+    border-radius: 5px;
+    padding: 6px 12px;
+    color: @text;
+}
+
+menu menuitem label {
+    color: inherit;
+}
+
+menu menuitem:hover {
+    background-color: @hover;
+    color: @text;
+}
+
+menu menuitem:disabled,
+menu menuitem:disabled label {
+    color: @muted;
+}
+
+menu separator {
+    background-color: @border;
+    min-height: 1px;
+    margin: 4px 6px;
+}

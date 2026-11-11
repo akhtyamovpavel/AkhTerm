@@ -1,5 +1,6 @@
 mod approval;
 mod config;
+mod context_menu;
 mod ffi;
 mod file_drop;
 mod git_status;
@@ -30,6 +31,7 @@ use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -39,6 +41,10 @@ use approval::{
     sync_window_focus_urgency,
 };
 use config::WorkspaceConfig;
+use context_menu::{
+    format_session_target, save_forward_capture, ContextAction, DispatchFn, SessionTarget,
+    TabMenuSpec, VteMenuSpec,
+};
 use ffi::*;
 use file_drop::{
     feed_vte_text, register_file_drop_hooks, DropTarget, FileDropHooks, UploadCompletion,
@@ -66,8 +72,8 @@ use proc_radar::{
     RemoteTmuxItem, SshHostEntry,
 };
 use session::{
-    create_vte_widget, refresh_smart_title, register_link_cwd_lookup, LinkCwd, SessionCategory,
-    TermSession, WorkState,
+    create_vte_widget, refresh_smart_title, register_link_cwd_lookup, register_vte_menu_hook,
+    LinkCwd, SessionCategory, TermSession, WorkState,
 };
 use sidebar::Sidebar;
 use split_pane::{apply_zoom_scale, finish_split, wrap_vte_scroll, TabPanes};
@@ -483,6 +489,9 @@ extern "C" fn on_vte_title_changed(vte: *mut GtkWidget, user_data: *mut c_void) 
 }
 
 extern "C" fn on_select_session(_btn: *mut GtkWidget, user_data: *mut c_void) {
+    if context_menu::is_rename_open() {
+        return;
+    }
     let open_pin = APP.with(|cell| {
         let state = cell.try_borrow().ok()?;
         let app = state.as_ref()?;
@@ -539,6 +548,7 @@ fn move_active_tab(delta: isize) {
 }
 
 fn open_tab_pin_popover(sid: usize) {
+    context_menu::dismiss_rename_popover();
     dismiss_git_popover();
     let target = APP.with(|cell| {
         let Ok(state) = cell.try_borrow() else { return None };
@@ -593,7 +603,7 @@ fn start_tab_mouse_drag(sid: usize, event: *const GdkEvent) {
 }
 
 extern "C" fn on_tab_button_press(
-    _btn: *mut GtkWidget,
+    btn: *mut GtkWidget,
     event: *const GdkEvent,
     data: *mut c_void,
 ) -> c_int {
@@ -603,8 +613,12 @@ extern "C" fn on_tab_button_press(
     if unsafe { gdk_event_get_button(event, &mut button) } == 0 {
         return 0;
     }
-    if button == 3 || (button == 1 && ev_type == GDK_2BUTTON_PRESS) {
-        tab_order::end_tab_drag();
+    if button == 3 && ev_type == GDK_BUTTON_PRESS {
+        let _ = tab_order::end_tab_drag();
+        return on_tab_context_menu(btn, event, data);
+    }
+    if button == 1 && ev_type == GDK_2BUTTON_PRESS {
+        let _ = tab_order::end_tab_drag();
         open_tab_pin_popover(sid);
         return 1;
     }
@@ -659,7 +673,7 @@ extern "C" fn on_tab_button_release(
 
 pub fn select_session(sid: usize) {
     let targets = APP.with(|cell| {
-        let mut state = cell.borrow_mut();
+        let mut state = cell.try_borrow_mut().ok()?;
         let app = state.as_mut()?;
         app.active_id = sid;
         let s = app.sessions.iter_mut().find(|s| s.id == sid)?;
@@ -949,7 +963,7 @@ fn add_tab(
         return 0;
     };
     let (vte, scroll_wrap, panes, child_pid) = spawn_tab_widgets(sid, cwd, argv, scale, stack);
-    let sidebar_row = sidebar.append_tab(category, sid, on_select_session);
+    let sidebar_row = sidebar.append_tab(category, sid, on_select_session, on_tab_context_menu);
     let top_tab = tab_strip.append(sid, category, tab_strip_handlers());
     let session = build_term_session(
         sid, title, profile_cwd, cwd, category, vte, scroll_wrap, panes, sidebar_row, top_tab,
@@ -1406,31 +1420,55 @@ extern "C" fn on_sigint_clicked(_btn: *mut GtkWidget, _data: *mut c_void) {
 }
 
 fn active_session_id() -> usize {
-    APP.with(|cell| cell.borrow().as_ref().map_or(0, |app| app.active_id))
-}
-
-fn active_local_split_context() -> Option<(usize, String, String, f64)> {
     APP.with(|cell| {
-        let state = cell.borrow();
-        let app = state.as_ref()?;
-        let s = app.sessions.iter().find(|s| s.id == app.active_id && s.remote().is_none())?;
-        let cwd = s.active_local_cwd().unwrap_or_else(|| s.cwd.clone());
-        Some((s.id, cwd, app.config.shell.clone(), app.font_scale))
+        cell.try_borrow().ok().and_then(|st| st.as_ref().map(|app| app.active_id)).unwrap_or(0)
     })
 }
 
-fn split_active_tab(orientation: c_int) {
-    let Some((sid, cwd, shell, scale)) = active_local_split_context() else { return };
+fn pick_session_vte(s: &TermSession, preferred: *mut GtkWidget) -> *mut GtkWidget {
+    if !preferred.is_null() && s.has_vte(preferred) {
+        preferred
+    } else {
+        s.active_vte()
+    }
+}
+
+fn pane_cwd(s: &TermSession, pane_vte: *mut GtkWidget) -> String {
+    s.panes
+        .live_cwd_for_vte(pane_vte, s.vte, s.child_pid, &s.cwd)
+        .or_else(|| s.active_local_cwd())
+        .unwrap_or_else(|| s.cwd.clone())
+}
+
+fn local_split_context(sid_opt: Option<usize>, target_vte: *mut GtkWidget) -> Option<(usize, *mut GtkWidget, String, String, f64)> {
+    APP.with(|cell| {
+        let state = cell.try_borrow().ok()?;
+        let app = state.as_ref()?;
+        let id = sid_opt.unwrap_or(app.active_id);
+        let s = app.sessions.iter().find(|s| s.id == id && s.remote().is_none())?;
+        let vte = pick_session_vte(s, target_vte);
+        Some((s.id, vte, pane_cwd(s, vte), app.config.shell.clone(), app.font_scale))
+    })
+}
+
+fn split_pane_in_session(sid_opt: Option<usize>, target_vte: *mut GtkWidget, orientation: c_int) {
+    let Some((sid, pane_vte, cwd, shell, scale)) = local_split_context(sid_opt, target_vte) else { return };
     let (new_vte, new_pid) = create_terminal(&cwd, &[shell.as_str()], sid, scale);
     let new_scroll = wrap_vte_scroll(new_vte);
     let split_op = APP.with(|cell| {
-        let mut state = cell.borrow_mut();
-        let s = state.as_mut()?.sessions.iter_mut().find(|s| s.id == sid)?;
-        Some(s.panes.prepare_split(s.scroll_wrap, s.vte, new_scroll, new_vte, new_pid, cwd, orientation))
+        let mut state = cell.try_borrow_mut().ok()?;
+        let s = state.as_mut()?.sessions.iter_mut().find(|s| s.id == sid && s.remote().is_none())?;
+        let chosen = if s.has_vte(pane_vte) { pane_vte } else { ptr::null_mut() };
+        Some(s.panes.prepare_split_vte(chosen, s.scroll_wrap, s.vte, new_scroll, new_vte, new_pid, cwd, orientation))
     });
     finish_split(split_op, new_scroll, new_vte);
     refresh_ui();
     save_tabs();
+}
+
+fn split_active_tab(orientation: c_int) {
+    let target = ptr::null_mut();
+    split_pane_in_session(None, target, orientation);
 }
 
 extern "C" fn on_split_vert(_btn: *mut GtkWidget, _data: *mut c_void) {
@@ -1447,7 +1485,7 @@ fn close_active_pane_or_tab() {
         return;
     }
     let close_op = APP.with(|cell| {
-        let mut state = cell.borrow_mut();
+        let mut state = cell.try_borrow_mut().ok()?;
         let s = state.as_mut()?.sessions.iter_mut().find(|s| s.id == sid)?;
         let op = s
             .panes
@@ -1465,7 +1503,18 @@ fn close_active_pane_or_tab() {
 }
 
 extern "C" fn on_close_tab(_btn: *mut GtkWidget, data: *mut c_void) {
-    close_session(data as usize);
+    let sid = data as usize;
+    close_session(sid);
+}
+
+fn teardown_session(s: TermSession) {
+    s.panes.stop_all_extra();
+    if s.remote().is_some() {
+        stop_ssh(s.child_pid);
+    }
+    unsafe { gtk_widget_destroy(s.panes.root) };
+    s.sidebar_row.destroy();
+    s.top_tab.destroy();
 }
 
 fn close_session(sid: usize) {
@@ -1482,17 +1531,40 @@ fn close_session(sid: usize) {
     });
     if let Some((s, pin_pop)) = removed {
         pin_pop.detach();
-        s.panes.stop_all_extra();
-        if s.remote().is_some() {
-            stop_ssh(s.child_pid);
-        }
-        unsafe {
-            gtk_widget_destroy(s.panes.root);
-        }
-        s.sidebar_row.destroy();
-        s.top_tab.destroy();
+        context_menu::dismiss_rename_popover();
+        teardown_session(s);
         select_session(active_session_id());
     }
+}
+
+fn drain_other_sessions(app: &mut AppState, keep_sid: usize) -> Vec<TermSession> {
+    if !app.sessions.iter().any(|s| s.id == keep_sid) {
+        return Vec::new();
+    }
+    app.active_id = keep_sid;
+    let mut removed = Vec::new();
+    let mut idx = 0;
+    while idx < app.sessions.len() {
+        if app.sessions[idx].id == keep_sid { idx += 1 } else { removed.push(app.sessions.remove(idx)) }
+    }
+    removed
+}
+
+fn close_other_sessions(keep_sid: usize) {
+    let (drained, pin_pop) = APP.with(|cell| {
+        let Ok(mut state) = cell.try_borrow_mut() else { return (Vec::new(), None) };
+        let Some(app) = state.as_mut() else { return (Vec::new(), None) };
+        (drain_other_sessions(app, keep_sid), Some(app.pin_pop.clone()))
+    });
+    if drained.is_empty() {
+        return;
+    }
+    if let Some(pin_pop) = pin_pop {
+        pin_pop.detach();
+    }
+    context_menu::dismiss_rename_popover();
+    drained.into_iter().for_each(teardown_session);
+    select_session(keep_sid);
 }
 
 fn stop_ssh(pid: i32) {
@@ -1513,7 +1585,7 @@ extern "C" fn on_reconnect_active(_btn: *mut GtkWidget, _data: *mut c_void) {
 
 fn reconnect_session(sid: usize) {
     let details = APP.with(|cell| {
-        let state = cell.borrow();
+        let state = cell.try_borrow().ok()?;
         let app = state.as_ref()?;
         let s = app.sessions.iter().find(|s| s.id == sid)?;
         Some((s.remote()?.clone(), s.cwd.clone(), app.font_scale, s.child_pid))
@@ -1529,7 +1601,7 @@ fn reconnect_session(sid: usize) {
 
 fn replace_terminal(sid: usize, vte: *mut GtkWidget, pid: i32, title: String) {
     let swapped = APP.with(|cell| {
-        let mut state = cell.borrow_mut();
+        let mut state = cell.try_borrow_mut().ok()?;
         let app = state.as_mut()?;
         let s = app.sessions.iter_mut().find(|s| s.id == sid)?;
         let old_vte = std::mem::replace(&mut s.vte, vte);
@@ -1654,7 +1726,7 @@ fn snapshot_drop_target(s: &TermSession, vte: *mut GtkWidget) -> PendingDropTarg
         .filter(|h| !h.is_empty());
     PendingDropTarget::CheckLive {
         sid: s.id,
-        pid: s.pid_for_vte(vte).filter(|&p| p > 0),
+        pid: Some(s.pid_for_vte(vte)).filter(|&p| p > 0),
         cached_host,
     }
 }
@@ -1810,7 +1882,7 @@ fn capture_active_to_file() -> Option<PathBuf> {
 
 fn handoff_file_to_session(target_sid: usize, local_path: &Path) {
     let target_host = APP.with(|cell| {
-        let state = cell.borrow();
+        let state = cell.try_borrow().ok()?;
         let app = state.as_ref()?;
         app.sessions.iter().find(|s| s.id == target_sid).map(session_ssh_host)
     });
@@ -1962,8 +2034,11 @@ fn populate_git_popover(force_refresh: bool, popup_after: bool) {
     if let Some(pin_pop) = pin_pop {
         pin_pop.detach();
     }
-    if popup_after && !widgets.popover.is_null() {
-        unsafe { gtk_popover_popup(widgets.popover) };
+    if popup_after {
+        context_menu::dismiss_rename_popover();
+        if !widgets.popover.is_null() {
+            unsafe { gtk_popover_popup(widgets.popover) };
+        }
     }
 }
 
@@ -2020,7 +2095,12 @@ extern "C" fn on_git_popover_key_press(
 }
 
 fn open_git_diff_split(repo_root: &str, rel_path: &str) {
-    let Some((sid, _, shell, scale)) = active_local_split_context() else {
+    let local_ok = APP.with(|cell| {
+        let state = cell.try_borrow().ok()?;
+        let app = state.as_ref()?;
+        app.sessions.iter().find(|s| s.id == app.active_id)?.active_local_cwd()
+    });
+    let Some((sid, _, _, shell, scale)) = local_ok.and_then(|_| local_split_context(None, ptr::null_mut())) else {
         return set_footer_message(&text::GIT_LOCAL_ONLY.to_string_lossy());
     };
     let argv = build_diff_pane_argv(repo_root, rel_path, &shell);
@@ -2190,39 +2270,36 @@ impl Drop for PasteGuard {
     }
 }
 
-fn active_paste_context() -> Option<(usize, *mut GtkWidget, String, String)> {
+fn resolve_session_agent(s: &mut TermSession, target_vte: *mut GtkWidget) -> String {
+    if s.effective_category() == SessionCategory::Remote {
+        return s.proc_info.agent.clone();
+    }
+    let prev = s.proc_info.agent.clone();
+    let live = detect_local_agent(s.pid_for_vte(target_vte));
+    sync_session_proc(s, None);
+    let fallback = if s.proc_info.agent.is_empty() { &prev } else { &s.proc_info.agent };
+    resolve_pane_agent(live.as_deref(), target_vte == s.vte, fallback)
+}
+
+fn pane_paste_context(sid_opt: Option<usize>, preferred_vte: *mut GtkWidget) -> Option<(usize, *mut GtkWidget, String, String)> {
     APP.with(|cell| {
         let mut state = cell.try_borrow_mut().ok()?;
         let app = state.as_mut()?;
-        let s = app.sessions.iter_mut().find(|s| s.id == app.active_id)?;
-        let target_vte = s.active_vte();
-        let focused_pid = s.active_pid();
-        let prev_agent = s.proc_info.agent.clone();
-        let agent = if s.remote().is_none() {
-            let live = detect_local_agent(focused_pid);
-            sync_session_proc(s, None);
-            let fallback = if s.proc_info.agent.is_empty() { &prev_agent } else { &s.proc_info.agent };
-            resolve_pane_agent(live.as_deref(), target_vte == s.vte, fallback)
-        } else {
-            s.proc_info.agent.clone()
-        };
+        let target_id = sid_opt.unwrap_or(app.active_id);
+        let s = app.sessions.iter_mut().find(|s| s.id == target_id)?;
+        let target_vte = pick_session_vte(s, preferred_vte);
+        s.panes.record_focus(target_vte);
+        let agent = resolve_session_agent(s, target_vte);
         Some((s.id, target_vte, session_ssh_host(s), agent))
     })
 }
 
-fn session_paste_widgets(
-    sid: usize,
-    preferred_vte: *mut GtkWidget,
-) -> Option<(*mut GtkWidget, *mut GtkWidget)> {
+fn session_paste_widgets(sid: usize, preferred_vte: *mut GtkWidget) -> Option<(*mut GtkWidget, *mut GtkWidget)> {
     APP.with(|cell| {
-        let state = cell.borrow();
+        let state = cell.try_borrow().ok()?;
         let app = state.as_ref()?;
         let s = app.sessions.iter().find(|s| s.id == sid)?;
-        let vte = if !preferred_vte.is_null() && s.has_vte(preferred_vte) {
-            preferred_vte
-        } else {
-            s.active_vte()
-        };
+        let vte = pick_session_vte(s, preferred_vte);
         (!vte.is_null()).then_some((vte, app.footer_status))
     })
 }
@@ -2244,12 +2321,12 @@ fn finish_paste(vte: *mut GtkWidget, footer: *mut GtkWidget, image: Option<(Stri
     unsafe { gtk_widget_grab_focus(vte) };
 }
 
-fn paste_routed(plain_ctrl_v: bool, force_image: bool) -> bool {
+fn paste_routed_to(sid_opt: Option<usize>, preferred_vte: *mut GtkWidget, plain_ctrl_v: bool, force_image: bool) -> bool {
     if PASTE_BUSY.with(|busy| busy.replace(true)) {
         return !force_image;
     }
     let _guard = PasteGuard;
-    let Some((sid, target_vte, host, agent)) = active_paste_context() else { return false };
+    let Some((sid, target_vte, host, agent)) = pane_paste_context(sid_opt, preferred_vte) else { return false };
     if choose_paste_route(plain_ctrl_v, &host, &agent) == PasteRoute::PassThroughToPty {
         return false;
     }
@@ -2263,11 +2340,206 @@ fn paste_routed(plain_ctrl_v: bool, force_image: bool) -> bool {
 }
 
 fn paste_smart(force_image: bool) -> bool {
-    paste_routed(false, force_image)
+    let target = ptr::null_mut();
+    paste_routed_to(None, target, false, force_image)
 }
 
 fn paste_plain_ctrl_v() -> bool {
-    paste_routed(true, true)
+    let sid = active_session_id();
+    paste_routed_to(Some(sid), ptr::null_mut(), true, true)
+}
+
+fn has_live_vte(vte: *mut GtkWidget) -> bool {
+    if vte.is_null() {
+        return false;
+    }
+    APP.with(|cell| {
+        cell.try_borrow()
+            .ok()
+            .and_then(|st| st.as_ref().map(|a| a.sessions.iter().any(|s| s.has_vte(vte))))
+            .unwrap_or(false)
+    })
+}
+
+fn collect_forward_targets(app: &AppState, source_sid: usize) -> Vec<SessionTarget> {
+    let has_regular = app.sessions.iter().any(|s| s.category != SessionCategory::Daemon);
+    app.sessions
+        .iter()
+        .filter(|s| !has_regular || s.category != SessionCategory::Daemon)
+        .map(|s| format_session_target(s.id, &s.title, &session_ssh_host(s), source_sid))
+        .collect()
+}
+
+fn forward_pane_to_tab(source_sid: usize, source_vte: *mut GtkWidget, target_sid: usize, selected_text: Option<String>) {
+    let ctx = APP.with(|cell| {
+        let state = cell.try_borrow().ok()?;
+        let app = state.as_ref()?;
+        let s = app.sessions.iter().find(|s| s.id == source_sid)?;
+        let pane_vte = pick_session_vte(s, source_vte);
+        Some((pane_vte, s.title.clone(), pane_cwd(s, pane_vte), session_ssh_host(s), app.config.briefs_dir.clone()))
+    });
+    let Some((pane_vte, title, cwd, ssh_host, briefs_dir)) = ctx else { return };
+    match save_forward_capture(briefs_dir.as_deref(), pane_vte, &title, &cwd, &ssh_host, selected_text) {
+        Ok(path) => handoff_file_to_session(target_sid, &path),
+        Err(msg) => set_footer_message(&msg),
+    }
+}
+
+fn close_pane_in_session(sid: usize, target_vte: *mut GtkWidget) {
+    let outcome = APP.with(|cell| {
+        let mut state = cell.try_borrow_mut().ok()?;
+        let app = state.as_mut()?;
+        let active_id = app.active_id;
+        let s = app.sessions.iter_mut().find(|s| s.id == sid && s.remote().is_none() && s.has_vte(target_vte))?;
+        if !s.panes.has_splits() {
+            return Some((false, None));
+        }
+        let op = s.panes.prepare_close_vte(target_vte, &mut s.scroll_wrap, &mut s.vte, &mut s.child_pid, &mut s.cwd)?;
+        sync_session_proc(s, None);
+        Some((s.id == active_id, Some(op)))
+    });
+    if let Some((is_active, maybe_op)) = outcome {
+        match maybe_op {
+            Some(op) => { op.apply_focus(is_active); refresh_ui(); save_tabs(); }
+            None => close_session(sid),
+        }
+    }
+}
+
+fn duplicate_session_tab(sid: usize) {
+    let dup = APP.with(|cell| {
+        let state = cell.try_borrow().ok()?;
+        let s = state.as_ref()?.sessions.iter().find(|s| s.id == sid)?;
+        Some(match &s.tab {
+            Tab::Local { profile, .. } => {
+                Tab::Local { profile: profile.clone(), cwd: s.active_local_cwd().unwrap_or_else(|| s.cwd.clone()) }
+            }
+            Tab::Remote(remote) => Tab::Remote(remote.clone()),
+        })
+    });
+    if let Some(tab) = dup {
+        open_tab(tab);
+    }
+}
+
+fn commit_tab_rename(sid: usize, new_title: String) {
+    apply_pinned_tab_title(sid, session::sanitize_pinned_title(Some(&new_title)));
+}
+
+fn open_rename_for_tab(sid: usize, anchor: *mut GtkWidget) {
+    dismiss_git_popover();
+    let target = APP.with(|cell| {
+        let state = cell.try_borrow().ok()?;
+        let app = state.as_ref()?;
+        let s = app.sessions.iter().find(|s| s.id == sid)?;
+        let row = s.sidebar_row.row_widget();
+        let valid_anchor = if anchor == row { row } else { s.top_tab.select_button() };
+        let initial = s.pinned_title.as_deref().unwrap_or(&s.title).to_owned();
+        let pal = app.palette.is_open().then(|| app.palette.clone());
+        Some((pal, app.pin_pop.clone(), valid_anchor, initial))
+    });
+    if let Some((pal, pin_pop, valid_anchor, current_title)) = target {
+        if let Some(pal) = pal {
+            pal.close();
+        }
+        pin_pop.detach();
+        context_menu::popup_rename_popover(
+            valid_anchor,
+            sid,
+            &current_title,
+            commit_tab_rename,
+            focus_active_vte,
+        );
+    }
+}
+
+fn clear_vte_buffer(vte: *mut GtkWidget) {
+    if !has_live_vte(vte) {
+        return;
+    }
+    unsafe {
+        vte_terminal_reset(vte, 0, 1);
+        gtk_widget_grab_focus(vte);
+    }
+}
+
+fn copy_vte_selection(vte: *mut GtkWidget) {
+    if !has_live_vte(vte) {
+        return;
+    }
+    unsafe {
+        vte_terminal_copy_clipboard_format(vte, VTE_FORMAT_TEXT);
+        gtk_widget_grab_focus(vte);
+    }
+}
+
+fn execute_vte_action(action: ContextAction) -> Result<(), ContextAction> {
+    match action {
+        ContextAction::CopySelection(vte) => copy_vte_selection(vte),
+        ContextAction::PasteSmart { sid, vte } => { let _ = paste_routed_to(Some(sid), vte, false, false); }
+        ContextAction::OpenLink(url) => open_external_link(&url),
+        ContextAction::CopyText(value) => context_menu::copy_text_to_clipboard(&value),
+        ContextAction::ForwardToTab { source_sid, source_vte, target_sid, selected_text } => {
+            forward_pane_to_tab(source_sid, source_vte, target_sid, selected_text);
+        }
+        ContextAction::SplitRight { sid, vte } => split_pane_in_session(Some(sid), vte, GTK_ORIENTATION_HORIZONTAL),
+        ContextAction::SplitDown { sid, vte } => split_pane_in_session(Some(sid), vte, GTK_ORIENTATION_VERTICAL),
+        ContextAction::ClosePane { sid, vte } => close_pane_in_session(sid, vte),
+        ContextAction::ClearBuffer(vte) => clear_vte_buffer(vte),
+        other => return Err(other),
+    }
+    Ok(())
+}
+
+fn execute_context_action(action: ContextAction) {
+    let Err(tab_action) = execute_vte_action(action) else { return };
+    match tab_action {
+        ContextAction::RenameTab { sid, anchor } => open_rename_for_tab(sid, anchor),
+        ContextAction::DuplicateTab(sid) => duplicate_session_tab(sid),
+        ContextAction::ReconnectTab(sid) => reconnect_session(sid),
+        ContextAction::CloseTab(sid) => close_session(sid),
+        ContextAction::CloseOtherTabs(sid) => close_other_sessions(sid),
+        _ => {}
+    }
+}
+
+fn make_context_dispatcher() -> DispatchFn {
+    let handler: DispatchFn = Rc::new(execute_context_action);
+    handler
+}
+
+fn open_vte_context_menu(vte: *mut GtkWidget, event: *const GdkEvent, link_target: Option<String>) {
+    let has_selection = !vte.is_null() && unsafe { vte_terminal_get_has_selection(vte) != 0 };
+    let selected_text = if has_selection { context_menu::read_vte_selection(vte) } else { None };
+    let spec = APP.with(|cell| {
+        let mut state = cell.try_borrow_mut().ok()?;
+        let app = state.as_mut()?;
+        let idx = app.sessions.iter().position(|s| s.has_vte(vte))?;
+        app.sessions[idx].panes.record_focus(vte);
+        let sid = app.sessions[idx].id;
+        let is_local = app.sessions[idx].remote().is_none();
+        let targets = collect_forward_targets(app, sid);
+        Some(VteMenuSpec { sid, vte, has_selection, selected_text, link_target, is_local, targets })
+    });
+    if let Some(spec) = spec {
+        context_menu::popup_vte_menu(&spec, event, make_context_dispatcher());
+    }
+}
+
+extern "C" fn on_tab_context_menu(widget: *mut GtkWidget, event: *const GdkEvent, data: *mut c_void) -> c_int {
+    if !context_menu::is_right_button_press(event) {
+        return 0;
+    }
+    let sid = data as usize;
+    let spec = APP.with(|cell| {
+        let state = cell.try_borrow().ok()?;
+        let app = state.as_ref()?;
+        let s = app.sessions.iter().find(|s| s.id == sid)?;
+        Some(TabMenuSpec { sid, anchor: widget, local_cwd: s.active_local_cwd(), is_remote: s.remote().is_some(), can_close_others: app.sessions.len() > 1 })
+    });
+    let Some(spec) = spec else { return 0 };
+    context_menu::popup_tab_menu(&spec, event, make_context_dispatcher());
+    1
 }
 
 fn copy_active_selection() {
@@ -2518,6 +2790,7 @@ fn open_search_bar() {
 }
 
 fn toggle_search_bar() {
+    context_menu::dismiss_rename_popover();
     dismiss_git_popover();
     let triple = APP.with(|cell| {
         let state = cell.try_borrow().ok()?;
@@ -2587,6 +2860,7 @@ fn toggle_palette() {
     if let Some((pal, pin_pop, maybe_items)) = snapshot {
         match maybe_items {
             Some(items) => {
+                context_menu::dismiss_rename_popover();
                 pin_pop.detach();
                 pal.open(items);
             }
@@ -2605,6 +2879,9 @@ fn is_overlay_open() -> bool {
 }
 
 fn route_palette_key(keyval: c_uint, state: c_uint, keycode: u16) -> Option<c_int> {
+    if context_menu::is_rename_open() {
+        return Some(0);
+    }
     if palette::is_palette_shortcut(keyval, state, keycode) {
         dismiss_git_popover();
         toggle_palette();
@@ -2828,6 +3105,7 @@ fn run_app() {
     let _ui_font = ui_font::load().inspect_err(|error| eprintln!("AkhTerm: {error}"));
     register_link_cwd_lookup(lookup_vte_link_cwd);
     install_file_drop_hooks();
+    register_vte_menu_hook(open_vte_context_menu);
     let config = WorkspaceConfig::load();
     let initial_theme = theme_mode::load_initial_theme(config.theme);
     let mi_dirs = config.mi_directories();
@@ -3352,8 +3630,70 @@ mod tests {
         pump_gtk_events();
     }
 
+    fn verify_unified_rename_persists_and_resets_in_tabs_v1() {
+        let state_path = std::env::temp_dir().join(format!("akhterm_k8_tabs_{}", std::process::id()));
+        let _ = std::fs::remove_file(&state_path);
+        let win = unsafe { gtk_window_new(GTK_WINDOW_TOPLEVEL) };
+        let mut app = make_test_app(win);
+        app.tab_store = Some(TabStore::new_for_test(state_path.clone()));
+        APP.with(|cell| *cell.borrow_mut() = Some(app));
+        let sid = add_tab("Shell", "", "/tmp", SessionCategory::Project, &["sh"], Tab::local("shell"));
+        commit_tab_rename(sid, "Прод ЦУ".to_owned());
+        let saved = std::fs::read_to_string(&state_path).expect("tabs-v1 written");
+        let decoded = TabsState::decode(&saved).expect("valid tabs-v1");
+        assert_eq!(decoded.pinned_at(0), Some("Прод ЦУ"));
+        commit_tab_rename(sid, "   ".to_owned());
+        let cleared = std::fs::read_to_string(&state_path).expect("tabs-v1 updated");
+        let decoded_clear = TabsState::decode(&cleared).expect("valid cleared tabs-v1");
+        assert_eq!(decoded_clear.pinned_at(0), None);
+        close_session(sid);
+        APP.with(|cell| *cell.borrow_mut() = None);
+        unsafe { gtk_widget_destroy(win) };
+        pump_gtk_events();
+        let _ = std::fs::remove_file(&state_path);
+    }
+
     #[test]
     fn app_routes_local_and_remote_drops_and_ignores_closed_vte_on_idle() {
-        with_headless_gtk(verify_app_drop_routing_and_mid_upload_close);
+        with_headless_gtk(|| {
+            verify_app_drop_routing_and_mid_upload_close();
+            verify_unified_rename_persists_and_resets_in_tabs_v1();
+        });
+    }
+
+    #[test]
+    fn k8_full_stack_maintainability_index_targets() {
+        let mut rows = Vec::new();
+        for entry in std::fs::read_dir("src").expect("src dir") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let content = std::fs::read_to_string(&path).expect("read rs");
+            let (sloc, cc, score) = mi::compute_file_mi(&content);
+            rows.push((name, sloc, cc, score, mi::grade_for_mi(score)));
+        }
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, sloc, cc, score, grade) in &rows {
+            println!("{name:<18} | SLOC {sloc:>4} | CC {cc:>2} | MI {score:>6.2} | Grade {grade}");
+            if name == "main.rs" {
+                assert!(*score >= 54.87, "main.rs MI {score:.2} < 54.87");
+            }
+            let is_new_v04 = matches!(
+                name.as_str(),
+                "context_menu.rs"
+                    | "file_drop.rs"
+                    | "git_status.rs"
+                    | "search_bar.rs"
+                    | "ssh_detect.rs"
+                    | "tab_order.rs"
+                    | "telemetry.rs"
+                    | "theme_mode.rs"
+            );
+            if is_new_v04 {
+                assert!(*score >= 58.0, "{name} MI {score:.2} < 58.0");
+            }
+        }
     }
 }
