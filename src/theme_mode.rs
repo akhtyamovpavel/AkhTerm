@@ -136,6 +136,34 @@ impl ThemeMode {
             Self::Light => ("#52525b", "#5b21b6"),
         }
     }
+
+    pub fn tokens_markup_colors(self) -> TokensMarkupColors {
+        match self {
+            Self::Dark => TokensMarkupColors {
+                high: "#fda4af",
+                warn: "#e7c389",
+                timer: "#9bbcf3",
+                muted: "#a1a1aa",
+                summary: "#c4b5fd",
+            },
+            Self::Light => TokensMarkupColors {
+                high: "#be123c",
+                warn: "#b45309",
+                timer: "#1d4ed8",
+                muted: "#52525b",
+                summary: "#5b21b6",
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TokensMarkupColors {
+    pub high: &'static str,
+    pub warn: &'static str,
+    pub timer: &'static str,
+    pub muted: &'static str,
+    pub summary: &'static str,
 }
 
 fn is_l_or_cyrillic_de(keyval: c_uint) -> bool {

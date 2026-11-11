@@ -17,6 +17,7 @@ mod split_pane;
 mod ssh_detect;
 mod tab_strip;
 mod tabs;
+mod telemetry;
 mod theme;
 mod theme_mode;
 mod ui_font;
@@ -64,6 +65,10 @@ use sidebar::Sidebar;
 use split_pane::{apply_zoom_scale, finish_split, wrap_vte_scroll, TabPanes};
 use tab_strip::TabStrip;
 use tabs::{Tab, TabStore, TabsState};
+use telemetry::{
+    build_sessions_tokens_view, run_poll_job, SessionPollJob, SessionTelemetry, TokensMenu,
+    TokensViewData,
+};
 use ui_text as text;
 
 struct AppState {
@@ -89,6 +94,7 @@ struct AppState {
     mi_pop: *mut GtkWidget,
     mi_pop_label: *mut GtkWidget,
     mi_refactor_btn: *mut GtkWidget,
+    tokens_menu: TokensMenu,
     agents_pop: *mut GtkWidget,
     box_pop: *mut GtkWidget,
     box_gpu_label: *mut GtkWidget,
@@ -378,6 +384,7 @@ extern "C" fn on_vte_contents_changed(vte: *mut GtkWidget, user_data: *mut c_voi
                 if s.category != SessionCategory::Daemon && s.state != WorkState::Working {
                     s.state = WorkState::Working;
                     s.work_started = now;
+                    s.work_started_at = Some(now);
                 }
                 if sid == active {
                     s.unread = false;
@@ -424,6 +431,7 @@ extern "C" fn on_vte_child_exited(vte: *mut GtkWidget, _status: c_int, user_data
                 s.child_pid = 0;
                 s.state = WorkState::Idle;
                 s.unread = false;
+                s.work_started_at = None;
             }
         }
     });
@@ -629,6 +637,9 @@ fn retarget_remote_session(sid: usize, target_session: &str) {
                 }
                 s.remote_tmux = None;
                 s.tmux_title_from_vte = false;
+                s.work_started_at = None;
+                s.last_turn_secs = None;
+                s.telemetry = SessionTelemetry::default();
             }
         }
     });
@@ -731,11 +742,14 @@ fn add_tab(
                     unread: false,
                     last_output: Instant::now(),
                     work_started: Instant::now(),
+                    work_started_at: None,
+                    last_turn_secs: None,
                     last_notified: None,
                     proc_info: inspect_proc_tree(pid),
                     tab,
                     remote_tmux: None,
                     tmux_title_from_vte: false,
+                    telemetry: SessionTelemetry::default(),
                 };
                 refresh_smart_title(&mut session);
                 app.sessions.push(session);
@@ -888,6 +902,58 @@ extern "C" fn on_mi_refactor_clicked(_btn: *mut GtkWidget, _data: *mut c_void) {
     }
 }
 
+fn collect_tokens_view(app: &AppState, now: Instant) -> (TokensMenu, TokensViewData) {
+    (
+        app.tokens_menu,
+        build_sessions_tokens_view(&app.sessions, app.active_id, app.theme_mode, now),
+    )
+}
+
+extern "C" fn on_tokens_open(_btn: *mut GtkWidget, _pop_ptr: *mut c_void) {
+    let target = APP.with(|cell| {
+        let state = cell.try_borrow().ok()?;
+        let app = state.as_ref()?;
+        Some(collect_tokens_view(app, Instant::now()))
+    });
+    if let Some((menu, view)) = target {
+        menu.apply(&view);
+        if !menu.popover().is_null() {
+            unsafe { gtk_popover_popup(menu.popover()) };
+        }
+    }
+}
+
+fn snapshot_telemetry_jobs() -> Vec<SessionPollJob> {
+    APP.with(|cell| {
+        let Ok(state) = cell.try_borrow() else { return Vec::new() };
+        let Some(app) = state.as_ref() else { return Vec::new() };
+        app.sessions.iter().map(SessionPollJob::from_session).collect()
+    })
+}
+
+fn apply_telemetry_updates(updated: Vec<(usize, SessionTelemetry)>) {
+    APP.with(|cell| {
+        let Ok(mut state) = cell.try_borrow_mut() else { return };
+        let Some(app) = state.as_mut() else { return };
+        for (sid, telem) in updated {
+            if let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid) {
+                s.telemetry = telem;
+            }
+        }
+    });
+}
+
+fn poll_all_session_telemetry() {
+    let jobs = snapshot_telemetry_jobs();
+    if jobs.is_empty() {
+        return;
+    }
+    let home = PathBuf::from(home_dir());
+    let now = Instant::now();
+    let updated = jobs.into_iter().map(|job| run_poll_job(job, &home, now)).collect();
+    apply_telemetry_updates(updated);
+}
+
 struct UiRefreshPlan {
     rows: Vec<sidebar::RowUpdate>,
     tabs: Vec<tab_strip::TabUpdate>,
@@ -895,6 +961,7 @@ struct UiRefreshPlan {
     btns: [*mut GtkWidget; 3],
     flags: (bool, bool),
     mi: MiUiPlan,
+    tokens: (TokensMenu, TokensViewData),
     footer: (*mut GtkWidget, String),
 }
 
@@ -956,6 +1023,7 @@ impl UiRefreshPlan {
             btns: [app.reconnect_btn, app.split_vert_btn, app.split_horiz_btn],
             flags: (can_rec, !app.sessions.is_empty() && !can_rec),
             mi: MiUiPlan::from_state(app, cur_mi, self_mi),
+            tokens: collect_tokens_view(app, Instant::now()),
             footer: (app.footer_status, footer),
         }
     }
@@ -975,6 +1043,7 @@ impl UiRefreshPlan {
             gtk_widget_set_sensitive(split_horiz_btn, i32::from(self.flags.1));
         }
         self.mi.apply();
+        self.tokens.0.apply(&self.tokens.1);
         set_label_text(self.footer.0, &self.footer.1);
     }
 }
@@ -1010,6 +1079,7 @@ extern "C" fn on_radar_tick(_data: *mut c_void) -> c_int {
             sync_tmux_jump_buttons(app, &box_snap.tmux_items);
         }
     });
+    poll_all_session_telemetry();
     refresh_ui();
     save_tabs();
     1
@@ -1223,6 +1293,9 @@ fn replace_terminal(sid: usize, vte: *mut GtkWidget, pid: i32, title: String) {
         let now = Instant::now();
         s.last_output = now;
         s.work_started = now;
+        s.work_started_at = None;
+        s.last_turn_secs = None;
+        s.telemetry = SessionTelemetry::default();
         Some((old_vte, s.scroll_wrap))
     });
     if let Some((old_vte, scroll_wrap)) = swapped {
@@ -2195,6 +2268,8 @@ fn run_app() {
         let mi_btn = gtk_button_new_with_label(text::MAINTAINABILITY.as_ptr());
         gtk_box_pack_end(topbar, mi_btn, 0, 0, 0);
 
+        let tokens_menu = TokensMenu::new(topbar, on_tokens_open);
+
         // Popover: Maintainability Index (MI)
         let mi_pop = gtk_popover_new(mi_btn);
         let mi_pop_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
@@ -2408,6 +2483,7 @@ fn run_app() {
                 mi_pop,
                 mi_pop_label,
                 mi_refactor_btn,
+                tokens_menu,
                 agents_pop,
                 box_pop,
                 box_gpu_label,
@@ -2506,6 +2582,7 @@ mod tests {
                 mi_pop: ptr::null_mut(),
                 mi_pop_label: lbl,
                 mi_refactor_btn: btn,
+                tokens_menu: TokensMenu::new(vbox, on_tokens_open),
                 agents_pop: ptr::null_mut(),
                 box_pop: ptr::null_mut(),
                 box_gpu_label: lbl,

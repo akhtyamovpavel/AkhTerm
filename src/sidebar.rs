@@ -4,12 +4,16 @@ use std::cell::Cell;
 use std::ffi::{c_int, c_void, CStr};
 use std::path::Path;
 use std::ptr;
+use std::time::Instant;
 
 use crate::ffi::*;
 use crate::git_wt::{detect_git_head, GitHeadInfo};
 use crate::mi_watch::resolve_project_root;
 use crate::paths::{home_dir, shorten_home};
 use crate::session::{SessionCategory, TermSession, WorkState};
+use crate::telemetry::{
+    format_turn_duration, format_working_sidebar_status, ContextAlert,
+};
 use crate::theme::set_agent_accent;
 use crate::ui_text as text;
 use crate::{connect_click, connect_entry_changed};
@@ -347,13 +351,26 @@ impl SidebarRow {
         mi: Option<(f64, &str)>,
         active: bool,
     ) -> RowUpdate {
+        let now = Instant::now();
         let eff_cat = session.effective_category();
         let (status, style) = status_for(session);
+        let live_status = (style == "sidebar-working" && session.category != SessionCategory::Daemon)
+            .then(|| session.live_turn_secs(now))
+            .flatten()
+            .map(format_working_sidebar_status);
+        let status_text = live_status
+            .as_deref()
+            .map_or_else(|| status.to_string_lossy(), std::borrow::Cow::Borrowed);
+        let tip_status = format_settled_status(&status_text, session.settled_turn_secs());
         let detail = tab_detail(session);
+        let snap = session.telemetry.snapshot();
+        let ctx_badge = snap.compact_context_badge();
         let eff_mi = (eff_cat != SessionCategory::Remote).then_some(mi).flatten();
-        let metric = eff_mi.map_or(String::new(), |(score, grade)| format!("MI {score:.1} · {grade}"));
-        let metric_tip = format_metric_tooltip(&metric, local_project_root(session).as_deref());
-        let tip = format_row_tooltip(&session.title, &status.to_string_lossy(), &detail, &metric_tip, index);
+        let mi_str = eff_mi.map_or(String::new(), |(score, grade)| format!("MI {score:.1} · {grade}"));
+        let metric = combine_metric_parts(ctx_badge.as_deref(), &mi_str);
+        let mi_tip = format_metric_tooltip(&mi_str, local_project_root(session).as_deref());
+        let metric_tip = combine_metric_parts(ctx_badge.as_deref(), &mi_tip);
+        let tip = format_row_tooltip(&session.title, &tip_status, &detail, &metric_tip, index);
         RowUpdate {
             widget: self.widget,
             icon: self.icon,
@@ -365,10 +382,12 @@ impl SidebarRow {
             agent: session.proc_info.agent.clone(),
             active,
             status,
+            live_status,
             style,
             title: session.title.clone(),
             detail,
             metric,
+            alert: snap.alert_level(),
             tip,
         }
     }
@@ -424,11 +443,37 @@ fn format_row_tooltip(
     out
 }
 
-fn apply_row_status(status_label: *mut GtkWidget, status: &'static CStr, style: &'static str) {
+fn combine_metric_parts(ctx_badge: Option<&str>, mi_text: &str) -> String {
+    match (ctx_badge, mi_text.is_empty()) {
+        (Some(ctx), false) => format!("{ctx} · {mi_text}"),
+        (Some(ctx), true) => ctx.to_owned(),
+        (None, false) => mi_text.to_owned(),
+        (None, true) => String::new(),
+    }
+}
+
+fn format_settled_status(status: &str, settled_secs: Option<u64>) -> String {
+    match (status.is_empty(), settled_secs) {
+        (false, Some(secs)) => format!("{status} · ⏱ {}", format_turn_duration(secs)),
+        (true, Some(secs)) => format!("⏱ {}", format_turn_duration(secs)),
+        _ => status.to_owned(),
+    }
+}
+
+fn apply_row_status(
+    status_label: *mut GtkWidget,
+    status: &'static CStr,
+    live_status: Option<&str>,
+    style: &'static str,
+) {
     for class in ["sidebar-approval", "sidebar-ready", "sidebar-working", "sidebar-ended"] {
         set_class(status_label, class, style == class);
     }
-    unsafe { gtk_label_set_text(status_label, status.as_ptr()) };
+    if let Some(live) = live_status {
+        set_label_text(status_label, live);
+    } else {
+        unsafe { gtk_label_set_text(status_label, status.as_ptr()) };
+    }
 }
 
 pub struct RowUpdate {
@@ -442,10 +487,12 @@ pub struct RowUpdate {
     agent: String,
     active: bool,
     status: &'static CStr,
+    live_status: Option<String>,
     style: &'static str,
     title: String,
     detail: String,
     metric: String,
+    alert: ContextAlert,
     tip: String,
 }
 
@@ -456,9 +503,11 @@ impl RowUpdate {
         }
         set_agent_accent(self.icon, &self.agent);
         set_class(self.widget, "sidebar-selected", self.active);
-        apply_row_status(self.status_lbl, self.status, self.style);
+        apply_row_status(self.status_lbl, self.status, self.live_status.as_deref(), self.style);
         set_label_text(self.title_lbl, &self.title);
         set_label_text(self.detail_lbl, &self.detail);
+        set_class(self.metric_lbl, "sidebar-metric-warn", self.alert == ContextAlert::Warn);
+        set_class(self.metric_lbl, "sidebar-metric-high", self.alert == ContextAlert::High);
         set_label_text(self.metric_lbl, &self.metric);
         set_tooltip(self.widget, &self.tip);
     }
@@ -683,11 +732,14 @@ mod tests {
             unread: false,
             last_output: now,
             work_started: now,
+            work_started_at: None,
+            last_turn_secs: None,
             last_notified: None,
             proc_info,
             tab,
             remote_tmux: None,
             tmux_title_from_vte: false,
+            telemetry: crate::telemetry::SessionTelemetry::default(),
         }
     }
 
@@ -717,6 +769,13 @@ mod tests {
         assert_eq!(
             tip,
             "AkhTerm · Ждёт апрува\n~/proj/src · ⎇ main\nMI 61.2 · B (~/proj)\nAlt+1"
+        );
+        let settled = format_settled_status("Готово", Some(134));
+        let full_m = combine_metric_parts(Some("ctx 84k"), &m);
+        let tip2 = format_row_tooltip("AkhTerm", &settled, "~/proj · ⎇ main", &full_m, 1);
+        assert_eq!(
+            tip2,
+            "AkhTerm · Готово · ⏱ 2m 14s\n~/proj · ⎇ main\nctx 84k · MI 61.2 · B (~/proj)\nAlt+2"
         );
     }
 

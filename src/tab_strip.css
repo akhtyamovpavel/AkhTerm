@@ -35,6 +35,11 @@
     font-weight: 600;
 }
 
+.terminal-tab .tab-status.tab-timer {
+    color: @status_working;
+    font-weight: 500;
+}
+
 button.tab-select,
 button.tab-close {
     background-color: transparent;
