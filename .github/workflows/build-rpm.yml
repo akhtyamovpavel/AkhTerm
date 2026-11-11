@@ -1,0 +1,107 @@
+name: Build Fedora RPM package
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  build-rpm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    env:
+      RUSTUP_TOOLCHAIN: 1.85.1
+
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Test and build x86_64 RPM on Fedora 41
+        id: package
+        run: |
+          docker run --rm -i \
+            -e RUSTUP_TOOLCHAIN \
+            --mount "type=bind,source=$PWD,target=/workspace" \
+            -w /workspace \
+            fedora:41 bash -euo pipefail <<'BUILD'
+          dnf install -y --setopt=install_weak_deps=False \
+            cpio \
+            desktop-file-utils \
+            diffutils \
+            fontconfig-devel \
+            gcc \
+            git-core \
+            gtk3 \
+            gtk3-devel \
+            rpm-build \
+            rustup \
+            vte291-devel
+          rustup-init -y --default-toolchain "$RUSTUP_TOOLCHAIN" --profile minimal --no-modify-path
+          export PATH="$HOME/.cargo/bin:$PATH"
+          desktop-file-validate packaging/org.akhterm.AkhTerm.desktop
+          cargo test --offline --locked
+          ./packaging/build-rpm.sh
+          packages=(target/rpm/akhterm-*-1.x86_64.rpm)
+          test "${#packages[@]}" -eq 1
+          test -f "${packages[0]}"
+          contents="$(rpm -qlp "${packages[0]}")"
+          grep -Fxq '/usr/bin/akhterm' <<< "$contents"
+          grep -Fxq '/usr/share/applications/org.akhterm.AkhTerm.desktop' <<< "$contents"
+          grep -Fxq '/usr/share/icons/hicolor/scalable/apps/org.akhterm.AkhTerm.svg' <<< "$contents"
+          grep -Fxq '/usr/share/doc/akhterm/config.example.conf' <<< "$contents"
+          grep -Fxq '/usr/share/licenses/akhterm/LICENSE' <<< "$contents"
+          grep -Fxq '/usr/share/licenses/akhterm/OFL-Geist.txt' <<< "$contents"
+          grep -Fxq '/usr/share/licenses/akhterm/NOTICE' <<< "$contents"
+          extract_dir="$(mktemp -d)"
+          rpm2cpio "${packages[0]}" | cpio -id --quiet -D "$extract_dir"
+          cmp -s "$extract_dir/usr/share/licenses/akhterm/OFL-Geist.txt" assets/fonts/OFL-Geist.txt
+          cmp -s "$extract_dir/usr/share/licenses/akhterm/LICENSE" LICENSE
+          cmp -s "$extract_dir/usr/share/licenses/akhterm/NOTICE" packaging/NOTICE
+          cmp -s "$extract_dir/usr/share/doc/akhterm/config.example.conf" config.example.conf
+          rm -r -f -- "$extract_dir"
+          chown -R "$(stat -c '%u:%g' /workspace)" /workspace/target
+          BUILD
+          packages=(target/rpm/akhterm-*-1.x86_64.rpm)
+          test "${#packages[@]}" -eq 1
+          test -f "${packages[0]}"
+          echo "path=${packages[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify installation on Fedora 41 and 42
+        env:
+          PACKAGE_PATH: ${{ steps.package.outputs.path }}
+        run: |
+          package="$(realpath "$PACKAGE_PATH")"
+          for version in 41 42; do
+            echo "::group::Fedora $version"
+            docker run --rm -i \
+              --mount "type=bind,source=$package,target=/tmp/akhterm.rpm,readonly" \
+              "fedora:$version" bash -euo pipefail <<'CHECK'
+          dnf install -y /tmp/akhterm.rpm breeze-icon-theme breeze-gtk-gtk3 desktop-file-utils
+          rpm -q akhterm
+          test -x /usr/bin/akhterm
+          test -s /usr/share/applications/org.akhterm.AkhTerm.desktop
+          test -s /usr/share/icons/hicolor/scalable/apps/org.akhterm.AkhTerm.svg
+          test -s /usr/share/licenses/akhterm/LICENSE
+          test -s /usr/share/licenses/akhterm/OFL-Geist.txt
+          test -s /usr/share/licenses/akhterm/NOTICE
+          desktop-file-validate /usr/share/applications/org.akhterm.AkhTerm.desktop
+          libraries="$(ldd /usr/bin/akhterm)"
+          if grep -Fq 'not found' <<< "$libraries"; then
+            echo "$libraries" >&2
+            exit 1
+          fi
+          CHECK
+            echo "::endgroup::"
+          done
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: ${{ steps.package.outputs.path }}
+          archive: false
+          if-no-files-found: error
