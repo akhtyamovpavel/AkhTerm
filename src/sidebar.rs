@@ -6,7 +6,8 @@ use std::ptr;
 
 use crate::ffi::*;
 use crate::git_wt::{detect_git_head, GitHeadInfo};
-use crate::paths::{expand_home, shorten_home};
+use crate::mi_watch::resolve_project_root;
+use crate::paths::{expand_home, home_dir, shorten_home};
 use crate::session::{SessionCategory, TermSession, WorkState};
 use crate::theme::set_agent_accent;
 use crate::ui_text as text;
@@ -237,7 +238,8 @@ impl SidebarRow {
         set_label_text(self.detail, &detail);
         let metric = mi.map_or(String::new(), |(score, grade)| format!("MI {score:.1} · {grade}"));
         set_label_text(self.metric, &metric);
-        let tip = format_row_tooltip(&session.title, &status.to_string_lossy(), &detail, &metric, index);
+        let metric_tip = format_metric_tooltip(&metric, local_project_root(session).as_deref());
+        let tip = format_row_tooltip(&session.title, &status.to_string_lossy(), &detail, &metric_tip, index);
         set_tooltip(self.widget, &tip);
     }
 
@@ -286,16 +288,34 @@ fn status_for(session: &TermSession) -> (&'static CStr, &'static str) {
     }
 }
 
-fn local_git_head(session: &TermSession) -> Option<GitHeadInfo> {
+fn local_directory(session: &TermSession) -> Option<&str> {
     if session.remote().is_some() {
         return None;
     }
-    let directory = if session.proc_info.cwd.is_empty() {
+    let dir = if session.proc_info.cwd.is_empty() {
         &session.cwd
     } else {
         &session.proc_info.cwd
     };
-    detect_git_head(Path::new(&expand_home(directory)))
+    (!dir.is_empty()).then_some(dir)
+}
+
+fn local_git_head(session: &TermSession) -> Option<GitHeadInfo> {
+    let dir = local_directory(session)?;
+    detect_git_head(Path::new(&expand_home(dir)))
+}
+
+fn local_project_root(session: &TermSession) -> Option<String> {
+    let dir = local_directory(session)?;
+    resolve_project_root(dir, &home_dir())
+}
+
+fn format_metric_tooltip(metric: &str, project_root: Option<&str>) -> String {
+    match (metric.is_empty(), project_root) {
+        (true, _) => String::new(),
+        (false, Some(root)) => format!("{metric} ({})", shorten_home(root)),
+        (false, None) => metric.to_owned(),
+    }
 }
 
 fn format_local_detail(directory: &str, has_tmux: bool, git: Option<&GitHeadInfo>) -> String {
@@ -325,15 +345,17 @@ fn tab_detail(session: &TermSession) -> String {
 
 fn search_text(session: &TermSession) -> String {
     let branch = local_git_head(session).map_or_else(String::new, |git| git.badge());
+    let root = local_project_root(session).unwrap_or_default();
     let status = status_for(session).0.to_string_lossy();
     format!(
-        "{} {} {} {} {} {} {}",
+        "{} {} {} {} {} {} {} {}",
         session.title,
         session.cwd,
         session.proc_info.cwd,
         session.proc_info.ssh_host,
         session.proc_info.agent,
         branch,
+        root,
         status
     )
     .to_lowercase()
@@ -372,5 +394,15 @@ mod tests {
         assert_eq!(format_local_detail("~/proj-wt", false, Some(&wt)), "~/proj-wt · ⎇ wt/claude-1 [wt]");
         assert_eq!(format_local_detail("~/proj", true, Some(&main)), "tmux · ~/proj · ⎇ main");
         assert_eq!(format_local_detail("~/Downloads", false, None), "~/Downloads");
+    }
+
+    #[test]
+    fn formats_sidebar_tooltip_with_status_branch_and_mi_root() {
+        let m = format_metric_tooltip("MI 61.2 · B", Some("~/proj"));
+        let tip = format_row_tooltip("AkhTerm", "Ждёт апрува", "~/proj/src · ⎇ main", &m, 0);
+        assert_eq!(
+            tip,
+            "AkhTerm · Ждёт апрува\n~/proj/src · ⎇ main\nMI 61.2 · B (~/proj)\nAlt+1"
+        );
     }
 }
