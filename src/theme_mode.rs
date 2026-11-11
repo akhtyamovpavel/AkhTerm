@@ -70,7 +70,10 @@ pub const LIGHT_ZINC_TOKENS: &str = "\
 @define-color badge_handoff_border rgba(194, 65, 12, 0.30);\n\
 @define-color badge_git_fg #047857;\n\
 @define-color badge_git_border rgba(4, 120, 87, 0.35);\n\
-@define-color search_err_border #e11d48;\n";
+@define-color search_err_border #e11d48;\n\
+@define-color danger #be123c;\n\
+@define-color danger_bg rgba(225, 29, 72, 0.12);\n\
+@define-color danger_border rgba(225, 29, 72, 0.38);\n";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ThemeMode {
@@ -386,6 +389,9 @@ mod tests {
             if let Some((_, rhs)) = trimmed.split_once(':') {
                 assert!(!rhs.contains('#'), "un-tokenized hex literal in CSS rule: {trimmed}");
                 assert!(!rhs.contains("rgba("), "un-tokenized rgba literal in CSS rule: {trimmed}");
+                assert!(!rhs.contains("rgb("), "un-tokenized rgb literal in CSS rule: {trimmed}");
+                assert!(!rhs.contains("hsl("), "un-tokenized hsl literal in CSS rule: {trimmed}");
+                assert!(!rhs.contains("hsla("), "un-tokenized hsla literal in CSS rule: {trimmed}");
             }
         }
     }
@@ -426,9 +432,16 @@ mod tests {
 
     fn assert_rgb_close(actual: GdkRGBA, r: u8, g: u8, b: u8) {
         let expected = GdkRGBA::rgb(r, g, b);
-        assert!((actual.red - expected.red).abs() < 0.015);
-        assert!((actual.green - expected.green).abs() < 0.015);
-        assert!((actual.blue - expected.blue).abs() < 0.015);
+        assert!(
+            (actual.red - expected.red).abs() < 0.015
+                && (actual.green - expected.green).abs() < 0.015
+                && (actual.blue - expected.blue).abs() < 0.015,
+            "rgba mismatch: actual=({:.3}, {:.3}, {:.3}, {:.3}), expected=#{r:02x}{g:02x}{b:02x}",
+            actual.red,
+            actual.green,
+            actual.blue,
+            actual.alpha,
+        );
     }
 
     fn build_theme_test_window() -> (
@@ -470,13 +483,110 @@ mod tests {
         }
     }
 
-    fn verify_css_loads_without_gtk_error(mode: ThemeMode) {
+    #[repr(C)]
+    struct CssGError {
+        domain: u32,
+        code: c_int,
+        message: *const c_char,
+    }
+
+    extern "C" {
+        fn gtk_css_section_get_start_line(section: *const c_void) -> c_uint;
+        fn gtk_style_context_get_color(
+            context: *mut GtkStyleContext,
+            state: c_uint,
+            color: *mut GdkRGBA,
+        );
+        fn gtk_style_context_set_state(context: *mut GtkStyleContext, flags: c_uint);
+        fn gtk_style_context_get(context: *mut GtkStyleContext, state: c_uint, ...);
+        fn gtk_style_context_remove_provider_for_screen(
+            screen: *mut GdkScreen,
+            provider: *mut GtkCssProvider,
+        );
+        fn gtk_header_bar_pack_end(bar: *mut GtkHeaderBar, child: *mut GtkWidget);
+        fn gtk_check_button_new_with_label(label: *const c_char) -> *mut GtkWidget;
+    }
+
+    const STATE_NORMAL: c_uint = 0;
+    const STATE_PRELIGHT: c_uint = 1 << 1;
+    const STATE_BACKDROP: c_uint = 1 << 6;
+    const PRIORITY_THEME: c_uint = 200;
+    const PRIORITY_USER: c_uint = 800;
+
+    const BREEZE_SIM_CSS: &str = "\
+        headerbar button.titlebutton {\
+            background-image: linear-gradient(to bottom, #eff0f1, #bdc3c7);\
+        }\
+        headerbar button.titlebutton image,\
+        headerbar button.titlebutton.close image,\
+        headerbar button.titlebutton.maximize image,\
+        headerbar button.titlebutton.minimize image {\
+            color: transparent;\
+        }\
+        entry, entry.search, scrollbar trough, popover.background, menu, menu menuitem, checkbutton, checkbutton check {\
+            background-image: linear-gradient(to bottom, #3daee9, #2980b9);\
+            color: #ff00ff;\
+        }\
+        window headerbar, headerbar.window-header {\
+            border-radius: 8px;\
+        }";
+
+    extern "C" fn record_css_parse_error(
+        _prov: *mut GtkCssProvider,
+        section: *const c_void,
+        gerr: *const CssGError,
+        data: *mut c_void,
+    ) {
+        let out = unsafe { &mut *(data as *mut Vec<String>) };
+        let line = if section.is_null() {
+            0
+        } else {
+            unsafe { gtk_css_section_get_start_line(section) + 1 }
+        };
+        let msg = if gerr.is_null() || unsafe { (*gerr).message.is_null() } {
+            "unknown css error".to_owned()
+        } else {
+            unsafe { CStr::from_ptr((*gerr).message).to_string_lossy().into_owned() }
+        };
+        out.push(format!("line {line}: {msg}"));
+    }
+
+    fn full_stylesheet(mode: ThemeMode) -> String {
         let extra = concat!(
             include_str!("tab_strip.css"),
             include_str!("sidebar.css"),
             include_str!("palette.css"),
         );
-        let css = CString::new(build_stylesheet(mode, include_str!("theme.css"), extra)).unwrap();
+        build_stylesheet(mode, include_str!("theme.css"), extra)
+    }
+
+    fn collect_css_parse_errors(css_text: &str) -> (c_int, Vec<String>) {
+        let css = CString::new(css_text).unwrap();
+        let mut errors: Vec<String> = Vec::new();
+        let ok = unsafe {
+            let prov = gtk_css_provider_new();
+            g_signal_connect_data(
+                prov,
+                c"parsing-error".as_ptr(),
+                record_css_parse_error as *const c_void,
+                (&mut errors as *mut Vec<String>).cast::<c_void>(),
+                ptr::null(),
+                0,
+            );
+            let res = gtk_css_provider_load_from_data(prov, css.as_ptr(), -1, ptr::null_mut());
+            g_object_unref(prov);
+            res
+        };
+        (ok, errors)
+    }
+
+    fn verify_css_loads_without_gtk_error(mode: ThemeMode) {
+        let raw = full_stylesheet(mode);
+        let (ok_sig, sig_errors) = collect_css_parse_errors(&raw);
+        assert_ne!(ok_sig, 0, "GTK CSS signal load failed for {mode:?}");
+        assert!(sig_errors.is_empty(), "GTK CSS parsing-error for {mode:?}: {sig_errors:?}");
+
+        let css = CString::new(raw).unwrap();
         unsafe {
             let prov = gtk_css_provider_new();
             let mut err: *mut c_void = ptr::null_mut();
@@ -542,6 +652,206 @@ mod tests {
         assert_eq!(read_button_label(theme_btn), "☀");
     }
 
+    fn style_fg_rgba(widget: *mut GtkWidget, state: c_uint) -> GdkRGBA {
+        let mut out = GdkRGBA::rgb(0, 0, 0);
+        unsafe {
+            let parent = gtk_widget_get_parent(widget);
+            if !parent.is_null() {
+                gtk_style_context_set_state(gtk_widget_get_style_context(parent), state);
+            }
+            let ctx = gtk_widget_get_style_context(widget);
+            gtk_style_context_set_state(ctx, state);
+            gtk_style_context_get_color(ctx, state, &mut out);
+            gtk_style_context_set_state(ctx, STATE_NORMAL);
+            if !parent.is_null() {
+                gtk_style_context_set_state(gtk_widget_get_style_context(parent), STATE_NORMAL);
+            }
+        }
+        out
+    }
+
+    fn style_border_radius(widget: *mut GtkWidget) -> c_int {
+        let mut radius: c_int = -1;
+        unsafe {
+            let ctx = gtk_widget_get_style_context(widget);
+            gtk_style_context_get(
+                ctx,
+                STATE_NORMAL,
+                c"border-radius".as_ptr(),
+                &mut radius as *mut c_int,
+                ptr::null::<c_char>(),
+            );
+        }
+        radius
+    }
+
+    fn attach_css_at_priority(css_text: &str, priority: c_uint) -> *mut GtkCssProvider {
+        let css = CString::new(css_text).unwrap();
+        unsafe {
+            let prov = gtk_css_provider_new();
+            gtk_css_provider_load_from_data(prov, css.as_ptr(), -1, ptr::null_mut());
+            gtk_style_context_add_provider_for_screen(gdk_screen_get_default(), prov, priority);
+            prov
+        }
+    }
+
+    fn detach_css_provider(prov: *mut GtkCssProvider) {
+        unsafe {
+            gtk_style_context_remove_provider_for_screen(gdk_screen_get_default(), prov);
+            g_object_unref(prov);
+        }
+    }
+
+    fn make_titlebutton(header: *mut GtkWidget, role_cls: &str, icon_name: &CStr) -> *mut GtkWidget {
+        unsafe {
+            let btn = gtk_button_new();
+            add_class(btn, "titlebutton");
+            add_class(btn, role_cls);
+            let img = gtk_image_new_from_icon_name(icon_name.as_ptr(), GTK_ICON_SIZE_MENU);
+            gtk_container_add(btn, img);
+            gtk_header_bar_pack_end(header, btn);
+            img
+        }
+    }
+
+    fn assert_opaque_rgb(actual: GdkRGBA, r: u8, g: u8, b: u8) {
+        assert!(actual.alpha > 0.99, "expected opaque color, got alpha={:.3}", actual.alpha);
+        assert_rgb_close(actual, r, g, b);
+    }
+
+    fn verify_wayland_tiled_and_maximized_zero_radius(win: *mut GtkWidget, header: *mut GtkWidget) {
+        assert_eq!(style_border_radius(header), 8);
+        let states = [
+            "maximized",
+            "fullscreen",
+            "tiled",
+            "tiled-top",
+            "tiled-bottom",
+            "tiled-left",
+            "tiled-right",
+            "solid-csd",
+        ];
+        for cls in states {
+            add_class(win, cls);
+            assert_eq!(style_border_radius(win), 0, "window.{cls} border-radius != 0");
+            assert_eq!(style_border_radius(header), 0, "window.{cls} headerbar border-radius != 0");
+            remove_class(win, cls);
+        }
+        assert_eq!(style_border_radius(header), 8);
+    }
+
+    fn verify_mode_breeze_colors(
+        mode: ThemeMode,
+        imgs: [*mut GtkWidget; 3],
+        widgets: [*mut GtkWidget; 3],
+        fg: [u8; 3],
+        danger: [u8; 3],
+        muted: [u8; 3],
+    ) {
+        let [min_img, max_img, close_img] = imgs;
+        apply_gtk_theme_mode(mode);
+        pump_gtk_events();
+        for img in [min_img, max_img, close_img] {
+            assert_opaque_rgb(style_fg_rgba(img, STATE_NORMAL), fg[0], fg[1], fg[2]);
+        }
+        assert_opaque_rgb(style_fg_rgba(close_img, STATE_PRELIGHT), danger[0], danger[1], danger[2]);
+        assert_opaque_rgb(style_fg_rgba(min_img, STATE_BACKDROP), muted[0], muted[1], muted[2]);
+        for w in widgets {
+            assert_opaque_rgb(style_fg_rgba(w, STATE_NORMAL), fg[0], fg[1], fg[2]);
+        }
+        verify_fresh_menu_item_fg(fg[0], fg[1], fg[2]);
+    }
+
+    fn verify_fresh_menu_item_fg(r: u8, g: u8, b: u8) {
+        unsafe {
+            let menu = gtk_menu_new();
+            let item = gtk_menu_item_new_with_label(c"Item".as_ptr());
+            gtk_menu_shell_append(menu, item);
+            gtk_widget_show_all(menu);
+            assert_opaque_rgb(style_fg_rgba(item, STATE_NORMAL), r, g, b);
+            gtk_widget_destroy(menu);
+        }
+    }
+
+    fn build_breeze_test_widgets() -> (
+        *mut GtkWidget,
+        *mut GtkWidget,
+        *mut GtkWidget,
+        [*mut GtkWidget; 3],
+        [*mut GtkWidget; 3],
+    ) {
+        unsafe {
+            let win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+            add_class(win, "main-bg");
+            let header = gtk_header_bar_new();
+            add_class(header, "window-header");
+            gtk_header_bar_set_show_close_button(header, 1);
+            let min_img = make_titlebutton(header, "minimize", c"window-minimize-symbolic");
+            let max_img = make_titlebutton(header, "maximize", c"window-maximize-symbolic");
+            let close_img = make_titlebutton(header, "close", c"window-close-symbolic");
+            gtk_window_set_titlebar(win, header);
+
+            let box_root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+            let search = gtk_search_entry_new();
+            let check = gtk_check_button_new_with_label(c"Check".as_ptr());
+            let sw = gtk_scrolled_window_new(ptr::null_mut(), ptr::null_mut());
+            gtk_box_pack_start(box_root, search, 0, 0, 0);
+            gtk_box_pack_start(box_root, check, 0, 0, 0);
+            gtk_box_pack_start(box_root, sw, 1, 1, 0);
+            gtk_container_add(win, box_root);
+            let pop = gtk_popover_new(search);
+            gtk_widget_show_all(win);
+            gtk_popover_popup(pop);
+            pump_gtk_events();
+            (win, header, pop, [min_img, max_img, close_img], [search, check, pop])
+        }
+    }
+
+    #[test]
+    fn gtk_css_provider_emits_zero_parsing_errors_for_dark_and_light_stylesheets() {
+        with_headless_gtk(|| {
+            let (_, bad_errs) = collect_css_parse_errors("button { unknown-breeze-prop: 1px; }");
+            assert_eq!(bad_errs.len(), 1, "parsing-error signal hookup must catch bad properties");
+            verify_css_loads_without_gtk_error(ThemeMode::Dark);
+            verify_css_loads_without_gtk_error(ThemeMode::Light);
+        });
+    }
+
+    #[test]
+    fn breeze_gtk_titlebuttons_widgets_and_wayland_tiling_render_cleanly() {
+        with_headless_gtk(|| {
+            apply_gtk_theme_mode(ThemeMode::Dark);
+            let p_theme = attach_css_at_priority(BREEZE_SIM_CSS, PRIORITY_THEME);
+            let p_user = attach_css_at_priority(BREEZE_SIM_CSS, PRIORITY_USER);
+            let (win, header, pop, imgs, widgets) = build_breeze_test_widgets();
+            verify_mode_breeze_colors(
+                ThemeMode::Dark,
+                imgs,
+                widgets,
+                [0xfa, 0xfa, 0xfa],
+                [0xfd, 0xa4, 0xaf],
+                [0xa1, 0xa1, 0xaa],
+            );
+            verify_mode_breeze_colors(
+                ThemeMode::Light,
+                imgs,
+                widgets,
+                [0x18, 0x18, 0x1b],
+                [0xbe, 0x12, 0x3c],
+                [0x52, 0x52, 0x5b],
+            );
+            verify_wayland_tiled_and_maximized_zero_radius(win, header);
+            unsafe {
+                gtk_widget_destroy(pop);
+                gtk_widget_destroy(win);
+            }
+            detach_css_provider(p_user);
+            detach_css_provider(p_theme);
+            apply_gtk_theme_mode(ThemeMode::Dark);
+            pump_gtk_events();
+        });
+    }
+
     #[test]
     fn headless_broadway_live_theme_toggle_updates_header_css_and_split_vte_panes() {
         with_headless_gtk(|| {
@@ -557,7 +867,7 @@ mod tests {
     #[test]
     fn theme_modules_maintain_target_mi_scores() {
         let (_, _, mode_mi) = crate::mi::compute_file_mi(include_str!("theme_mode.rs"));
-        assert!(mode_mi >= 58.0, "theme_mode.rs MI {mode_mi:.2} < 58.0");
+        assert!(mode_mi >= 60.0, "theme_mode.rs MI {mode_mi:.2} < 60.0");
         let (_, _, theme_mi) = crate::mi::compute_file_mi(include_str!("theme.rs"));
         assert!(theme_mi >= 58.0, "theme.rs MI {theme_mi:.2} < 58.0");
         let (_, _, main_mi) = crate::mi::compute_file_mi(include_str!("main.rs"));

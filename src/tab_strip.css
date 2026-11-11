@@ -1,10 +1,12 @@
 .tab-strip {
+    background-image: none;
     background-color: @canvas;
     border-bottom: 1px solid @border;
     padding: 5px 12px;
 }
 
 .terminal-tab {
+    background-image: none;
     border: 1px solid transparent;
     border-radius: 6px;
     padding: 2px;
@@ -42,9 +44,11 @@
 
 button.tab-select,
 button.tab-close {
+    background-image: none;
     background-color: transparent;
     border: none;
     border-radius: 5px;
+    box-shadow: none;
     color: @muted;
     min-height: 28px;
     padding: 0 8px;
@@ -63,6 +67,7 @@ button.tab-close {
 
 button.tab-select:hover,
 button.tab-close:hover {
+    background-image: none;
     background-color: @hover;
     color: @text;
 }
@@ -75,8 +80,10 @@ button.new-tab:focus {
 }
 
 button.new-tab {
+    background-image: none;
     background-color: transparent;
     border-color: transparent;
+    box-shadow: none;
     color: @muted;
     min-width: 32px;
     min-height: 31px;
@@ -85,8 +92,17 @@ button.new-tab {
 }
 
 button.new-tab:hover {
+    background-image: none;
     background-color: @hover;
     color: @text;
+}
+
+.tab-strip scrollbar,
+.tab-strip scrollbar contents,
+.tab-strip scrollbar trough {
+    background-image: none;
+    background-color: @canvas;
+    border: none;
 }
 
 .tab-strip scrollbar slider {

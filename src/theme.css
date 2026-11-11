@@ -56,6 +56,9 @@
 @define-color badge_git_fg #a7f3d0;
 @define-color badge_git_border rgba(167, 243, 208, 0.35);
 @define-color search_err_border #f43f5e;
+@define-color danger #fda4af;
+@define-color danger_bg rgba(244, 63, 94, 0.18);
+@define-color danger_border rgba(244, 63, 94, 0.45);
 
 .tab-icon,
 .sidebar-icon {
@@ -88,22 +91,84 @@
     background-color: @agent_kimi_bg;
 }
 
-.main-bg, popover, tooltip {
+.main-bg,
+popover,
+popover.background,
+tooltip,
+tooltip.background {
     font-family: "Geist", sans-serif;
     font-size: 14px;
     color: @text;
 }
 
-.main-bg {
+.main-bg,
+window.background.main-bg {
+    background-image: none;
     background-color: @canvas;
 }
 
+window.maximized,
+window.fullscreen,
+window.tiled,
+window.tiled-top,
+window.tiled-bottom,
+window.tiled-left,
+window.tiled-right,
+window.solid-csd,
+window.maximized decoration,
+window.fullscreen decoration,
+window.tiled decoration,
+window.tiled-top decoration,
+window.tiled-bottom decoration,
+window.tiled-left decoration,
+window.tiled-right decoration,
+window.solid-csd decoration,
+window.maximized headerbar.window-header,
+window.fullscreen headerbar.window-header,
+window.tiled headerbar.window-header,
+window.tiled-top headerbar.window-header,
+window.tiled-bottom headerbar.window-header,
+window.tiled-left headerbar.window-header,
+window.tiled-right headerbar.window-header,
+window.solid-csd headerbar.window-header,
+window.maximized headerbar.window-header:backdrop,
+window.fullscreen headerbar.window-header:backdrop,
+window.tiled headerbar.window-header:backdrop,
+window.tiled-top headerbar.window-header:backdrop,
+window.tiled-bottom headerbar.window-header:backdrop,
+window.tiled-left headerbar.window-header:backdrop,
+window.tiled-right headerbar.window-header:backdrop,
+window.solid-csd headerbar.window-header:backdrop {
+    border-radius: 0;
+    box-shadow: none;
+}
+
+window.maximized decoration,
+window.fullscreen decoration,
+window.tiled decoration,
+window.tiled-top decoration,
+window.tiled-bottom decoration,
+window.tiled-left decoration,
+window.tiled-right decoration {
+    border: none;
+    margin: 0;
+}
+
 tooltip,
-tooltip.background {
+tooltip.background,
+.csd tooltip.background {
+    background-image: none;
     background-color: @elevated;
     color: @text;
     border: 1px solid @border_strong;
     border-radius: 6px;
+    box-shadow: none;
+}
+
+tooltip decoration {
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
 }
 
 tooltip *,
@@ -112,18 +177,41 @@ tooltip label {
 }
 
 headerbar.window-header,
+headerbar.window-header:backdrop,
 .topbar {
     background-image: none;
     background-color: @canvas;
     color: @text;
+    border-top: none;
+    border-left: none;
+    border-right: none;
     border-bottom: 1px solid @border;
     box-shadow: none;
     min-height: 28px;
     padding: 4px 12px;
 }
 
-headerbar.window-header {
+headerbar.window-header,
+headerbar.window-header:backdrop {
     padding: 2px 8px;
+}
+
+headerbar.window-header .title,
+headerbar.window-header label {
+    color: @text;
+}
+
+headerbar.window-header:backdrop .title,
+headerbar.window-header:backdrop .brand-label {
+    color: @muted;
+}
+
+headerbar.window-header separator.titlebutton {
+    background-image: none;
+    background-color: transparent;
+    border: none;
+    min-width: 0;
+    min-height: 0;
 }
 
 .brand-label {
@@ -138,6 +226,7 @@ headerbar.window-header {
 }
 
 .footer-bar {
+    background-image: none;
     background-color: @canvas;
     border-top: 1px solid @border;
     padding: 5px 12px;
@@ -154,15 +243,18 @@ button {
     padding: 4px 10px;
     box-shadow: none;
     text-shadow: none;
+    transition: none;
 }
 
 button:hover {
+    background-image: none;
     background-color: @hover;
     border-color: @border_strong;
     color: @text_strong;
 }
 
 .topbar button {
+    background-image: none;
     background-color: transparent;
     border-color: transparent;
     min-height: 28px;
@@ -171,6 +263,7 @@ button:hover {
 }
 
 .topbar button:hover {
+    background-image: none;
     background-color: @hover;
     border-color: @border;
 }
@@ -179,17 +272,113 @@ button:hover {
     color: @disabled_text;
 }
 
-headerbar.window-header button.titlebutton {
+headerbar.window-header button.titlebutton,
+headerbar.window-header button.titlebutton.minimize,
+headerbar.window-header button.titlebutton.maximize,
+headerbar.window-header button.titlebutton.close,
+window headerbar.titlebar.window-header button.titlebutton {
+    background-image: none;
     background-color: transparent;
-    border-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    box-shadow: none;
     color: @text;
     min-height: 26px;
     min-width: 26px;
     padding: 0;
+    -gtk-icon-style: symbolic;
+    -gtk-icon-shadow: none;
 }
 
-headerbar.window-header button.titlebutton:hover {
+headerbar.window-header button.titlebutton image,
+headerbar.window-header button.titlebutton.minimize image,
+headerbar.window-header button.titlebutton.maximize image,
+headerbar.window-header button.titlebutton.close image,
+window headerbar.titlebar.window-header button.titlebutton image {
+    background-image: none;
+    background-color: transparent;
+    color: @text;
+    -gtk-icon-style: symbolic;
+    -gtk-icon-shadow: none;
+    -gtk-icon-transform: none;
+    opacity: 1;
+}
+
+headerbar.window-header button.titlebutton:backdrop,
+window headerbar.titlebar.window-header button.titlebutton:backdrop {
+    background-image: none;
+    background-color: transparent;
+    border-color: transparent;
+    color: @muted;
+}
+
+headerbar.window-header button.titlebutton:backdrop image,
+headerbar.window-header button.titlebutton image:backdrop,
+window headerbar.titlebar.window-header button.titlebutton:backdrop image,
+window headerbar.titlebar.window-header button.titlebutton image:backdrop {
+    color: @muted;
+    -gtk-icon-style: symbolic;
+    -gtk-icon-shadow: none;
+    opacity: 1;
+}
+
+headerbar.window-header button.titlebutton:hover,
+headerbar.window-header button.titlebutton.minimize:hover,
+headerbar.window-header button.titlebutton.maximize:hover,
+window headerbar.titlebar.window-header button.titlebutton:hover {
+    background-image: none;
     background-color: @hover;
+    border-color: @border;
+    color: @text_strong;
+}
+
+headerbar.window-header button.titlebutton:hover image,
+headerbar.window-header button.titlebutton image:hover,
+headerbar.window-header button.titlebutton.minimize:hover image,
+headerbar.window-header button.titlebutton.maximize:hover image,
+window headerbar.titlebar.window-header button.titlebutton:hover image,
+window headerbar.titlebar.window-header button.titlebutton image:hover {
+    color: @text_strong;
+    -gtk-icon-style: symbolic;
+    opacity: 1;
+}
+
+headerbar.window-header button.titlebutton:active,
+headerbar.window-header button.titlebutton.minimize:active,
+headerbar.window-header button.titlebutton.maximize:active,
+window headerbar.titlebar.window-header button.titlebutton:active {
+    background-image: none;
+    background-color: @selected;
+    border-color: @border_strong;
+    color: @text_strong;
+}
+
+headerbar.window-header button.titlebutton:active image,
+window headerbar.titlebar.window-header button.titlebutton:active image {
+    color: @text_strong;
+    -gtk-icon-style: symbolic;
+    opacity: 1;
+}
+
+headerbar.window-header button.titlebutton.close:hover,
+headerbar.window-header button.titlebutton.close:active,
+window headerbar.titlebar.window-header button.titlebutton.close:hover,
+window headerbar.titlebar.window-header button.titlebutton.close:active {
+    background-image: none;
+    background-color: @danger_bg;
+    border-color: @danger_border;
+    color: @danger;
+}
+
+headerbar.window-header button.titlebutton.close:hover image,
+headerbar.window-header button.titlebutton.close image:hover,
+headerbar.window-header button.titlebutton.close:active image,
+window headerbar.titlebar.window-header button.titlebutton.close:hover image,
+window headerbar.titlebar.window-header button.titlebutton.close image:hover,
+window headerbar.titlebar.window-header button.titlebutton.close:active image {
+    color: @danger;
+    -gtk-icon-style: symbolic;
+    opacity: 1;
 }
 
 button.tab-unread {
@@ -215,6 +404,7 @@ button.btn-mi-c {
 }
 
 button.tmux-jump-btn {
+    background-image: none;
     background-color: @input_bg;
     border: 1px solid @border;
     border-radius: 6px;
@@ -223,27 +413,44 @@ button.tmux-jump-btn {
 }
 
 button.tmux-jump-btn:hover {
+    background-image: none;
     background-color: @amber_tint;
     border-color: @amber_border_strong;
     color: @amber_fg;
 }
 
 button.tmux-jump-active {
+    background-image: none;
     background-color: @amber_tint;
     border-color: @amber_border;
     color: @amber_fg;
     font-weight: 600;
 }
 
-popover, .popover-box {
+popover,
+popover.background,
+.csd popover,
+.csd popover.background {
+    background-image: none;
     background-color: @elevated;
     color: @text;
     border: 1px solid @border;
     border-radius: 8px;
+    box-shadow: none;
     padding: 6px;
 }
 
-entry, .search-entry {
+.popover-box {
+    background-image: none;
+    background-color: @elevated;
+    color: @text;
+    border: none;
+    padding: 2px;
+}
+
+entry,
+entry.search,
+.search-entry {
     background-image: none;
     background-color: @input_bg;
     color: @text;
@@ -252,28 +459,128 @@ entry, .search-entry {
     border-radius: 6px;
     padding: 5px 9px;
     box-shadow: none;
+    transition: none;
 }
 
-entry:focus, .search-entry:focus {
+entry:focus,
+entry.search:focus,
+.search-entry:focus {
+    background-image: none;
     border-color: @focus;
     background-color: @surface;
+    box-shadow: none;
 }
 
-scrollbar {
+entry image,
+entry.search image,
+.search-entry image {
+    color: @muted;
+}
+
+entry selection,
+entry:focus selection {
+    background-color: @selected;
+    color: @text_strong;
+}
+
+scrolledwindow overshoot,
+scrolledwindow undershoot {
+    background-image: none;
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+}
+
+scrollbar,
+scrollbar.vertical,
+scrollbar.horizontal,
+scrollbar contents,
+scrollbar trough {
+    background-image: none;
     background-color: @canvas;
     border: none;
+    box-shadow: none;
+    transition: none;
+}
+
+popover scrollbar,
+popover scrollbar contents,
+popover scrollbar trough {
+    background-color: @elevated;
 }
 
 scrollbar slider {
+    background-image: none;
     background-color: @scroll_thumb;
+    border: none;
+    box-shadow: none;
     border-radius: 99px;
     min-width: 7px;
     min-height: 30px;
     margin: 2px;
+    transition: none;
 }
 
-scrollbar slider:hover {
+scrollbar slider:hover,
+scrollbar slider:active {
+    background-image: none;
     background-color: @scroll_thumb_hover;
+}
+
+checkbutton,
+checkbutton.text-button {
+    background-image: none;
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+    color: @text;
+    transition: none;
+}
+
+checkbutton label {
+    color: inherit;
+}
+
+checkbutton:hover {
+    color: @text_strong;
+}
+
+checkbutton check {
+    background-image: none;
+    background-color: @input_bg;
+    border: 1px solid @border_strong;
+    border-radius: 4px;
+    box-shadow: none;
+    color: @text;
+    min-width: 14px;
+    min-height: 14px;
+    -gtk-icon-source: none;
+    -gtk-icon-shadow: none;
+    transition: none;
+}
+
+checkbutton:hover check,
+checkbutton check:hover {
+    background-image: none;
+    background-color: @hover;
+    border-color: @focus;
+}
+
+checkbutton check:checked {
+    background-image: none;
+    background-color: @selected;
+    border-color: @caret;
+    color: @caret;
+    -gtk-icon-source: -gtk-icontheme("object-select-symbolic");
+    -gtk-icon-style: symbolic;
+    -gtk-icon-shadow: none;
+}
+
+checkbutton:disabled,
+checkbutton:disabled label,
+checkbutton check:disabled {
+    color: @disabled_text;
+    border-color: @border;
 }
 
 .topbar button.btn-icon-sq {
@@ -282,6 +589,7 @@ scrollbar slider:hover {
 }
 
 .gpu-pill {
+    background-image: none;
     background-color: @gpu_bg;
     border: 1px solid @border;
     border-radius: 6px;
@@ -291,26 +599,31 @@ scrollbar slider:hover {
 }
 
 paned > separator {
+    background-image: none;
     background-color: @border;
     min-width: 2px;
     min-height: 2px;
 }
 
 paned > separator:hover {
+    background-image: none;
     background-color: @focus;
 }
 
 .term-search-bar {
+    background-image: none;
     background-color: @canvas;
     border-bottom: 1px solid @border;
     padding: 4px 10px;
 }
 
 entry.term-search-entry {
+    background-image: none;
     background-color: @surface;
     color: @text;
     border: 1px solid @border;
     border-radius: 6px;
+    box-shadow: none;
     min-height: 26px;
     min-width: 240px;
     padding: 3px 8px;
@@ -328,10 +641,12 @@ entry.term-search-entry.term-search-entry-err {
 .term-search-bar button.term-search-btn,
 .term-search-bar button.term-search-toggle,
 .term-search-bar button.term-search-close {
+    background-image: none;
     background-color: @surface;
     color: @muted;
     border: 1px solid @border;
     border-radius: 6px;
+    box-shadow: none;
     min-height: 26px;
     min-width: 28px;
     padding: 0 7px;
@@ -342,12 +657,14 @@ entry.term-search-entry.term-search-entry-err {
 .term-search-bar button.term-search-btn:hover,
 .term-search-bar button.term-search-toggle:hover,
 .term-search-bar button.term-search-close:hover {
+    background-image: none;
     background-color: @hover;
     color: @text;
 }
 
 .term-search-bar button.term-search-toggle:checked,
 .term-search-bar button.term-search-toggle.term-search-toggle-active {
+    background-image: none;
     background-color: @selected;
     border-color: @focus;
     color: @text;
@@ -372,38 +689,66 @@ entry.term-search-entry.term-search-entry-err {
     color: @mi_c;
 }
 
+window.popup,
+.csd.popup decoration {
+    background-image: none;
+    box-shadow: none;
+}
+
 menu,
+.csd menu,
 .context-menu {
     font-family: "Geist", sans-serif;
     font-size: 14px;
+    background-image: none;
     background-color: @surface;
     color: @text;
     border: 1px solid @border;
     border-radius: 8px;
+    box-shadow: none;
     padding: 4px;
 }
 
-menu menuitem {
+menu menuitem,
+.context-menu menuitem {
+    background-image: none;
+    background-color: transparent;
+    border: none;
     border-radius: 5px;
+    box-shadow: none;
     padding: 6px 12px;
     color: @text;
 }
 
-menu menuitem label {
+menu menuitem label,
+.context-menu menuitem label {
     color: inherit;
 }
 
-menu menuitem:hover {
+menu menuitem accelerator {
+    color: @muted;
+}
+
+menu menuitem:hover,
+.context-menu menuitem:hover {
+    background-image: none;
     background-color: @hover;
-    color: @text;
+    color: @text_strong;
 }
 
 menu menuitem:disabled,
 menu menuitem:disabled label {
+    background-color: transparent;
+    color: @muted;
+}
+
+menu arrow {
+    background-color: transparent;
     color: @muted;
 }
 
 menu separator {
+    background-image: none;
     background-color: @border;
     min-height: 1px;
     margin: 4px 6px;
