@@ -43,6 +43,7 @@ pub const PANGO_ELLIPSIZE_MIDDLE: c_int = 2;
 pub const PANGO_ELLIPSIZE_END: c_int = 3;
 pub const GTK_STYLE_PROVIDER_PRIORITY_APPLICATION: c_uint = 600;
 pub const G_SPAWN_SEARCH_PATH: c_int = 4;
+pub const VTE_FORMAT_TEXT: c_int = 1;
 
 pub const GDK_BUTTON_PRESS: c_int = 4;
 pub const GDK_CONTROL_MASK: c_uint = 1 << 2;
@@ -122,6 +123,9 @@ extern "C" {
     pub fn gtk_window_set_decorated(window: *mut GtkWindow, setting: c_int);
     pub fn gtk_window_set_resizable(window: *mut GtkWindow, resizable: c_int);
     pub fn gtk_window_set_wmclass(window: *mut GtkWindow, wmclass_name: *const c_char, wmclass_class: *const c_char);
+    pub fn gtk_window_is_active(window: *mut GtkWindow) -> c_int;
+    pub fn gtk_window_set_urgency_hint(window: *mut GtkWindow, setting: c_int);
+    pub fn gtk_window_get_urgency_hint(window: *mut GtkWindow) -> c_int;
     pub fn gtk_window_maximize(window: *mut GtkWindow);
     pub fn gtk_window_unmaximize(window: *mut GtkWindow);
     pub fn gtk_window_is_maximized(window: *mut GtkWindow) -> c_int;
@@ -195,6 +199,7 @@ extern "C" {
     pub fn gtk_container_set_focus_hadjustment(container: *mut GtkContainer, adjustment: *mut GtkAdjustment);
     pub fn gtk_adjustment_clamp_page(adjustment: *mut GtkAdjustment, lower: f64, upper: f64);
     pub fn gtk_widget_show_all(widget: *mut GtkWidget);
+    pub fn gtk_widget_get_visible(widget: *mut GtkWidget) -> c_int;
     pub fn gtk_widget_set_visible(widget: *mut GtkWidget, visible: c_int);
     pub fn gtk_widget_set_sensitive(widget: *mut GtkWidget, sensitive: c_int);
     pub fn gtk_widget_set_no_show_all(widget: *mut GtkWidget, no_show_all: c_int);
@@ -300,6 +305,7 @@ extern "C" {
     ) -> *mut c_char;
     pub fn vte_terminal_hyperlink_check_event(terminal: *mut VteTerminal, event: *const GdkEvent) -> *mut c_char;
     pub fn vte_terminal_get_window_title(terminal: *mut VteTerminal) -> *const c_char;
+    pub fn vte_terminal_get_text_format(terminal: *mut VteTerminal, format: c_int) -> *mut c_char;
     pub fn vte_terminal_copy_clipboard_format(terminal: *mut VteTerminal, format: c_int);
     pub fn vte_terminal_paste_clipboard(terminal: *mut VteTerminal);
 }

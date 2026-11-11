@@ -26,6 +26,10 @@ pub const NEW_TAB: &CStr = c"+";
 pub const NEW_TAB_TIP: &CStr = c"Новая вкладка (Ctrl+Shift+T)";
 pub const CLOSE_TAB: &CStr = c"×";
 pub const CLOSE_TAB_TIP: &CStr = c"Закрыть вкладку";
+pub const STATUS_APPROVAL: &CStr = c"Ждёт апрува";
+pub const APPROVAL_TAB_TIP: &CStr = c"Ждёт апрува (Ctrl+Shift+U — перейти)";
+pub const NOTIFY_APPROVAL_TITLE: &CStr = c"AkhTerm · Ждёт апрува";
+pub const NOTIFY_READY_TITLE: &CStr = c"AkhTerm · Готово";
 pub const TMUX_MAIN: &CStr = c"tmux:main";
 
 pub const AGENT_ACTIONS: [(&CStr, &str); 5] = [

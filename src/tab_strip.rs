@@ -84,6 +84,7 @@ pub struct TabView {
     select: *mut GtkWidget,
     icon: *mut GtkWidget,
     label: *mut GtkWidget,
+    status: *mut GtkWidget,
 }
 
 impl TabView {
@@ -105,19 +106,15 @@ impl TabView {
             add_class(icon, "tab-icon");
             gtk_widget_set_valign(icon, GTK_ALIGN_CENTER);
             gtk_box_pack_start(content, icon, 0, 0, 0);
-            let label = gtk_label_new(ptr::null());
-            gtk_label_set_xalign(label, 0.0);
-            gtk_label_set_ellipsize(label, PANGO_ELLIPSIZE_END);
-            gtk_label_set_max_width_chars(label, 22);
+            let label = create_title_label();
             gtk_box_pack_start(content, label, 1, 1, 0);
+            let status = create_status_badge();
+            gtk_box_pack_start(content, status, 0, 0, 0);
             gtk_container_add(select, content);
             connect_click(select, on_select, data);
             gtk_box_pack_start(widget, select, 1, 1, 0);
 
-            let close = gtk_button_new_with_label(text::CLOSE_TAB.as_ptr());
-            add_class(close, "tab-close");
-            gtk_widget_set_tooltip_text(close, text::CLOSE_TAB_TIP.as_ptr());
-            connect_click(close, on_close, data);
+            let close = create_close_button(data, on_close);
             gtk_box_pack_start(widget, close, 0, 0, 0);
 
             Self {
@@ -125,25 +122,86 @@ impl TabView {
                 select,
                 icon,
                 label,
+                status,
             }
         }
     }
 
-    pub fn update(&self, title: &str, agent: &str, active: bool, unread: bool) {
+    pub fn update(
+        &self,
+        title: &str,
+        agent: &str,
+        active: bool,
+        unread: bool,
+        needs_approval: bool,
+    ) {
         set_agent_accent(self.icon, agent);
         set_class(self.widget, "tab-active", active);
-        set_class(self.widget, "tab-ready", unread && !active);
-        if let Ok(title) = CString::new(title) {
-            unsafe {
-                if CStr::from_ptr(gtk_label_get_text(self.label)) != title.as_c_str() {
-                    gtk_label_set_text(self.label, title.as_ptr());
-                    gtk_widget_set_tooltip_text(self.select, title.as_ptr());
-                }
-            }
-        }
+        set_class(self.widget, "tab-approval", needs_approval);
+        set_class(self.widget, "tab-ready", unread && !active && !needs_approval);
+        let vis_now = i32::from(needs_approval);
+        let vis_changed = unsafe { gtk_widget_get_visible(self.status) } != vis_now;
+        unsafe { gtk_widget_set_visible(self.status, vis_now) };
+        sync_tab_title_and_tip(self.label, self.select, title, needs_approval, vis_changed);
     }
 
     pub fn destroy(self) {
         unsafe { gtk_widget_destroy(self.widget) };
+    }
+}
+
+fn create_title_label() -> *mut GtkWidget {
+    unsafe {
+        let label = gtk_label_new(ptr::null());
+        gtk_label_set_xalign(label, 0.0);
+        gtk_label_set_ellipsize(label, PANGO_ELLIPSIZE_END);
+        gtk_label_set_max_width_chars(label, 22);
+        label
+    }
+}
+
+fn create_status_badge() -> *mut GtkWidget {
+    unsafe {
+        let status = gtk_label_new(text::STATUS_APPROVAL.as_ptr());
+        add_class(status, "tab-status");
+        gtk_widget_set_no_show_all(status, 1);
+        gtk_widget_set_visible(status, 0);
+        status
+    }
+}
+
+fn create_close_button(data: *mut c_void, on_close: ClickHandler) -> *mut GtkWidget {
+    unsafe {
+        let close = gtk_button_new_with_label(text::CLOSE_TAB.as_ptr());
+        add_class(close, "tab-close");
+        gtk_widget_set_tooltip_text(close, text::CLOSE_TAB_TIP.as_ptr());
+        connect_click(close, on_close, data);
+        close
+    }
+}
+
+fn format_tab_tooltip(title: &str, needs_approval: bool) -> String {
+    if needs_approval {
+        format!("{title} — {}", text::APPROVAL_TAB_TIP.to_string_lossy())
+    } else {
+        title.to_owned()
+    }
+}
+
+fn sync_tab_title_and_tip(
+    label: *mut GtkWidget,
+    select: *mut GtkWidget,
+    title: &str,
+    needs_approval: bool,
+    approval_changed: bool,
+) {
+    let Ok(title_c) = CString::new(title) else { return };
+    let cur_ptr = unsafe { gtk_label_get_text(label) };
+    let title_changed = cur_ptr.is_null() || unsafe { CStr::from_ptr(cur_ptr) != title_c.as_c_str() };
+    if title_changed {
+        unsafe { gtk_label_set_text(label, title_c.as_ptr()) };
+    }
+    if title_changed || approval_changed {
+        set_tooltip(select, &format_tab_tooltip(title, needs_approval));
     }
 }
