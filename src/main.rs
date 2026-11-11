@@ -11,6 +11,7 @@ mod paths;
 mod proc_radar;
 mod session;
 mod sidebar;
+mod split_pane;
 mod tab_strip;
 mod tabs;
 mod theme;
@@ -41,15 +42,19 @@ use mi_watch::{
     build_mi_refactor_prompt, format_mi_button_label, format_mi_popover_markup, lookup_mi,
     mi_grade_class, resolve_active_mi, MiScheduler,
 };
-use paste_route::{choose_paste_route, PasteRoute};
+use paste_route::{choose_paste_route, resolve_pane_agent, PasteRoute};
 use paths::{expand_home, home_dir, shorten_home};
 use proc_radar::{
-    foreground_cwd, inspect_proc_tree, load_ssh_hosts, query_ssh_servers, save_ssh_hosts,
+    detect_local_agent, inspect_proc_tree, load_ssh_hosts, query_ssh_servers, save_ssh_hosts,
     switch_remote_tmux_session, try_paste_clipboard_image, BoxTelemetry, RemoteTmuxItem,
     SshHostEntry,
 };
-use session::{create_vte_widget, refresh_smart_title, SessionCategory, TermSession, WorkState};
+use session::{
+    create_vte_widget, refresh_smart_title, register_link_cwd_lookup, LinkCwd, SessionCategory,
+    TermSession, WorkState,
+};
 use sidebar::Sidebar;
+use split_pane::{apply_zoom_scale, finish_split, wrap_vte_scroll, TabPanes};
 use tab_strip::TabStrip;
 use tabs::{Tab, TabStore, TabsState};
 use ui_text as text;
@@ -63,6 +68,8 @@ struct AppState {
     font_scale: f64,
     zoom_btn: *mut GtkWidget,
     reconnect_btn: *mut GtkWidget,
+    split_vert_btn: *mut GtkWidget,
+    split_horiz_btn: *mut GtkWidget,
     next_id: usize,
     active_id: usize,
     sessions: Vec<TermSession>,
@@ -113,20 +120,17 @@ fn entry_text_lower(entry: *mut GtkWidget) -> String {
 
 pub fn set_zoom(new_scale: f64) {
     let clamped = new_scale.clamp(0.5, 3.0);
-    APP.with(|cell| {
-        if let Some(app) = cell.borrow_mut().as_mut() {
-            app.font_scale = clamped;
-            for s in &app.sessions {
-                unsafe {
-                    vte_terminal_set_font_scale(s.vte, clamped);
-                }
-            }
-            let pct = (clamped * 100.0).round() as i32;
-            if let Ok(c) = CString::new(format!("{pct}%")) {
-                unsafe { gtk_button_set_label(app.zoom_btn, c.as_ptr()) };
-            }
+    let mut vtes = Vec::new();
+    let zoom_btn = APP.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let app = state.as_mut()?;
+        app.font_scale = clamped;
+        for s in &app.sessions {
+            s.panes.collect_vtes(s.vte, &mut vtes);
         }
+        Some(app.zoom_btn)
     });
+    apply_zoom_scale(&vtes, clamped, zoom_btn);
     refresh_ui();
 }
 
@@ -153,28 +157,33 @@ extern "C" fn on_zoom_reset(_btn: *mut GtkWidget, _data: *mut c_void) {
 }
 
 extern "C" fn on_toggle_sidebar(_btn: *mut GtkWidget, _data: *mut c_void) {
-    APP.with(|cell| {
-        if let Some(app) = cell.borrow_mut().as_mut() {
-            app.sidebar_visible = !app.sidebar_visible;
-            app.sidebar.set_visible(app.sidebar_visible);
-        }
+    let toggle = APP.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let app = state.as_mut()?;
+        app.sidebar_visible = !app.sidebar_visible;
+        Some((app.sidebar.panel_widget(), app.sidebar_visible))
     });
+    if let Some((panel, vis)) = toggle.filter(|(w, _)| !w.is_null()) {
+        unsafe { gtk_widget_set_visible(panel, i32::from(vis)) };
+    }
 }
 
 extern "C" fn on_toggle_window_square(_btn: *mut GtkWidget, _data: *mut c_void) {
-    APP.with(|cell| {
-        if let Some(app) = cell.borrow_mut().as_mut() {
-            unsafe {
-                if app.is_fullscreen {
-                    gtk_window_unfullscreen(app.win);
-                    app.is_fullscreen = false;
-                } else {
-                    gtk_window_fullscreen(app.win);
-                    app.is_fullscreen = true;
-                }
+    let toggle = APP.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let app = state.as_mut()?;
+        app.is_fullscreen = !app.is_fullscreen;
+        Some((app.win, app.is_fullscreen))
+    });
+    if let Some((win, fullscreen)) = toggle.filter(|(w, _)| !w.is_null()) {
+        unsafe {
+            if fullscreen {
+                gtk_window_fullscreen(win);
+            } else {
+                gtk_window_unfullscreen(win);
             }
         }
-    });
+    }
 }
 
 extern "C" fn on_ssh_search_changed(entry: *mut GtkWidget, _data: *mut c_void) {
@@ -249,13 +258,48 @@ extern "C" fn on_terminate(_data: *mut c_void) -> c_int {
     0
 }
 
+extern "C" fn on_vte_focus_in(
+    vte: *mut GtkWidget,
+    _event: *const GdkEvent,
+    user_data: *mut c_void,
+) -> c_int {
+    let sid = user_data as usize;
+    APP.with(|cell| {
+        let Ok(mut state) = cell.try_borrow_mut() else { return };
+        if let Some(app) = state.as_mut() {
+            if let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid && s.has_vte(vte)) {
+                s.panes.record_focus(vte);
+                sync_session_proc(s, None);
+            }
+        }
+    });
+    0
+}
+
+fn lookup_vte_link_cwd(vte: *mut GtkWidget) -> LinkCwd {
+    APP.with(|cell| {
+        let Ok(state) = cell.try_borrow() else { return LinkCwd::Unmanaged };
+        let Some(app) = state.as_ref() else { return LinkCwd::Unmanaged };
+        let Some(s) = app.sessions.iter().find(|s| s.has_vte(vte)) else {
+            return LinkCwd::Unmanaged;
+        };
+        if s.remote().is_some() && s.vte == vte {
+            return LinkCwd::Remote;
+        }
+        s.panes
+            .live_cwd_for_vte(vte, s.vte, s.child_pid, &s.cwd)
+            .map_or(LinkCwd::Unmanaged, LinkCwd::Local)
+    })
+}
+
 extern "C" fn on_vte_contents_changed(vte: *mut GtkWidget, user_data: *mut c_void) {
     let sid = user_data as usize;
     APP.with(|cell| {
-        if let Some(app) = cell.borrow_mut().as_mut() {
+        let Ok(mut state) = cell.try_borrow_mut() else { return };
+        if let Some(app) = state.as_mut() {
             let active = app.active_id;
-            let session = app.sessions.iter_mut().find(|s| s.id == sid && s.vte == vte);
-            if let Some(s) = session.filter(|s| s.child_pid > 0) {
+            let session = app.sessions.iter_mut().find(|s| s.id == sid && s.has_vte(vte));
+            if let Some(s) = session.filter(|s| s.active_pid() > 0) {
                 let now = Instant::now();
                 s.last_output = now;
                 if s.category != SessionCategory::Daemon && s.state != WorkState::Working {
@@ -270,20 +314,90 @@ extern "C" fn on_vte_contents_changed(vte: *mut GtkWidget, user_data: *mut c_voi
     });
 }
 
+extern "C" fn on_reap_split_pane(data: *mut c_void) -> c_int {
+    let exited_vte = data as *mut GtkWidget;
+    let reap = APP.with(|cell| {
+        let Ok(mut state) = cell.try_borrow_mut() else { return None };
+        let app = state.as_mut()?;
+        let active_id = app.active_id;
+        let s = app.sessions.iter_mut().find(|s| s.has_vte(exited_vte))?;
+        let op = s.panes.prepare_close_exited(
+            exited_vte,
+            &mut s.scroll_wrap,
+            &mut s.vte,
+            &mut s.child_pid,
+            &mut s.cwd,
+        )?;
+        s.proc_info = inspect_proc_tree(s.active_pid());
+        Some((s.id == active_id, op))
+    });
+    if let Some((is_active, op)) = reap {
+        op.apply_focus(is_active);
+        refresh_ui();
+    }
+    0
+}
+
 extern "C" fn on_vte_child_exited(vte: *mut GtkWidget, _status: c_int, user_data: *mut c_void) {
     let sid = user_data as usize;
+    let mut reap_split = false;
     APP.with(|cell| {
-        let mut state = cell.borrow_mut();
+        let Ok(mut state) = cell.try_borrow_mut() else { return };
         let Some(app) = state.as_mut() else { return };
-        if let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid && s.vte == vte) {
-            s.child_pid = 0;
-            s.state = WorkState::Idle;
-            s.unread = false;
+        if let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid && s.has_vte(vte)) {
+            if s.panes.has_splits() {
+                reap_split = true;
+            } else if s.vte == vte {
+                s.child_pid = 0;
+                s.state = WorkState::Idle;
+                s.unread = false;
+            }
         }
     });
+    if reap_split {
+        unsafe { g_idle_add(on_reap_split_pane, vte as *mut c_void) };
+    }
+}
+
+fn apply_vte_window_title(s: &mut TermSession, vte: *mut GtkWidget, title_str: &str) {
+    if let Some(rest) = title_str.strip_prefix("AKHTERM_TMUX:") {
+        if s.vte != vte {
+            return;
+        }
+        let parts: Vec<&str> = rest.splitn(4, '|').collect();
+        if parts.len() == 4 && !parts[0].is_empty() {
+            if let Tab::Remote(remote) = &mut s.tab {
+                if let Some(target) = &mut remote.tmux_session {
+                    *target = parts[0].to_string();
+                }
+            }
+            s.remote_tmux = Some((
+                parts[0].to_string(),
+                parts[1].to_string(),
+                parts[2].to_string(),
+                parts[3].to_string(),
+            ));
+            s.tmux_title_from_vte = true;
+        }
+        return;
+    }
+    if vte != s.active_vte() {
+        return;
+    }
+    let clean = title_str.trim();
+    let keep = !clean.is_empty()
+        && !clean.contains('@')
+        && !clean.starts_with('~')
+        && !clean.starts_with('/')
+        && clean != "zsh"
+        && clean != "bash";
+    s.osc_title = if keep { clean.chars().take(28).collect() } else { String::new() };
 }
 
 extern "C" fn on_vte_title_changed(vte: *mut GtkWidget, user_data: *mut c_void) {
+    if vte.is_null() {
+        return;
+    }
     let sid = user_data as usize;
     let title_str = unsafe {
         let ptr = vte_terminal_get_window_title(vte);
@@ -292,44 +406,19 @@ extern "C" fn on_vte_title_changed(vte: *mut GtkWidget, user_data: *mut c_void) 
         }
         CStr::from_ptr(ptr).to_string_lossy().into_owned()
     };
-    APP.with(|cell| {
-        if let Some(app) = cell.borrow_mut().as_mut() {
-            if let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid && s.vte == vte) {
-                if let Some(rest) = title_str.strip_prefix("AKHTERM_TMUX:") {
-                    let parts: Vec<&str> = rest.splitn(4, '|').collect();
-                    if parts.len() == 4 && !parts[0].is_empty() {
-                        if let Tab::Remote(remote) = &mut s.tab {
-                            if let Some(target) = &mut remote.tmux_session {
-                                *target = parts[0].to_string();
-                            }
-                        }
-                        s.remote_tmux = Some((
-                            parts[0].to_string(),
-                            parts[1].to_string(),
-                            parts[2].to_string(),
-                            parts[3].to_string(),
-                        ));
-                        s.tmux_title_from_vte = true;
-                    }
-                } else {
-                    let clean = title_str.trim();
-                    if !clean.is_empty()
-                        && !clean.contains('@')
-                        && !clean.starts_with('~')
-                        && !clean.starts_with('/')
-                        && clean != "zsh"
-                        && clean != "bash"
-                    {
-                        s.osc_title = clean.chars().take(28).collect();
-                    } else {
-                        s.osc_title.clear();
-                    }
-                }
-                sync_session_proc(s, None);
-            }
-        }
+    let updated = APP.with(|cell| {
+        let Ok(mut state) = cell.try_borrow_mut() else { return false };
+        let Some(app) = state.as_mut() else { return false };
+        let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid && s.has_vte(vte)) else {
+            return false;
+        };
+        apply_vte_window_title(s, vte, &title_str);
+        sync_session_proc(s, None);
+        true
     });
-    refresh_ui();
+    if updated {
+        refresh_ui();
+    }
 }
 
 extern "C" fn on_select_session(_btn: *mut GtkWidget, user_data: *mut c_void) {
@@ -338,23 +427,27 @@ extern "C" fn on_select_session(_btn: *mut GtkWidget, user_data: *mut c_void) {
 }
 
 pub fn select_session(sid: usize) {
-    APP.with(|cell| {
-        if let Some(app) = cell.borrow_mut().as_mut() {
-            app.active_id = sid;
-            if let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid) {
-                s.unread = false;
-                if s.state == WorkState::Ready {
-                    s.state = WorkState::Idle;
-                }
-                if let Ok(name_c) = CString::new(format!("term_{sid}")) {
-                    unsafe {
-                        gtk_stack_set_visible_child_name(app.stack, name_c.as_ptr());
-                        gtk_widget_grab_focus(s.vte);
-                    }
-                }
+    let targets = APP.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let app = state.as_mut()?;
+        app.active_id = sid;
+        let s = app.sessions.iter_mut().find(|s| s.id == sid)?;
+        s.unread = false;
+        if s.state == WorkState::Ready {
+            s.state = WorkState::Idle;
+        }
+        Some((app.stack, s.active_vte()))
+    });
+    if let Some((stack, focus_vte)) = targets {
+        if !stack.is_null() {
+            if let Ok(name_c) = CString::new(format!("term_{sid}")) {
+                unsafe { gtk_stack_set_visible_child_name(stack, name_c.as_ptr()) };
             }
         }
-    });
+        if !focus_vte.is_null() {
+            unsafe { gtk_widget_grab_focus(focus_vte) };
+        }
+    }
     refresh_ui();
     // The tab can be new and still waiting for its GTK size allocation.
     unsafe { g_idle_add(on_reveal_tab, sid as *mut c_void) };
@@ -534,6 +627,7 @@ fn create_terminal(cwd: &str, argv: &[&str], sid: usize, scale: f64) -> (*mut Gt
     let (vte, pid) = create_vte_widget(cwd, argv);
     let handlers = [
         (c"key-press-event", on_window_key_press as *const c_void),
+        (c"focus-in-event", on_vte_focus_in as *const c_void),
         (c"contents-changed", on_vte_contents_changed as *const c_void),
         (c"window-title-changed", on_vte_title_changed as *const c_void),
         (c"child-exited", on_vte_child_exited as *const c_void),
@@ -564,17 +658,16 @@ fn add_tab(
 
             let (vte, pid) = create_terminal(cwd, argv, sid, app.font_scale);
             unsafe {
-                let term_scroll = gtk_scrolled_window_new(ptr::null_mut(), ptr::null_mut());
-                gtk_scrolled_window_set_policy(term_scroll, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-                gtk_container_add(term_scroll, vte);
+                let term_scroll = wrap_vte_scroll(vte);
+                let panes = TabPanes::new(term_scroll, vte);
 
                 let stack_name = CString::new(format!("term_{sid}")).unwrap();
-                gtk_stack_add_named(app.stack, term_scroll, stack_name.as_ptr());
+                gtk_stack_add_named(app.stack, panes.root, stack_name.as_ptr());
 
                 let sidebar_row = app.sidebar.append_tab(category, sid, on_select_session);
                 let top_tab = app.tab_strip.append(sid, category, on_select_session, on_close_tab);
 
-                gtk_widget_show_all(term_scroll);
+                gtk_widget_show_all(panes.root);
 
                 let mut session = TermSession {
                     id: sid,
@@ -587,6 +680,7 @@ fn add_tab(
                     category,
                     vte,
                     scroll_wrap: term_scroll,
+                    panes,
                     sidebar_row,
                     top_tab,
                     child_pid: pid,
@@ -656,28 +750,15 @@ fn sync_tmux_jump_buttons(app: &mut AppState, items: &[RemoteTmuxItem]) {
     }
 }
 
-fn session_local_cwd(s: &TermSession) -> Option<String> {
-    if s.remote().is_some() {
-        return None;
-    }
-    if !s.proc_info.cwd.is_empty() {
-        Some(expand_home(&s.proc_info.cwd))
-    } else if !s.cwd.is_empty() {
-        Some(s.cwd.clone())
-    } else {
-        None
-    }
-}
-
 fn collect_local_cwds(app: &AppState) -> Vec<String> {
     let mut cwds = Vec::new();
     if let Some(active) = app.sessions.iter().find(|s| s.id == app.active_id) {
-        if let Some(cwd) = session_local_cwd(active) {
+        if let Some(cwd) = active.active_local_cwd() {
             cwds.push(cwd);
         }
     }
     for s in &app.sessions {
-        if let Some(cwd) = session_local_cwd(s) {
+        if let Some(cwd) = s.active_local_cwd() {
             if !cwds.contains(&cwd) {
                 cwds.push(cwd);
             }
@@ -726,7 +807,7 @@ extern "C" fn on_mi_refactor_clicked(_btn: *mut GtkWidget, _data: *mut c_void) {
             .sessions
             .iter()
             .find(|s| s.id == app.active_id)
-            .and_then(session_local_cwd);
+            .and_then(TermSession::active_local_cwd);
         let (cur_mi, _) = resolve_active_mi(
             &mi_map,
             active_cwd.as_deref(),
@@ -765,7 +846,7 @@ pub fn refresh_ui() {
 
         for (idx, s) in app.sessions.iter().enumerate() {
             let is_act = s.id == app.active_id;
-            let local_dir = session_local_cwd(s);
+            let local_dir = s.active_local_cwd();
             if is_act {
                 can_reconnect = s.remote().is_some();
                 active_cwd = local_dir.clone();
@@ -791,7 +872,12 @@ pub fn refresh_ui() {
             s.top_tab.update(&s.title, &s.proc_info.agent, is_act, s.unread, s.state.needs_approval());
         }
         filter_sidebar(app);
-        unsafe { gtk_widget_set_sensitive(app.reconnect_btn, i32::from(can_reconnect)) };
+        let can_split = !app.sessions.is_empty() && !can_reconnect;
+        unsafe {
+            gtk_widget_set_sensitive(app.reconnect_btn, i32::from(can_reconnect));
+            gtk_widget_set_sensitive(app.split_vert_btn, i32::from(can_split));
+            gtk_widget_set_sensitive(app.split_horiz_btn, i32::from(can_split));
+        }
 
         let (cur_mi, self_mi) = resolve_active_mi(
             &mi_map,
@@ -839,8 +925,8 @@ extern "C" fn on_radar_tick(_data: *mut c_void) -> c_int {
 }
 
 fn sync_session_proc(s: &mut TermSession, telemetry: Option<&BoxTelemetry>) {
-    s.proc_info = inspect_proc_tree(s.child_pid);
-    if s.remote().is_none() && !s.proc_info.cwd.is_empty() {
+    s.proc_info = inspect_proc_tree(s.active_pid());
+    if s.remote().is_none() && !s.proc_info.cwd.is_empty() && s.active_vte() == s.vte {
         s.cwd = expand_home(&s.proc_info.cwd);
     }
     if let Some(box_snap) = telemetry {
@@ -876,7 +962,7 @@ fn send_to_session(sid: usize, text: &str) {
     let vte = APP.with(|cell| {
         let state = cell.borrow();
         let app = state.as_ref()?;
-        app.sessions.iter().find(|s| s.id == sid).map(|s| s.vte)
+        app.sessions.iter().find(|s| s.id == sid).map(TermSession::active_vte)
     });
     if let Some(vte) = vte.filter(|w| !w.is_null()) {
         unsafe {
@@ -891,26 +977,82 @@ fn send_to_active(text: &str) {
 }
 
 extern "C" fn on_sigint_clicked(_btn: *mut GtkWidget, _data: *mut c_void) {
-    APP.with(|cell| {
-        if let Some(app) = cell.borrow().as_ref() {
-            if let Some(s) = app.sessions.iter().find(|s| s.id == app.active_id) {
-                unsafe {
-                    vte_terminal_feed_child(s.vte, b"\x03\0".as_ptr() as *const c_char, 1);
-                    if s.child_pid > 0 {
-                        let pgid = getpgid(s.child_pid);
-                        if pgid > 0 {
-                            kill(-pgid, 2);
-                        }
-                    }
-                    gtk_widget_grab_focus(s.vte);
+    let target = APP.with(|cell| {
+        let state = cell.borrow();
+        let app = state.as_ref()?;
+        let s = app.sessions.iter().find(|s| s.id == app.active_id)?;
+        Some((s.active_vte(), s.active_pid()))
+    });
+    if let Some((vte, pid)) = target.filter(|(w, _)| !w.is_null()) {
+        unsafe {
+            vte_terminal_feed_child(vte, b"\x03\0".as_ptr() as *const c_char, 1);
+            if pid > 0 {
+                let pgid = getpgid(pid);
+                if pgid > 0 {
+                    kill(-pgid, 2);
                 }
             }
+            gtk_widget_grab_focus(vte);
         }
-    });
+    }
 }
 
 fn active_session_id() -> usize {
     APP.with(|cell| cell.borrow().as_ref().map_or(0, |app| app.active_id))
+}
+
+fn active_local_split_context() -> Option<(usize, String, String, f64)> {
+    APP.with(|cell| {
+        let state = cell.borrow();
+        let app = state.as_ref()?;
+        let s = app.sessions.iter().find(|s| s.id == app.active_id && s.remote().is_none())?;
+        let cwd = s.active_local_cwd().unwrap_or_else(|| s.cwd.clone());
+        Some((s.id, cwd, app.config.shell.clone(), app.font_scale))
+    })
+}
+
+fn split_active_tab(orientation: c_int) {
+    let Some((sid, cwd, shell, scale)) = active_local_split_context() else { return };
+    let (new_vte, new_pid) = create_terminal(&cwd, &[shell.as_str()], sid, scale);
+    let new_scroll = wrap_vte_scroll(new_vte);
+    let split_op = APP.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let s = state.as_mut()?.sessions.iter_mut().find(|s| s.id == sid)?;
+        Some(s.panes.prepare_split(s.scroll_wrap, s.vte, new_scroll, new_vte, new_pid, cwd, orientation))
+    });
+    finish_split(split_op, new_scroll, new_vte);
+    refresh_ui();
+}
+
+extern "C" fn on_split_vert(_btn: *mut GtkWidget, _data: *mut c_void) {
+    split_active_tab(GTK_ORIENTATION_HORIZONTAL);
+}
+
+extern "C" fn on_split_horiz(_btn: *mut GtkWidget, _data: *mut c_void) {
+    split_active_tab(GTK_ORIENTATION_VERTICAL);
+}
+
+fn close_active_pane_or_tab() {
+    let sid = active_session_id();
+    if sid == 0 {
+        return;
+    }
+    let close_op = APP.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let s = state.as_mut()?.sessions.iter_mut().find(|s| s.id == sid)?;
+        let op = s
+            .panes
+            .prepare_close_active(&mut s.scroll_wrap, &mut s.vte, &mut s.child_pid, &mut s.cwd)?;
+        s.proc_info = inspect_proc_tree(s.active_pid());
+        Some(op)
+    });
+    if let Some(op) = close_op {
+        op.apply_focus(true);
+        refresh_ui();
+        save_tabs();
+    } else {
+        close_session(sid);
+    }
 }
 
 extern "C" fn on_close_tab(_btn: *mut GtkWidget, data: *mut c_void) {
@@ -930,11 +1072,12 @@ fn close_session(sid: usize) {
         Some(removed)
     });
     if let Some(s) = removed {
+        s.panes.stop_all_extra();
         if s.remote().is_some() {
             stop_ssh(s.child_pid);
         }
         unsafe {
-            gtk_widget_destroy(s.scroll_wrap);
+            gtk_widget_destroy(s.panes.root);
         }
         s.sidebar_row.destroy();
         s.top_tab.destroy();
@@ -975,11 +1118,12 @@ fn reconnect_session(sid: usize) {
 }
 
 fn replace_terminal(sid: usize, vte: *mut GtkWidget, pid: i32, title: String) {
-    let (old_vte, scroll_wrap) = APP.with(|cell| {
+    let swapped = APP.with(|cell| {
         let mut state = cell.borrow_mut();
-        let app = state.as_mut().unwrap();
-        let s = app.sessions.iter_mut().find(|s| s.id == sid).unwrap();
+        let app = state.as_mut()?;
+        let s = app.sessions.iter_mut().find(|s| s.id == sid)?;
         let old_vte = std::mem::replace(&mut s.vte, vte);
+        s.panes.record_focus(vte);
         s.child_pid = pid;
         s.proc_info = inspect_proc_tree(pid);
         s.remote_tmux = None;
@@ -991,12 +1135,18 @@ fn replace_terminal(sid: usize, vte: *mut GtkWidget, pid: i32, title: String) {
         let now = Instant::now();
         s.last_output = now;
         s.work_started = now;
-        (old_vte, s.scroll_wrap)
+        Some((old_vte, s.scroll_wrap))
     });
-    unsafe {
-        gtk_widget_destroy(old_vte);
-        gtk_container_add(scroll_wrap, vte);
-        gtk_widget_show_all(scroll_wrap);
+    if let Some((old_vte, scroll_wrap)) = swapped {
+        unsafe {
+            if !old_vte.is_null() {
+                gtk_widget_destroy(old_vte);
+            }
+            if !scroll_wrap.is_null() && !vte.is_null() {
+                gtk_container_add(scroll_wrap, vte);
+                gtk_widget_show_all(scroll_wrap);
+            }
+        }
     }
 }
 
@@ -1041,9 +1191,7 @@ fn active_worktree_context() -> Result<(String, String), String> {
         } else {
             profile.clone()
         };
-        let cwd = foreground_cwd(s.child_pid)
-            .or_else(|| (!s.proc_info.cwd.is_empty()).then(|| expand_home(&s.proc_info.cwd)))
-            .unwrap_or_else(|| s.cwd.clone());
+        let cwd = s.active_local_cwd().unwrap_or_else(|| s.cwd.clone());
         Ok((key, cwd))
     })
 }
@@ -1133,10 +1281,16 @@ fn capture_active_to_file() -> Option<PathBuf> {
         let state = cell.borrow();
         let app = state.as_ref()?;
         let s = app.sessions.iter().find(|s| s.id == app.active_id)?;
-        let cwd = if !s.proc_info.cwd.is_empty() { expand_home(&s.proc_info.cwd) } else { s.cwd.clone() };
-        Some((s.vte, s.title.clone(), cwd, session_ssh_host(s), app.config.briefs_dir.clone()))
+        let vte = s.active_vte();
+        let cwd = s.active_local_cwd().unwrap_or_else(|| {
+            if !s.proc_info.cwd.is_empty() { expand_home(&s.proc_info.cwd) } else { s.cwd.clone() }
+        });
+        Some((vte, s.title.clone(), cwd, session_ssh_host(s), app.config.briefs_dir.clone()))
     })?;
     let (vte, title, cwd, ssh_host, briefs_dir) = ctx;
+    if vte.is_null() {
+        return None;
+    }
     let meta = CaptureMeta {
         title: &title,
         cwd: &cwd,
@@ -1256,34 +1410,54 @@ impl Drop for PasteGuard {
     }
 }
 
-fn active_paste_context() -> Option<(usize, String, String)> {
+fn active_paste_context() -> Option<(usize, *mut GtkWidget, String, String)> {
     APP.with(|cell| {
         let mut state = cell.try_borrow_mut().ok()?;
         let app = state.as_mut()?;
         let s = app.sessions.iter_mut().find(|s| s.id == app.active_id)?;
-        if s.remote().is_none() {
+        let target_vte = s.active_vte();
+        let focused_pid = s.active_pid();
+        let prev_agent = s.proc_info.agent.clone();
+        let agent = if s.remote().is_none() {
+            let live = detect_local_agent(focused_pid);
             sync_session_proc(s, None);
-        }
-        let host = s.remote().map_or(&s.proc_info.ssh_host, |r| &r.host).clone();
-        Some((s.id, host, s.proc_info.agent.clone()))
+            let fallback = if s.proc_info.agent.is_empty() { &prev_agent } else { &s.proc_info.agent };
+            resolve_pane_agent(live.as_deref(), target_vte == s.vte, fallback)
+        } else {
+            s.proc_info.agent.clone()
+        };
+        Some((s.id, target_vte, session_ssh_host(s), agent))
     })
 }
 
-fn session_paste_widgets(sid: usize) -> Option<(*mut GtkWidget, *mut GtkWidget)> {
+fn session_paste_widgets(
+    sid: usize,
+    preferred_vte: *mut GtkWidget,
+) -> Option<(*mut GtkWidget, *mut GtkWidget)> {
     APP.with(|cell| {
         let state = cell.borrow();
         let app = state.as_ref()?;
         let s = app.sessions.iter().find(|s| s.id == sid)?;
-        Some((s.vte, app.footer_status))
+        let vte = if !preferred_vte.is_null() && s.has_vte(preferred_vte) {
+            preferred_vte
+        } else {
+            s.active_vte()
+        };
+        (!vte.is_null()).then_some((vte, app.footer_status))
     })
 }
 
 fn finish_paste(vte: *mut GtkWidget, footer: *mut GtkWidget, image: Option<(String, String)>) {
+    if vte.is_null() {
+        return;
+    }
     if let Some((path, status)) = image {
         if let Ok(c) = CString::new(path.as_str()) {
             unsafe { vte_terminal_feed_child(vte, c.as_ptr(), path.len() as isize) };
         }
-        set_label_text(footer, &status);
+        if !footer.is_null() {
+            set_label_text(footer, &status);
+        }
     } else {
         unsafe { vte_terminal_paste_clipboard(vte) };
     }
@@ -1295,7 +1469,7 @@ fn paste_routed(plain_ctrl_v: bool, force_image: bool) -> bool {
         return !force_image;
     }
     let _guard = PasteGuard;
-    let Some((sid, host, agent)) = active_paste_context() else { return false };
+    let Some((sid, target_vte, host, agent)) = active_paste_context() else { return false };
     if choose_paste_route(plain_ctrl_v, &host, &agent) == PasteRoute::PassThroughToPty {
         return false;
     }
@@ -1303,7 +1477,7 @@ fn paste_routed(plain_ctrl_v: bool, force_image: bool) -> bool {
     if image.is_none() && force_image {
         return false;
     }
-    let Some((vte, footer)) = session_paste_widgets(sid) else { return false };
+    let Some((vte, footer)) = session_paste_widgets(sid, target_vte) else { return false };
     finish_paste(vte, footer, image);
     true
 }
@@ -1320,9 +1494,9 @@ fn copy_active_selection() {
     let vte = APP.with(|cell| {
         let state = cell.borrow();
         let app = state.as_ref()?;
-        app.sessions.iter().find(|s| s.id == app.active_id).map(|s| s.vte)
+        app.sessions.iter().find(|s| s.id == app.active_id).map(TermSession::active_vte)
     });
-    if let Some(vte) = vte {
+    if let Some(vte) = vte.filter(|w| !w.is_null()) {
         unsafe { vte_terminal_copy_clipboard_format(vte, 1) };
     }
 }
@@ -1445,8 +1619,10 @@ fn handle_tab_shortcut(keyval: c_uint, keycode: u16) -> bool {
     }
     match (char::from_u32(keyval), keycode) {
         (Some('T' | 't'), _) | (_, 28) => open_default_tab(),
-        (Some('W' | 'w'), _) | (_, 25) => close_session(active_session_id()),
+        (Some('W' | 'w'), _) | (_, 25) => close_active_pane_or_tab(),
         (Some('R' | 'r'), _) | (_, 27) => reconnect_session(active_session_id()),
+        (Some('D' | 'd'), _) | (_, 40) => split_active_tab(GTK_ORIENTATION_HORIZONTAL),
+        (Some('E' | 'e'), _) | (_, 26) => split_active_tab(GTK_ORIENTATION_VERTICAL),
         _ => return false,
     }
     true
@@ -1456,7 +1632,7 @@ fn focus_active_vte() {
     let vte = APP.with(|cell| {
         let state = cell.borrow();
         let app = state.as_ref()?;
-        app.sessions.iter().find(|s| s.id == app.active_id).map(|s| s.vte)
+        app.sessions.iter().find(|s| s.id == app.active_id).map(TermSession::active_vte)
     });
     if let Some(vte) = vte.filter(|w| !w.is_null()) {
         unsafe { gtk_widget_grab_focus(vte) };
@@ -1635,6 +1811,7 @@ unsafe fn add_toolbar_action(
 
 fn run_app() {
     let _ui_font = ui_font::load().inspect_err(|error| eprintln!("AkhTerm: {error}"));
+    register_link_cwd_lookup(lookup_vte_link_cwd);
     let config = WorkspaceConfig::load();
     let mi_dirs = config.mi_directories();
     unsafe {
@@ -1696,6 +1873,12 @@ fn run_app() {
             on_toggle_sidebar,
         );
         add_class(side_tog_btn, "btn-icon-sq");
+        let split_horiz_btn =
+            add_toolbar_action(topbar, text::SPLIT_HORIZ, text::SPLIT_HORIZ_TIP, on_split_horiz);
+        add_class(split_horiz_btn, "btn-icon-sq");
+        let split_vert_btn =
+            add_toolbar_action(topbar, text::SPLIT_VERT, text::SPLIT_VERT_TIP, on_split_vert);
+        add_class(split_vert_btn, "btn-icon-sq");
         let reconnect_btn = add_toolbar_action(
             topbar,
             text::RECONNECT,
@@ -1918,6 +2101,8 @@ fn run_app() {
                 font_scale: 1.0,
                 zoom_btn,
                 reconnect_btn,
+                split_vert_btn,
+                split_horiz_btn,
                 next_id: 1,
                 active_id: 1,
                 sessions: Vec::new(),

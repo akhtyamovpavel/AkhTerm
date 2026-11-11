@@ -235,7 +235,7 @@ pub fn settle_working_session(
         return;
     }
     let work_span = session.last_output.saturating_duration_since(session.work_started);
-    let classified = classify_vte_state(session.vte);
+    let classified = classify_vte_state(session.active_vte());
     apply_settled_state(session, classified, active_id);
     maybe_notify_settled(session, now, classified, work_span, win, window_active);
 }

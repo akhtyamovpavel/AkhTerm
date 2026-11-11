@@ -9,7 +9,7 @@ use std::ptr;
 use std::thread;
 
 use crate::ffi::*;
-use crate::paths::{home_dir, shorten_home, state_dir, write_state_file};
+use crate::paths::{expand_home, home_dir, shorten_home, state_dir, write_state_file};
 use crate::tabs::{is_ssh_host, Tab};
 
 #[derive(Clone, Debug, Default)]
@@ -302,6 +302,19 @@ pub fn inspect_proc_tree(root_pid: i32) -> ProcInfo {
     info
 }
 
+pub fn detect_local_agent(root_pid: i32) -> Option<String> {
+    if root_pid <= 0 {
+        return None;
+    }
+    let mut info = inspect_proc_tree(root_pid);
+    if info.agent.is_empty() {
+        if let Some(parts) = read_proc_cmdline(root_pid) {
+            apply_proc_cmd(&mut info, &parts);
+        }
+    }
+    (!info.agent.is_empty()).then_some(info.agent)
+}
+
 pub fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
@@ -409,42 +422,101 @@ pub fn query_ssh_servers(hosts: &[String]) -> BoxTelemetry {
     out
 }
 
-pub fn open_external_link(raw_url: &str) {
-    let trimmed = raw_url
-        .trim()
-        .trim_end_matches(|c: char| ".,;:!?)]}\"'".contains(c));
-    if trimmed.is_empty() {
-        return;
-    }
+fn strip_link_punctuation(raw: &str) -> &str {
+    raw.trim().trim_end_matches(|c: char| ".,;:!?)]}\"'".contains(c))
+}
 
-    let home = home_dir();
-    let mut target = if trimmed.starts_with("localhost:")
+fn parse_line_num(part: &str) -> Option<u32> {
+    (!part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| part.parse::<u32>().ok())
+        .flatten()
+}
+
+pub fn split_path_line_col(raw: &str) -> (&str, Option<u32>, Option<u32>) {
+    let clean = strip_link_punctuation(raw);
+    let Some((head, tail)) = clean.rsplit_once(':') else {
+        return (clean, None, None);
+    };
+    let Some(n1) = parse_line_num(tail) else {
+        return (clean, None, None);
+    };
+    if let Some((head2, line_s)) = head.rsplit_once(':') {
+        if let Some(n2) = parse_line_num(line_s) {
+            return (head2, Some(n2), Some(n1));
+        }
+    }
+    (head, Some(n1), None)
+}
+
+fn clean_joined_path(base: &Path, rel: &str) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for comp in base.join(rel).components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+fn resolve_abs_file_target(path_str: &str) -> String {
+    if Path::new(path_str).exists() {
+        return path_str.to_owned();
+    }
+    let (base, line, _) = split_path_line_col(path_str);
+    if line.is_some() && Path::new(base).exists() {
+        return base.to_owned();
+    }
+    path_str.to_owned()
+}
+
+fn resolve_relative_file(trimmed: &str, cwd: Option<&str>) -> Option<String> {
+    let dir = cwd.map(str::trim).filter(|d| !d.is_empty())?;
+    let base_dir = PathBuf::from(expand_home(dir));
+    let (rel_path, _, _) = split_path_line_col(trimmed);
+    if rel_path.is_empty() {
+        return None;
+    }
+    let resolved = clean_joined_path(&base_dir, rel_path);
+    resolved.exists().then(|| resolved.to_string_lossy().into_owned())
+}
+
+pub fn resolve_link_target(raw_url: &str, cwd: Option<&str>) -> Option<String> {
+    let trimmed = strip_link_punctuation(raw_url);
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with("file://") {
+        let local = uri_to_local_path(trimmed)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| trimmed.trim_start_matches("file://").to_owned());
+        return Some(resolve_abs_file_target(&local));
+    }
+    if trimmed.contains("://") {
+        return Some(trimmed.to_owned());
+    }
+    if trimmed.starts_with("localhost:")
         || trimmed.starts_with("127.0.0.1:")
         || trimmed.starts_with("0.0.0.0:")
     {
-        format!("http://{trimmed}")
-    } else if let Some(rest) = trimmed.strip_prefix("~/") {
-        format!("{home}/{rest}")
-    } else if let Some(rest) = trimmed.strip_prefix("file://") {
-        rest.to_string()
-    } else {
-        trimmed.to_string()
-    };
-
-    if target.starts_with('/') && !Path::new(&target).exists() {
-        if let Some((base, _line)) = target.rsplit_once(':') {
-            if Path::new(base).exists() {
-                target = base.to_string();
-            } else if let Some((base2, _col)) = base.rsplit_once(':') {
-                if Path::new(base2).exists() {
-                    target = base2.to_string();
-                }
-            }
-        }
+        return Some(format!("http://{trimmed}"));
     }
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        return Some(resolve_abs_file_target(&format!("{}/{rest}", home_dir())));
+    }
+    if trimmed.starts_with('/') {
+        return Some(resolve_abs_file_target(trimmed));
+    }
+    resolve_relative_file(trimmed, cwd)
+}
 
+fn spawn_xdg_open(target: &str) {
     let _ = Command::new("xdg-open")
-        .arg(&target)
+        .arg(target)
         .env_remove("HTTP_PROXY")
         .env_remove("HTTPS_PROXY")
         .env_remove("ALL_PROXY")
@@ -454,6 +526,12 @@ pub fn open_external_link(raw_url: &str) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
+}
+
+pub fn open_external_link(raw_url: &str) {
+    if let Some(target) = resolve_link_target(raw_url, None) {
+        spawn_xdg_open(&target);
+    }
 }
 
 fn upload_bytes_to_ssh(ssh_host: &str, remote_path: &str, bytes: &[u8]) -> bool {
@@ -651,21 +729,33 @@ pub fn try_paste_clipboard_image(ssh_host: &str, force_image: bool) -> Option<(S
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::process::Child;
+    use std::sync::{Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
-    struct BroadwayGuard {
-        child: Child,
+    extern "C" {
+        fn atexit(cb: extern "C" fn()) -> c_int;
+    }
+
+    struct BroadwayServer {
+        child: Mutex<Option<Child>>,
         dir: PathBuf,
     }
 
-    impl Drop for BroadwayGuard {
-        fn drop(&mut self) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-            let _ = fs::remove_dir_all(&self.dir);
+    static GTK_LOCK: Mutex<()> = Mutex::new(());
+    static BROADWAY: OnceLock<Option<BroadwayServer>> = OnceLock::new();
+
+    extern "C" fn cleanup_broadway() {
+        if let Some(Some(srv)) = BROADWAY.get() {
+            if let Ok(mut guard) = srv.child.lock() {
+                if let Some(mut child) = guard.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+            let _ = fs::remove_dir_all(&srv.dir);
         }
     }
 
@@ -682,11 +772,11 @@ mod tests {
             .ok()
     }
 
-    fn start_headless_gtk() -> Option<BroadwayGuard> {
+    fn init_broadway_once() -> Option<BroadwayServer> {
         let dir = std::env::temp_dir().join(format!("akhterm_bway_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).ok()?;
-        let child = spawn_broadway(&dir)?;
+        let mut child = spawn_broadway(&dir)?;
         let gdk_sock = dir.join("broadway8.socket");
         let deadline = Instant::now() + Duration::from_secs(2);
         while !gdk_sock.exists() && Instant::now() < deadline {
@@ -696,10 +786,27 @@ mod tests {
         std::env::set_var("GDK_BACKEND", "broadway");
         std::env::set_var("BROADWAY_DISPLAY", ":7");
         let ok = unsafe { gtk_init_check(ptr::null_mut(), ptr::null_mut()) };
-        (ok != 0).then_some(BroadwayGuard { child, dir })
+        if ok == 0 {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = fs::remove_dir_all(&dir);
+            return None;
+        }
+        unsafe { atexit(cleanup_broadway) };
+        Some(BroadwayServer {
+            child: Mutex::new(Some(child)),
+            dir,
+        })
     }
 
-    fn pump_gtk_events() {
+    pub(crate) fn with_headless_gtk<F: FnOnce()>(f: F) {
+        let _guard = GTK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        if BROADWAY.get_or_init(init_broadway_once).is_some() {
+            f();
+        }
+    }
+
+    pub(crate) fn pump_gtk_events() {
         for _ in 0..60 {
             if unsafe { gtk_events_pending() } == 0 {
                 break;
@@ -767,32 +874,81 @@ mod tests {
 
     #[test]
     fn vte_copy_and_paste_between_tabs_does_not_deadlock() {
-        let Some(_guard) = start_headless_gtk() else { return };
-        let (win, tab1, tab2) = create_two_vte_window();
-        let sample = "привет из первой вкладки";
-        unsafe {
-            vte_terminal_feed(tab1, sample.as_ptr() as *const c_char, sample.len() as isize);
-        }
-        thread::sleep(Duration::from_millis(40));
-        pump_gtk_events();
-        unsafe {
-            vte_terminal_select_all(tab1);
-            vte_terminal_copy_clipboard_format(tab1, 1);
+        with_headless_gtk(|| {
+            let (win, tab1, tab2) = create_two_vte_window();
+            let sample = "привет из первой вкладки";
+            unsafe {
+                vte_terminal_feed(tab1, sample.as_ptr() as *const c_char, sample.len() as isize);
+            }
+            thread::sleep(Duration::from_millis(40));
             pump_gtk_events();
-        }
+            unsafe {
+                vte_terminal_select_all(tab1);
+                vte_terminal_copy_clipboard_format(tab1, 1);
+                pump_gtk_events();
+            }
 
-        assert!(try_paste_clipboard_image("", false).is_none());
-        assert!(try_paste_clipboard_image("", true).is_none());
-        assert!(try_paste_clipboard_image("unreachable-ssh-host", false).is_none());
+            assert!(try_paste_clipboard_image("", false).is_none());
+            assert!(try_paste_clipboard_image("", true).is_none());
+            assert!(try_paste_clipboard_image("unreachable-ssh-host", false).is_none());
 
-        let clip = unsafe { gtk_clipboard_get(GDK_SELECTION_CLIPBOARD) };
-        let copied = take_glib_string(unsafe { gtk_clipboard_wait_for_text(clip) }).unwrap();
-        assert!(copied.contains(sample), "copied: {copied:?}");
-        unsafe { vte_terminal_paste_clipboard(tab2) };
-        pump_gtk_events();
+            let clip = unsafe { gtk_clipboard_get(GDK_SELECTION_CLIPBOARD) };
+            let copied = take_glib_string(unsafe { gtk_clipboard_wait_for_text(clip) }).unwrap();
+            assert!(copied.contains(sample), "copied: {copied:?}");
+            unsafe { vte_terminal_paste_clipboard(tab2) };
+            pump_gtk_events();
 
-        verify_image_clipboard_paste();
-        unsafe { gtk_widget_destroy(win) };
+            verify_image_clipboard_paste();
+            unsafe { gtk_widget_destroy(win) };
+            pump_gtk_events();
+        });
+    }
+
+    #[test]
+    fn parses_relative_path_line_col_including_cyrillic() {
+        assert_eq!(split_path_line_col("src/session.rs:241"), ("src/session.rs", Some(241), None));
+        assert_eq!(split_path_line_col("./app/main.py:42:5:"), ("./app/main.py", Some(42), Some(5)));
+        assert_eq!(split_path_line_col("crates/core/lib.rs)"), ("crates/core/lib.rs", None, None));
+        assert_eq!(
+            split_path_line_col("учёба/модуль.py:18:3,"),
+            ("учёба/модуль.py", Some(18), Some(3))
+        );
+    }
+
+    #[test]
+    fn resolves_relative_links_against_session_cwd_and_checks_existence() {
+        let root = std::env::temp_dir().join(format!("akhterm_rel_link_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let cyr_dir = root.join("учёба").join("курс");
+        let sub_dir = root.join("crates").join("cli");
+        fs::create_dir_all(&cyr_dir).unwrap();
+        fs::create_dir_all(&sub_dir).unwrap();
+        let py_file = cyr_dir.join("модуль.py");
+        let rs_file = root.join("crates").join("lib.rs");
+        fs::write(&py_file, b"print(1)\n").unwrap();
+        fs::write(&rs_file, b"pub fn ok() {}\n").unwrap();
+
+        let root_s = root.to_string_lossy();
+        let sub_s = sub_dir.to_string_lossy();
+        assert_eq!(
+            resolve_link_target("./учёба/курс/модуль.py:42:5", Some(&root_s)).as_deref(),
+            py_file.to_str()
+        );
+        assert_eq!(
+            resolve_link_target("../lib.rs:10", Some(&sub_s)).as_deref(),
+            rs_file.to_str()
+        );
+        assert_eq!(resolve_link_target("учёба/нет_файла.py:3", Some(&root_s)), None);
+        assert_eq!(resolve_link_target("crates/lib.rs:10", None), None);
+        assert_eq!(
+            resolve_link_target("localhost:8080/health", None).as_deref(),
+            Some("http://localhost:8080/health")
+        );
+        assert_eq!(
+            resolve_link_target(&format!("{}:99:2", rs_file.display()), None).as_deref(),
+            rs_file.to_str()
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
