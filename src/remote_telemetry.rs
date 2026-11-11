@@ -11,12 +11,12 @@ use crate::proc_radar::{detect_local_agent, shell_quote};
 use crate::session::{SessionCategory, TermSession};
 use crate::tabs::{is_ssh_host, Tab};
 use crate::telemetry::{
-    is_complete_json_object, json_obj, json_u64, TelemetrySource, TranscriptTailer,
+    is_complete_json_object, json_obj, json_obj_prefix, json_u64, TelemetrySource, TranscriptTailer,
 };
 
 pub const REMOTE_PROBE_TTL: Duration = Duration::from_secs(8);
 pub const REMOTE_FULL_MAX_BYTES: u64 = 262_144;
-pub const REMOTE_HEAD_BYTES: usize = 4_096;
+pub const REMOTE_HEAD_BYTES: usize = 32_768;
 pub const REMOTE_TAIL_BYTES: usize = 131_072;
 
 const FRAME_PREFIX: &[u8] = b"AKHTERM_RTELEM1|";
@@ -319,7 +319,7 @@ fn extract_codex_window(line: &str) -> Option<u64> {
 }
 
 fn extract_payload_window(line: &str) -> Option<u64> {
-    let payload = json_obj(line, "payload")?;
+    let payload = json_obj_prefix(line, "payload")?;
     json_u64(payload, "model_context_window")
         .or_else(|| json_obj(payload, "info").and_then(|o| json_u64(o, "model_context_window")))
 }
@@ -489,7 +489,11 @@ fn posix_proc_kind_fn() -> &'static str {
 fn posix_tree_pids_fn() -> &'static str {
     concat!(
         "tree_pids() {\n",
-        "  _q=\"$1\"; _sn=\" \"; _n=0\n",
+        "  _q=\"$1\"; _sn=\" \"; _n=0; _ps=\"\"\n",
+        "  if [ \"$P_ROOT\" = \"/proc\" ] && [ -n \"$_q\" ]; then\n",
+        "    _f1=\"${_q%% *}\"; set -- \"$P_ROOT/$_f1/task\"/*/children\n",
+        "    [ -r \"$1\" ] || [ -r \"$P_ROOT/$_f1/children\" ] || _ps=$(ps -eo pid=,ppid= 2>/dev/null || true)\n",
+        "  fi\n",
         "  while [ -n \"$_q\" ] && [ \"$_n\" -lt 64 ]; do\n",
         "    _c=\"${_q%% *}\"\n",
         "    if [ \"$_c\" = \"$_q\" ]; then _q=\"\"; else _q=\"${_q#* }\"; fi\n",
@@ -499,7 +503,10 @@ fn posix_tree_pids_fn() -> &'static str {
         "    for _cf in \"$P_ROOT/$_c/task\"/*/children \"$P_ROOT/$_c/children\"; do\n",
         "      [ -r \"$_cf\" ] || continue\n",
         "      for _kp in $(tr '\\n\\t' '  ' < \"$_cf\" 2>/dev/null); do _q=\"${_q:+$_q }$_kp\"; done\n",
-        "    done\n  done\n",
+        "    done\n",
+        "    if [ -n \"$_ps\" ]; then\n",
+        "      for _kp in $(printf '%s\\n' \"$_ps\" | awk -v p=\"$_c\" '$2==p{print $1}'); do _q=\"${_q:+$_q }$_kp\"; done\n",
+        "    fi\n  done\n",
         "  printf '%s' \"$_sn\"\n}\n",
     )
 }
@@ -541,12 +548,19 @@ fn posix_resolve_claude_fn() -> &'static str {
 
 fn posix_codex_fd_fn() -> &'static str {
     concat!(
+        "codex_is_sub() {\n",
+        "  case \"$1\" in *',\"source\":{\"subagent'*|*', \"source\": {\"subagent'*|*'{\"source\":{\"subagent'*|*'{\"source\": {\"subagent'*) return 0 ;; esac\n",
+        "  return 1\n}\n",
         "codex_fd() {\n",
-        "  [ -n \"$1\" ] && [ -d \"$P_ROOT/$1/fd\" ] || return 1\n",
-        "  for _fd in \"$P_ROOT/$1/fd\"/*; do\n",
-        "    _t=$(readlink \"$_fd\" 2>/dev/null) || continue\n",
-        "    case \"$_t\" in \"$HOME/.codex/sessions/\"*.jsonl) [ -f \"$_t\" ] && { printf '%s' \"$_t\"; return 0; } ;; esac\n",
-        "  done; return 1\n}\n",
+        "  [ -n \"$1\" ] || return 1; _sr=\"${CODEX_HOME:-$HOME/.codex}/sessions\"\n",
+        "  for _cp in $(tree_pids \"$1\"); do\n",
+        "    [ -d \"$P_ROOT/$_cp/fd\" ] || continue\n",
+        "    for _fd in \"$P_ROOT/$_cp/fd\"/*; do\n",
+        "      _t=$(readlink \"$_fd\" 2>/dev/null) || continue\n",
+        "      case \"$_t\" in \"$_sr/\"*.jsonl) [ -f \"$_t\" ] || continue\n",
+        "        _hd=$(head -c 32768 \"$_t\" 2>/dev/null); codex_is_sub \"$_hd\" && continue\n",
+        "        printf '%s' \"$_t\"; return 0 ;; esac\n",
+        "    done\n  done; return 1\n}\n",
     )
 }
 
@@ -564,20 +578,28 @@ fn posix_codex_anc_fn() -> &'static str {
 
 fn posix_resolve_codex_fn() -> &'static str {
     concat!(
+        "codex_has_tok() { tail -c 65536 \"$1\" 2>/dev/null | grep -q '\"token_count\"'; }\n",
         "resolve_codex() {\n",
         "  _cw=\"${1%/}\"; _pd=\"$2\"\n",
         "  _hit=$(codex_fd \"$_pd\") && [ -n \"$_hit\" ] && { printf '%s' \"$_hit\"; return 0; }\n",
-        "  _sr=\"$HOME/.codex/sessions\"; [ -d \"$_sr\" ] || return 1\n",
-        "  _be=\"\"; _bs=\"\"; _ba=\"\"\n",
-        "  for _f in \"$_sr\"/*/*/*/*.jsonl \"$_sr\"/*.jsonl; do\n",
-        "    [ -f \"$_f\" ] || continue\n",
-        "    [ -z \"$_ba\" ] || [ \"$_f\" -nt \"$_ba\" ] && _ba=\"$_f\"\n",
-        "    [ -n \"$_cw\" ] || continue; _hd=$(head -c 4096 \"$_f\" 2>/dev/null)\n",
+        "  _sr=\"${CODEX_HOME:-$HOME/.codex}/sessions\"; [ -d \"$_sr\" ] || return 1\n",
+        "  set --; for _g in \"$_sr\"/*/*/*/*.jsonl \"$_sr\"/*.jsonl; do [ -f \"$_g\" ] && set -- \"$@\" \"$_g\"; done\n",
+        "  [ \"$#\" -gt 0 ] || return 1\n",
+        "  _lst=$(ls -1t \"$@\" 2>/dev/null | head -n 48)\n",
+        "  _bet=\"\"; _be=\"\"; _bst=\"\"; _bs=\"\"; _ba=\"\"; _oifs=\"$IFS\"; IFS='\n'\n",
+        "  set -f\n",
+        "  for _f in $_lst; do\n",
+        "    IFS=\"$_oifs\"; set +f; [ -f \"$_f\" ] || continue\n",
+        "    _hd=$(head -c 32768 \"$_f\" 2>/dev/null); codex_is_sub \"$_hd\" && continue\n",
+        "    if [ -z \"$_cw\" ]; then [ -z \"$_ba\" ] && _ba=\"$_f\"; codex_has_tok \"$_f\" && { _ba=\"$_f\"; break; }; continue; fi\n",
         "    case \"$_hd\" in *'\"cwd\":\"'\"$_cw\"'\"'*|*'\"cwd\": \"'\"$_cw\"'\"'*)\n",
-        "      [ -z \"$_be\" ] || [ \"$_f\" -nt \"$_be\" ] && _be=\"$_f\"; continue ;; esac\n",
-        "    codex_anc \"$_hd\" \"$_cw\" && { [ -z \"$_bs\" ] || [ \"$_f\" -nt \"$_bs\" ] && _bs=\"$_f\"; }\n",
+        "      [ -z \"$_be\" ] && _be=\"$_f\"\n",
+        "      codex_has_tok \"$_f\" && { _bet=\"$_f\"; break; }; continue ;; esac\n",
+        "    if [ -z \"$_bst\" ] && codex_anc \"$_hd\" \"$_cw\"; then\n",
+        "      [ -z \"$_bs\" ] && _bs=\"$_f\"; codex_has_tok \"$_f\" && _bst=\"$_f\"\n    fi\n",
         "  done\n",
-        "  for _r in \"$_be\" \"$_bs\"; do [ -n \"$_r\" ] && { printf '%s' \"$_r\"; return 0; }; done\n",
+        "  IFS=\"$_oifs\"; set +f\n",
+        "  for _r in \"$_bet\" \"$_be\" \"$_bst\" \"$_bs\"; do [ -n \"$_r\" ] && { printf '%s' \"$_r\"; return 0; }; done\n",
         "  [ -z \"$_cw\" ] && [ -n \"$_ba\" ] && { printf '%s' \"$_ba\"; return 0; }\n  return 1\n}\n",
     )
 }
@@ -715,11 +737,11 @@ fn posix_pick_pane_fn() -> &'static str {
     concat!(
         "pick_pane() {\n",
         "  _bp=\"\"; _bc=\"\"; _bd=\"\"; _br=-1\n",
-        "  while IFS='	' read -r _sn _wa _pa _ppid _pcmd _ppath; do\n",
+        "  while IFS='|' read -r _sn _wa _pa _ppid _pcmd _ppath; do\n",
         "    [ \"$_sn\" = \"$1\" ] || continue\n",
         "    _r=0; [ \"$_pa\" = \"1\" ] && _r=1; [ \"$_wa\" = \"1\" ] && [ \"$_pa\" = \"1\" ] && _r=2\n",
         "    [ \"$_r\" -gt \"$_br\" ] && { _br=\"$_r\"; _bp=\"$_ppid\"; _bc=\"$_pcmd\"; _bd=\"$_ppath\"; }\n",
-        "  done\n  [ \"$_br\" -ge 0 ] && printf '%s\\t%s\\t%s' \"$_bp\" \"$_bc\" \"$_bd\"\n}\n",
+        "  done\n  [ \"$_br\" -ge 0 ] && printf '%s|%s|%s' \"$_bp\" \"$_bc\" \"$_bd\"\n}\n",
     )
 }
 
@@ -740,7 +762,7 @@ fn posix_tmux_probe_fn() -> &'static str {
         "  _s=\"$1\"; _ts=\"$2\"; _ch=\"$3\"; _ah=\"$4\"; _pp=\"$5\"; _pk=\"$6\"; _po=\"$7\"\n",
         "  _fk=\"\"; _ff=\"\"; _rw=$(printf '%s\\n' \"${TMUX_PANES:-}\" | pick_pane \"$_ts\")\n",
         "  if [ -n \"$_rw\" ]; then\n",
-        "    _ppid=\"${_rw%%	*}\"; _rs=\"${_rw#*	}\"; _pcmd=\"${_rs%%	*}\"; _ppath=\"${_rs#*	}\"\n",
+        "    _ppid=\"${_rw%%|*}\"; _rs=\"${_rw#*|}\"; _pcmd=\"${_rs%%|*}\"; _ppath=\"${_rs#*|}\"\n",
         "    _ag=$(find_tree_agent \"$_ppid\")\n",
         "    if [ -n \"$_ag\" ]; then\n",
         "      _ap=\"${_ag%%|*}\"; _fk=\"${_ag#*|}\"\n",
@@ -758,7 +780,7 @@ fn posix_tmux_roots_fn() -> &'static str {
     concat!(
         "tmux_roots() {\n",
         "  [ -n \"${TMUX_PANES:-}\" ] || return 0\n",
-        "  printf '%s\\n' \"$TMUX_PANES\" | while IFS='	' read -r _s1 _s2 _s3 _pp _r; do\n",
+        "  printf '%s\\n' \"$TMUX_PANES\" | while IFS='|' read -r _s1 _s2 _s3 _pp _r; do\n",
         "    [ -n \"$_pp\" ] && printf '%s ' \"$_pp\"\n  done\n}\n",
     )
 }
@@ -799,7 +821,7 @@ fn posix_plain_probe_fn() -> &'static str {
 }
 
 fn posix_tmux_snapshot_line() -> &'static str {
-    "TMUX_PANES=$(tmux list-panes -a -F '#{session_name}	#{window_active}	#{pane_active}	#{pane_pid}	#{pane_current_command}	#{pane_current_path}' 2>/dev/null || true)\n"
+    "TMUX_PANES=$(tmux list-panes -a -F '#{session_name}|#{window_active}|#{pane_active}|#{pane_pid}|#{pane_current_command}|#{pane_current_path}' 2>/dev/null || true)\n"
 }
 
 fn append_query_call(out: &mut String, q: &SessionProbeQuery) {
@@ -1162,7 +1184,10 @@ mod tests {
     }
 
     fn write_mock_tmux(path: &Path, panes_file: &Path) {
-        let script = format!("#!/bin/sh\ncat '{}'\n", panes_file.display());
+        let script = format!(
+            "#!/bin/sh\ncase \"$*\" in *'\t'*) exit 95 ;; esac\ncat '{}'\n",
+            panes_file.display()
+        );
         write_executable(path, &script);
     }
 
@@ -1289,7 +1314,7 @@ mod tests {
     fn build_three_batch_targets(env: &MockRemoteEnv) -> Vec<RemoteSessionTarget> {
         let (claude_cwd, codex_cwd) = (seed_claude_fixture(env), seed_codex_fixture(env));
         seed_agy_fd_fixture(env);
-        let panes = format!("claude-s\t0\t1\t9999\tzsh\t/tmp\nclaude-s\t1\t1\t2100\tzsh\t{}\ncodex-s\t1\t1\t2200\tzsh\t{}\n", claude_cwd.display(), codex_cwd.display());
+        let panes = format!("claude-s|0|1|9999|zsh|/tmp\nclaude-s|1|1|2100|zsh|{}\ncodex-s|1|1|2200|zsh|{}\n", claude_cwd.display(), codex_cwd.display());
         fs::write(&env.tmux_panes_file, panes).unwrap();
         let s1 = dummy_session(1, SessionCategory::Remote, Tab::remote("gpu-box", Some("claude-s")), "gpu-box");
         let s2 = dummy_session(2, SessionCategory::Remote, Tab::remote("gpu-box", Some("codex-s")), "gpu-box");
@@ -1339,7 +1364,7 @@ mod tests {
         fs::write(logs.join("transcript.jsonl"), format!("{hdr}{turn}")).unwrap();
         seed_agy_subagent_decoy(&brain, &ws);
         env.add_proc(3100, "agy\0", &ws, &[]);
-        fs::write(&env.tmux_panes_file, format!("{tricky_sess}\t1\t1\t3100\tagy\t{}\n", ws.display())).unwrap();
+        fs::write(&env.tmux_panes_file, format!("{tricky_sess}|1|1|3100|agy|{}\n", ws.display())).unwrap();
     }
 
     #[test]
@@ -1419,12 +1444,70 @@ mod tests {
         let t0 = Instant::now();
 
         let (u0, sz0) = run_measured_probe(&sched, &prog, t0);
-        assert!(u0 == 1 && sz0 < 136_000);
+        assert!(u0 == 1 && sz0 < 165_000, "initial transfer {sz0} bytes");
         assert_eq!(sched.snapshot()[&9].remote_offset, initial_sz);
         assert_eq!(sched.snapshot()[&9].snapshot.context_pct, Some(77));
         let (u1, sz1) = run_measured_probe(&sched, &prog, t0 + Duration::from_secs(9));
         assert!(u1 == 0 && sz1 < 240);
         verify_delta_and_truncation(&sched, &prog, &rollout, &repo, t0);
+    }
+
+    fn set_file_mtime_offset(path: &Path, plus_secs: u64) {
+        let stamp = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_762_000_000 + plus_secs);
+        fs::OpenOptions::new().write(true).open(path).unwrap().set_modified(stamp).unwrap();
+    }
+
+    fn seed_codex_0167_tmux_fixture(env: &MockRemoteEnv) -> PathBuf {
+        let repo = env.home.join("Development/Akhcheck");
+        let day = env.home.join(".codex/sessions/2026/11/03");
+        fs::create_dir_all(&repo).unwrap();
+        fs::create_dir_all(&day).unwrap();
+        let prompt_pad = format!("subagent instructions {}", "p".repeat(68_000));
+        let main_rollout = day.join("rollout-main-154k.jsonl");
+        let main_hdr = format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":\"{}\",\"source\":\"cli\",\"model_context_window\":258400,\"base_instructions\":\"{}\"}}}}\n",
+            repo.display(),
+            prompt_pad
+        );
+        let main_tok = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":420000,\"cached_input_tokens\":380000,\"output_tokens\":14000,\"total_tokens\":434000},\"last_token_usage\":{\"input_tokens\":154000,\"cached_input_tokens\":140000,\"output_tokens\":1200,\"total_tokens\":155200},\"model_context_window\":258400}}}\n";
+        fs::write(&main_rollout, format!("{main_hdr}{main_tok}")).unwrap();
+        set_file_mtime_offset(&main_rollout, 10);
+
+        let guardian = day.join("rollout-guardian-41k.jsonl");
+        let g_hdr = format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":\"{}\",\"source\":{{\"subagent\":{{\"other\":\"guardian\"}}}}}}}}\n",
+            repo.display()
+        );
+        let g_tok = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":41000,\"cached_input_tokens\":0,\"output_tokens\":500,\"total_tokens\":41500},\"last_token_usage\":{\"input_tokens\":41000,\"cached_input_tokens\":0,\"output_tokens\":500,\"total_tokens\":41500},\"model_context_window\":258400}}}\n";
+        fs::write(&guardian, format!("{g_hdr}{g_tok}")).unwrap();
+        set_file_mtime_offset(&guardian, 40);
+
+        let empty_new = day.join("rollout-empty-new.jsonl");
+        fs::write(&empty_new, &main_hdr).unwrap();
+        set_file_mtime_offset(&empty_new, 70);
+        main_rollout
+    }
+
+    #[test]
+    fn codex_0167_tmux_resolves_large_header_and_skips_guardian_subagents() {
+        let env = MockRemoteEnv::new("codex0167");
+        let main_rollout = seed_codex_0167_tmux_fixture(&env);
+        let repo = env.home.join("Development/Akhcheck");
+        env.add_proc(3065, "-zsh\0", &repo, &[2696]);
+        let codex_pdir = env.add_proc(2696, "codex\0resume\0", &repo, &[]);
+        let _ = symlink(env.home.join(".codex/logs_2.sqlite"), codex_pdir.join("fd/9"));
+        fs::write(&env.tmux_panes_file, format!("akhcheck|1|1|3065|codex|{}\n", repo.display())).unwrap();
+
+        let mut s = dummy_session(15, SessionCategory::Remote, Tab::remote("home", Some("akhcheck")), "home");
+        s.remote_tmux = Some(("akhcheck".into(), "0".into(), "codex".into(), repo.to_string_lossy().into_owned()));
+        let sched = RemoteTelemetryScheduler::default();
+        sched.sync_targets(&[RemoteSessionTarget::from_session(&s).unwrap()]);
+        let prog = env.ssh_bin.to_string_lossy().into_owned();
+        assert_eq!(sched.refresh_due_with(Instant::now(), |h, sc| run_ssh_probe_with_program(&prog, h, sc)), 1);
+        let rt = &sched.snapshot()[&15];
+        assert_eq!(Path::new(&rt.remote_path), main_rollout);
+        assert_eq!(rt.snapshot.context_tokens, 154_000);
+        assert_eq!(rt.snapshot.context_pct, Some(59));
     }
 
     fn make_remote_claude_tailer(target: &RemoteSessionTarget, ctx_read: u64) -> RemoteTailer {
