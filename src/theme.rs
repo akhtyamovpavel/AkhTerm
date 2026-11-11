@@ -13,6 +13,7 @@ const SHADCN_GTK_CSS: &str = concat!(
     include_str!("theme.css"),
     include_str!("tab_strip.css"),
     include_str!("sidebar.css"),
+    include_str!("palette.css"),
 );
 
 /// Apply the application styles after GTK has initialized the default screen.

@@ -1,0 +1,123 @@
+popover.palette-popover {
+    background-color: #0c0c0f;
+    border: 1px solid #3f3f46;
+    border-radius: 10px;
+    padding: 8px;
+}
+
+.palette-box {
+    font-family: "Geist", sans-serif;
+    background-color: #0c0c0f;
+    padding: 4px;
+}
+
+.palette-header {
+    padding: 2px 4px 4px 4px;
+}
+
+.palette-title {
+    color: @text;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.palette-hint {
+    color: @muted;
+    font-size: 11px;
+}
+
+entry.palette-entry {
+    background-color: @surface;
+    color: @text;
+    border: 1px solid @border;
+    border-radius: 7px;
+    min-height: 30px;
+    padding: 6px 10px;
+    font-size: 14px;
+}
+
+entry.palette-entry:focus {
+    border-color: @focus;
+    background-color: #1c1c21;
+}
+
+.palette-list {
+    padding: 2px 0;
+}
+
+button.palette-row {
+    background-image: none;
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    padding: 7px 10px;
+    color: #d4d4d8;
+}
+
+button.palette-row:hover {
+    background-color: @hover;
+    border-color: @border;
+    color: @text;
+}
+
+button.palette-row.palette-row-active {
+    background-color: @selected;
+    border-color: #52525b;
+    color: @text;
+}
+
+.palette-item-title {
+    color: @text;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.palette-row-active .palette-item-title {
+    font-weight: 600;
+}
+
+.palette-item-detail {
+    color: @muted;
+    font-size: 12px;
+}
+
+.palette-badge {
+    background-color: @surface;
+    border: 1px solid @border;
+    border-radius: 5px;
+    color: @muted;
+    padding: 2px 7px;
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.palette-badge-tab {
+    color: @ready;
+    border-color: rgba(134, 217, 181, 0.35);
+}
+
+.palette-badge-tmux {
+    color: #fcd34d;
+    border-color: rgba(245, 158, 11, 0.35);
+}
+
+.palette-badge-agent {
+    color: #c4b5fd;
+    border-color: rgba(196, 181, 253, 0.35);
+}
+
+.palette-badge-ssh {
+    color: #93c5fd;
+    border-color: rgba(147, 197, 253, 0.35);
+}
+
+.palette-badge-handoff {
+    color: #fdba74;
+    border-color: rgba(253, 186, 116, 0.35);
+}
+
+.palette-empty {
+    color: @muted;
+    padding: 18px 8px;
+    font-size: 13px;
+}

@@ -39,6 +39,17 @@ pub const AGENT_WORKTREE_TIP: &CStr =
     c"Создать изолированный Git worktree и запустить агента в новой вкладке";
 pub const WORKTREE_LOCAL_ONLY: &CStr =
     c"⚠ Git worktree доступен только для локальной вкладки репозитория";
+pub const PALETTE_TITLE: &CStr = c"Палитра команд";
+pub const PALETTE_HINT: &CStr = c"↑↓ выбор · Enter выполнить · Esc закрыть";
+pub const PALETTE_PLACEHOLDER: &CStr = c"Вкладка, папка, сессия tmux, SSH, агент или Handoff...";
+pub const PALETTE_EMPTY: &CStr = c"Ничего не найдено";
+pub const PALETTE_BADGE_TAB: &CStr = c"Вкладка";
+pub const PALETTE_BADGE_TMUX: &CStr = c"tmux";
+pub const PALETTE_BADGE_PROFILE: &CStr = c"Профиль";
+pub const PALETTE_BADGE_SSH: &CStr = c"SSH";
+pub const PALETTE_BADGE_SSH_TMUX: &CStr = c"SSH · tmux";
+pub const PALETTE_BADGE_AGENT: &CStr = c"Агент";
+pub const PALETTE_BADGE_HANDOFF: &CStr = c"Handoff";
 
 pub const AGENT_ACTIONS: [(&CStr, &str); 5] = [
     (c"agy · Antigravity CLI", "agy\n"),

@@ -5,6 +5,7 @@ mod git_wt;
 mod handoff;
 mod mi;
 mod mi_watch;
+mod palette;
 mod paste_route;
 mod paths;
 mod proc_radar;
@@ -91,6 +92,7 @@ struct AppState {
     last_tmux_keys: Vec<String>,
     mi_scheduler: MiScheduler,
     box_state: Arc<Mutex<BoxTelemetry>>,
+    palette: palette::CommandPalette,
 }
 
 thread_local! {
@@ -418,66 +420,82 @@ extern "C" fn on_connect_ssh_host_plain(_btn: *mut GtkWidget, idx_ptr: *mut c_vo
 }
 
 fn connect_ssh_host(idx: usize, tmux: Option<&str>) {
-    let host = APP.with(|cell| {
+    let target = APP.with(|cell| {
         let state = cell.borrow();
         let app = state.as_ref()?;
         let host = app.ssh_hosts.get(idx)?;
-        unsafe {
-            gtk_popover_popdown(app.settings_pop);
-            gtk_popover_popdown(app.box_pop);
-        }
-        Some(host.alias.clone())
+        Some((app.settings_pop, app.box_pop, host.alias.clone()))
     });
-    if let Some(host) = host {
+    if let Some((settings_pop, box_pop, host)) = target {
+        if !settings_pop.is_null() {
+            unsafe { gtk_popover_popdown(settings_pop) };
+        }
+        if !box_pop.is_null() {
+            unsafe { gtk_popover_popdown(box_pop) };
+        }
         add_remote_session(&host, tmux);
     }
 }
 
 extern "C" fn on_jump_tmux(_btn: *mut GtkWidget, idx_ptr: *mut c_void) {
     let idx = idx_ptr as usize;
-    let mut target_host = String::new();
-    let mut target_session = String::new();
-    let mut existing_remote_sid = None;
-
-    APP.with(|cell| {
-        if let Some(app) = cell.borrow().as_ref() {
-            unsafe { gtk_popover_popdown(app.box_pop) };
-            if let Some((host, sname, _, _, _)) = app.tmux_jump_btns.get(idx) {
-                target_host = host.clone();
-                target_session = sname.clone();
-            }
-            existing_remote_sid = app.sessions.iter().find(|s| {
-                s.remote().is_some_and(|r| r.host == target_host && r.tmux_session.is_some())
-            }).map(|s| (s.id, s.child_pid > 0));
-        }
+    let (box_pop, target) = APP.with(|cell| {
+        let state = cell.borrow();
+        let Some(app) = state.as_ref() else {
+            return (ptr::null_mut(), None);
+        };
+        let found = app
+            .tmux_jump_btns
+            .get(idx)
+            .map(|(host, sname, _, _, _)| (host.clone(), sname.clone()));
+        (app.box_pop, found)
     });
+    if !box_pop.is_null() {
+        unsafe { gtk_popover_popdown(box_pop) };
+    }
+    if let Some((host, session)) = target {
+        jump_to_remote_tmux(&host, &session);
+    }
+}
 
+fn jump_to_remote_tmux(target_host: &str, target_session: &str) {
     if target_session.is_empty() || target_host.is_empty() {
         return;
     }
-
-    if let Some((sid, connected)) = existing_remote_sid {
-        APP.with(|cell| {
-            if let Some(app) = cell.borrow_mut().as_mut() {
-                if let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid) {
-                    if let Tab::Remote(remote) = &mut s.tab {
-                        remote.tmux_session = Some(target_session.clone());
-                        s.title = remote.title();
-                    }
-                    s.remote_tmux = None;
-                    s.tmux_title_from_vte = false;
-                }
-            }
-        });
-        if connected {
-            switch_remote_tmux_session(&target_host, &target_session);
-            select_session(sid);
-        } else {
-            reconnect_session(sid);
-        }
+    let existing = APP.with(|cell| {
+        let state = cell.borrow();
+        let app = state.as_ref()?;
+        app.sessions
+            .iter()
+            .find(|s| s.remote().is_some_and(|r| r.host == target_host && r.tmux_session.is_some()))
+            .map(|s| (s.id, s.child_pid > 0))
+    });
+    let Some((sid, connected)) = existing else {
+        add_remote_session(target_host, Some(target_session));
+        return;
+    };
+    retarget_remote_session(sid, target_session);
+    if connected {
+        switch_remote_tmux_session(target_host, target_session);
+        select_session(sid);
     } else {
-        add_remote_session(&target_host, Some(&target_session));
+        reconnect_session(sid);
     }
+}
+
+fn retarget_remote_session(sid: usize, target_session: &str) {
+    APP.with(|cell| {
+        if let Some(app) = cell.borrow_mut().as_mut() {
+            if let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid) {
+                if let Tab::Remote(remote) = &mut s.tab {
+                    remote.tmux_session = Some(target_session.to_owned());
+                    s.title = remote.title();
+                }
+                s.remote_tmux = None;
+                s.tmux_title_from_vte = false;
+            }
+        }
+    });
 }
 
 fn add_remote_session(host: &str, tmux_session: Option<&str>) -> usize {
@@ -854,12 +872,13 @@ fn update_remote_proc_info(s: &mut TermSession, telemetry: &BoxTelemetry) {
 }
 
 fn send_to_session(sid: usize, text: &str) {
+    let Ok(c) = CString::new(text) else { return };
     let vte = APP.with(|cell| {
         let state = cell.borrow();
         let app = state.as_ref()?;
         app.sessions.iter().find(|s| s.id == sid).map(|s| s.vte)
     });
-    if let (Some(vte), Ok(c)) = (vte.filter(|w| !w.is_null()), CString::new(text)) {
+    if let Some(vte) = vte.filter(|w| !w.is_null()) {
         unsafe {
             vte_terminal_feed_child(vte, c.as_ptr(), text.len() as isize);
             gtk_widget_grab_focus(vte);
@@ -982,15 +1001,16 @@ fn replace_terminal(sid: usize, vte: *mut GtkWidget, pid: i32, title: String) {
 }
 
 fn dismiss_tab_menu() {
-    APP.with(|cell| {
-        if let Some(app) = cell.borrow().as_ref() {
-            unsafe { gtk_popover_popdown(app.box_pop) };
-        }
-    });
+    let pop = APP.with(|cell| cell.borrow().as_ref().map(|app| app.box_pop));
+    if let Some(pop) = pop.filter(|p| !p.is_null()) {
+        unsafe { gtk_popover_popdown(pop) };
+    }
 }
 
 extern "C" fn on_popup_popover(_btn: *mut GtkWidget, pop_ptr: *mut c_void) {
-    unsafe { gtk_popover_popup(pop_ptr) };
+    if !pop_ptr.is_null() {
+        unsafe { gtk_popover_popup(pop_ptr) };
+    }
 }
 
 fn dismiss_agents_popover() {
@@ -1326,6 +1346,10 @@ extern "C" fn on_window_key_press(
         gdk_event_get_state(event, &mut state);
         gdk_event_get_keycode(event, &mut keycode);
 
+        if let Some(handled) = route_palette_key(keyval, state, keycode) {
+            return handled;
+        }
+
         // F11 -> toggle window square / fullscreen
         if keyval == 0xffc8 {
             on_toggle_window_square(ptr::null_mut(), ptr::null_mut());
@@ -1426,6 +1450,74 @@ fn handle_tab_shortcut(keyval: c_uint, keycode: u16) -> bool {
         _ => return false,
     }
     true
+}
+
+fn focus_active_vte() {
+    let vte = APP.with(|cell| {
+        let state = cell.borrow();
+        let app = state.as_ref()?;
+        app.sessions.iter().find(|s| s.id == app.active_id).map(|s| s.vte)
+    });
+    if let Some(vte) = vte.filter(|w| !w.is_null()) {
+        unsafe { gtk_widget_grab_focus(vte) };
+    }
+}
+
+fn execute_palette_action(action: palette::PaletteAction) {
+    match action {
+        palette::PaletteAction::SelectTab(sid) => select_session(sid),
+        palette::PaletteAction::JumpTmux { host, session } => jump_to_remote_tmux(&host, &session),
+        palette::PaletteAction::OpenProfile(key) => {
+            open_tab(Tab::local(&key));
+        }
+        palette::PaletteAction::OpenSsh { host, tmux_session } => {
+            add_remote_session(&host, tmux_session.as_deref());
+        }
+        palette::PaletteAction::RunAgent(code) => {
+            if let Some((_, command)) = text::AGENT_ACTIONS.get(code) {
+                send_to_active(command);
+            }
+        }
+        palette::PaletteAction::InjectHandoff(path) => {
+            handoff_file_to_session(active_session_id(), &path);
+        }
+    }
+}
+
+fn toggle_palette() {
+    let snapshot = APP.with(|cell| {
+        let state = cell.borrow();
+        let app = state.as_ref()?;
+        let pal = app.palette.clone();
+        if pal.is_open() {
+            return Some((pal, None));
+        }
+        let tmux_items = app.box_state.lock().ok().map(|g| g.tmux_items.clone()).unwrap_or_default();
+        let src = palette::PaletteSource {
+            sessions: &app.sessions,
+            tmux_items: &tmux_items,
+            profiles: &app.config.profiles,
+            ssh_hosts: &app.ssh_hosts,
+            briefs_dir: app.config.briefs_dir.as_deref(),
+            extra_handoffs: app.handoff.files(),
+        };
+        Some((pal, Some(palette::collect_items(&src))))
+    });
+    if let Some((pal, maybe_items)) = snapshot {
+        match maybe_items {
+            Some(items) => pal.open(items),
+            None => pal.close(),
+        }
+    }
+}
+
+fn route_palette_key(keyval: c_uint, state: c_uint, keycode: u16) -> Option<c_int> {
+    if palette::is_palette_shortcut(keyval, state, keycode) {
+        toggle_palette();
+        return Some(1);
+    }
+    let open = APP.with(|cell| cell.borrow().as_ref().is_some_and(|app| app.palette.is_open()));
+    open.then_some(0)
 }
 
 fn open_default_tab() {
@@ -1814,6 +1906,7 @@ fn run_app() {
         let mi_scheduler = MiScheduler::default();
         mi_scheduler.sync_targets(&mi_dirs, &[], &home_dir());
         let box_state: Arc<Mutex<BoxTelemetry>> = Arc::new(Mutex::new(BoxTelemetry::default()));
+        let cmd_palette = palette::CommandPalette::new(topbar, execute_palette_action, focus_active_vte);
 
         APP.with(|cell| {
             *cell.borrow_mut() = Some(AppState {
@@ -1854,6 +1947,7 @@ fn run_app() {
                 last_tmux_keys: Vec::new(),
                 mi_scheduler: mi_scheduler.clone(),
                 box_state: Arc::clone(&box_state),
+                palette: cmd_palette,
             });
         });
 
