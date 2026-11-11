@@ -1,19 +1,31 @@
 //! GTK widgets for the scrollable terminal tab strip.
 
 use std::cell::{Cell, RefCell};
-use std::ffi::{c_void, CStr, CString};
+use std::ffi::{c_int, c_void, CStr, CString};
 use std::ptr;
 use std::time::Instant;
 
 use crate::connect_click;
 use crate::ffi::*;
 use crate::session::{SessionCategory, TermSession};
+use crate::tab_order::BoxReorder;
 use crate::telemetry::{format_turn_duration, format_working_badge};
 use crate::theme::set_agent_accent;
 use crate::ui_text as text;
 
-type ClickHandler = extern "C" fn(*mut GtkWidget, *mut c_void);
+pub type ClickHandler = extern "C" fn(*mut GtkWidget, *mut c_void);
+pub type EventHandler = extern "C" fn(*mut GtkWidget, *const GdkEvent, *mut c_void) -> c_int;
 
+#[derive(Clone, Copy)]
+pub struct TabHandlers {
+    pub on_select: ClickHandler,
+    pub on_close: ClickHandler,
+    pub on_press: EventHandler,
+    pub on_motion: EventHandler,
+    pub on_release: EventHandler,
+}
+
+#[derive(Clone, Copy)]
 pub struct TabStrip {
     tabs: *mut GtkWidget,
     adjustment: *mut GtkAdjustment,
@@ -48,14 +60,8 @@ impl TabStrip {
         }
     }
 
-    pub fn append(
-        &self,
-        sid: usize,
-        category: SessionCategory,
-        on_select: ClickHandler,
-        on_close: ClickHandler,
-    ) -> TabView {
-        let tab = TabView::new(sid, category, on_select, on_close);
+    pub fn append(&self, sid: usize, category: SessionCategory, handlers: TabHandlers) -> TabView {
+        let tab = TabView::new(sid, category, handlers);
         unsafe {
             gtk_box_pack_start(self.tabs, tab.widget, 0, 0, 0);
             gtk_widget_show_all(tab.widget);
@@ -63,11 +69,26 @@ impl TabStrip {
         tab
     }
 
-    pub fn reveal(&self, tab: &TabView) {
+    pub fn reorder_op(&self, tab: &TabView, position: usize) -> BoxReorder {
+        BoxReorder {
+            container: self.tabs,
+            child: tab.widget,
+            position: position as c_int,
+        }
+    }
+
+    pub fn tabs_box(&self) -> *mut GtkWidget {
+        self.tabs
+    }
+
+    pub fn reveal_widget(&self, tab_widget: *mut GtkWidget) {
+        if tab_widget.is_null() || self.tabs.is_null() {
+            return;
+        }
         let mut x = 0;
         unsafe {
             if gtk_widget_translate_coordinates(
-                tab.widget,
+                tab_widget,
                 self.tabs,
                 0,
                 0,
@@ -75,7 +96,7 @@ impl TabStrip {
                 ptr::null_mut(),
             ) != 0
             {
-                let width = gtk_widget_get_allocated_width(tab.widget);
+                let width = gtk_widget_get_allocated_width(tab_widget);
                 gtk_adjustment_clamp_page(self.adjustment, f64::from(x), f64::from(x + width));
             }
         }
@@ -92,13 +113,39 @@ pub struct TabView {
     last_tip: RefCell<String>,
 }
 
+fn wire_tab_drag_events(select: *mut GtkWidget, data: *mut c_void, handlers: TabHandlers) {
+    let mask = GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_BUTTON1_MOTION_MASK;
+    unsafe {
+        gtk_widget_add_events(select, mask);
+        g_signal_connect_data(
+            select,
+            c"button-press-event".as_ptr(),
+            handlers.on_press as *const c_void,
+            data,
+            ptr::null(),
+            0,
+        );
+        g_signal_connect_data(
+            select,
+            c"motion-notify-event".as_ptr(),
+            handlers.on_motion as *const c_void,
+            data,
+            ptr::null(),
+            0,
+        );
+        g_signal_connect_data(
+            select,
+            c"button-release-event".as_ptr(),
+            handlers.on_release as *const c_void,
+            data,
+            ptr::null(),
+            0,
+        );
+    }
+}
+
 impl TabView {
-    fn new(
-        sid: usize,
-        category: SessionCategory,
-        on_select: ClickHandler,
-        on_close: ClickHandler,
-    ) -> Self {
+    fn new(sid: usize, category: SessionCategory, handlers: TabHandlers) -> Self {
         let data = sid as *mut c_void;
         unsafe {
             let widget = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
@@ -116,10 +163,11 @@ impl TabView {
             let status = create_status_badge();
             gtk_box_pack_start(content, status, 0, 0, 0);
             gtk_container_add(select, content);
-            connect_click(select, on_select, data);
+            connect_click(select, handlers.on_select, data);
+            wire_tab_drag_events(select, data, handlers);
             gtk_box_pack_start(widget, select, 1, 1, 0);
 
-            let close = create_close_button(data, on_close);
+            let close = create_close_button(data, handlers.on_close);
             gtk_box_pack_start(widget, close, 0, 0, 0);
 
             Self {
@@ -132,6 +180,14 @@ impl TabView {
                 last_tip: RefCell::new(String::new()),
             }
         }
+    }
+
+    pub fn select_button(&self) -> *mut GtkWidget {
+        self.select
+    }
+
+    pub fn tab_widget(&self) -> *mut GtkWidget {
+        self.widget
     }
 
     fn take_icon_change(&self, category: SessionCategory) -> Option<&'static CStr> {

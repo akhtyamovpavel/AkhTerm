@@ -16,6 +16,7 @@ mod session;
 mod sidebar;
 mod split_pane;
 mod ssh_detect;
+mod tab_order;
 mod tab_strip;
 mod tabs;
 mod telemetry;
@@ -70,7 +71,7 @@ use session::{
 };
 use sidebar::Sidebar;
 use split_pane::{apply_zoom_scale, finish_split, wrap_vte_scroll, TabPanes};
-use tab_strip::TabStrip;
+use tab_strip::{TabHandlers, TabStrip};
 use tabs::{Tab, TabStore, TabsState};
 use telemetry::{
     build_sessions_tokens_view, run_poll_job, SessionPollJob, SessionTelemetry, TokensMenu,
@@ -126,6 +127,7 @@ struct AppState {
     box_state: Arc<Mutex<BoxTelemetry>>,
     palette: palette::CommandPalette,
     search_bar: search_bar::SearchBar,
+    pin_pop: tab_order::TabPinPopover,
 }
 
 thread_local! {
@@ -425,6 +427,7 @@ extern "C" fn on_reap_split_pane(data: *mut c_void) -> c_int {
     if let Some((is_active, op)) = reap {
         op.apply_focus(is_active);
         refresh_ui();
+        save_tabs();
     }
     0
 }
@@ -480,8 +483,178 @@ extern "C" fn on_vte_title_changed(vte: *mut GtkWidget, user_data: *mut c_void) 
 }
 
 extern "C" fn on_select_session(_btn: *mut GtkWidget, user_data: *mut c_void) {
-    let sid = user_data as usize;
-    select_session(sid);
+    let open_pin = APP.with(|cell| {
+        let state = cell.try_borrow().ok()?;
+        let app = state.as_ref()?;
+        app.pin_pop.is_open().then(|| app.pin_pop.clone())
+    });
+    if let Some(pin_pop) = open_pin {
+        pin_pop.focus_entry();
+        return;
+    }
+    select_session(user_data as usize);
+}
+
+fn tab_strip_handlers() -> TabHandlers {
+    TabHandlers {
+        on_select: on_select_session,
+        on_close: on_close_tab,
+        on_press: on_tab_button_press,
+        on_motion: on_tab_motion,
+        on_release: on_tab_button_release,
+    }
+}
+
+fn reorder_session_to(sid: usize, target_idx: usize) -> bool {
+    let op = APP.with(|cell| {
+        let Ok(mut state) = cell.try_borrow_mut() else { return None };
+        let app = state.as_mut()?;
+        let from = app.sessions.iter().position(|s| s.id == sid)?;
+        if !tab_order::move_item(&mut app.sessions, from, target_idx) {
+            return None;
+        }
+        let strip = app.tab_strip.reorder_op(&app.sessions[target_idx].top_tab, target_idx);
+        let sidebar = app.sidebar.build_reorder_ops(&app.sessions);
+        Some((app.active_id, tab_order::TabReorderOp { strip, sidebar }))
+    });
+    let Some((active_id, reorder_op)) = op else { return false };
+    reorder_op.apply();
+    refresh_ui();
+    unsafe { g_idle_add(on_reveal_tab, active_id as *mut c_void) };
+    save_tabs();
+    true
+}
+
+fn move_active_tab(delta: isize) {
+    let step = APP.with(|cell| {
+        let state = cell.try_borrow().ok()?;
+        let app = state.as_ref()?;
+        let cur = app.sessions.iter().position(|s| s.id == app.active_id)?;
+        let next = tab_order::step_tab_index(cur, app.sessions.len(), delta)?;
+        Some((app.active_id, next))
+    });
+    if let Some((sid, next)) = step {
+        reorder_session_to(sid, next);
+    }
+}
+
+fn open_tab_pin_popover(sid: usize) {
+    dismiss_git_popover();
+    let target = APP.with(|cell| {
+        let Ok(state) = cell.try_borrow() else { return None };
+        let app = state.as_ref()?;
+        let s = app.sessions.iter().find(|s| s.id == sid)?;
+        let initial = s.pinned_title.as_deref().unwrap_or(&s.title).to_owned();
+        let pal = app.palette.is_open().then(|| app.palette.clone());
+        Some((pal, app.pin_pop.clone(), s.top_tab.select_button(), initial))
+    });
+    if let Some((pal, pin_pop, anchor, initial)) = target {
+        if let Some(pal) = pal {
+            pal.close();
+        }
+        pin_pop.open(anchor, sid, &initial);
+    }
+}
+
+fn apply_pinned_tab_title(sid: usize, pinned: Option<String>) {
+    let changed = APP.with(|cell| {
+        let Ok(mut state) = cell.try_borrow_mut() else { return false };
+        let Some(app) = state.as_mut() else { return false };
+        let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid) else { return false };
+        s.pinned_title = session::sanitize_pinned_title(pinned.as_deref());
+        sync_session_proc(s, None);
+        true
+    });
+    if changed {
+        refresh_ui();
+        save_tabs();
+    }
+    focus_active_vte();
+}
+
+fn start_tab_mouse_drag(sid: usize, event: *const GdkEvent) {
+    let (mut root_x, mut root_y, mut lx, mut ly) = (0.0, 0.0, 0.0, 0.0);
+    unsafe {
+        if gdk_event_get_root_coords(event, &mut root_x, &mut root_y) == 0 {
+            return;
+        }
+        gdk_event_get_coords(event, &mut lx, &mut ly);
+    }
+    let widgets = APP.with(|cell| {
+        let Ok(state) = cell.try_borrow() else { return None };
+        let app = state.as_ref()?;
+        let s = app.sessions.iter().find(|s| s.id == sid)?;
+        Some((s.top_tab.tab_widget(), app.tab_strip.tabs_box()))
+    });
+    if let Some((tab_widget, tabs_box)) = widgets {
+        let tab_x = tab_order::widget_origin_x(tab_widget, tabs_box);
+        tab_order::begin_tab_drag(sid, root_x, f64::from(tab_x) + lx);
+    }
+}
+
+extern "C" fn on_tab_button_press(
+    _btn: *mut GtkWidget,
+    event: *const GdkEvent,
+    data: *mut c_void,
+) -> c_int {
+    let sid = data as usize;
+    let mut button: c_uint = 0;
+    let ev_type = unsafe { gdk_event_get_event_type(event) };
+    if unsafe { gdk_event_get_button(event, &mut button) } == 0 {
+        return 0;
+    }
+    if button == 3 || (button == 1 && ev_type == GDK_2BUTTON_PRESS) {
+        tab_order::end_tab_drag();
+        open_tab_pin_popover(sid);
+        return 1;
+    }
+    if button == 1 && ev_type == GDK_BUTTON_PRESS {
+        start_tab_mouse_drag(sid, event);
+    }
+    0
+}
+
+fn compute_drag_reorder(sid: usize, strip_x: f64) -> Option<usize> {
+    let (cur, widgets) = APP.with(|cell| {
+        let state = cell.try_borrow().ok()?;
+        let app = state.as_ref()?;
+        let cur = app.sessions.iter().position(|s| s.id == sid)?;
+        let widgets: Vec<*mut GtkWidget> = app.sessions.iter().map(|s| s.top_tab.tab_widget()).collect();
+        Some((cur, widgets))
+    })?;
+    let widths = tab_order::allocated_widths(&widgets);
+    let target = tab_order::drag_target_index(&widths, tab_order::TAB_STRIP_SPACING, cur, strip_x);
+    (target != cur).then_some(target)
+}
+
+extern "C" fn on_tab_motion(
+    _btn: *mut GtkWidget,
+    event: *const GdkEvent,
+    _data: *mut c_void,
+) -> c_int {
+    let (mut root_x, mut root_y) = (0.0, 0.0);
+    if unsafe { gdk_event_get_root_coords(event, &mut root_x, &mut root_y) } == 0 {
+        return 0;
+    }
+    let Some((sid, strip_x, started_now)) = tab_order::update_tab_drag(root_x) else {
+        return 0;
+    };
+    if started_now && active_session_id() != sid {
+        select_session(sid);
+    }
+    if let Some(target) = compute_drag_reorder(sid, strip_x) {
+        reorder_session_to(sid, target);
+    }
+    1
+}
+
+extern "C" fn on_tab_button_release(
+    _btn: *mut GtkWidget,
+    _event: *const GdkEvent,
+    _data: *mut c_void,
+) -> c_int {
+    let _ = tab_order::end_tab_drag();
+    0
 }
 
 pub fn select_session(sid: usize) {
@@ -518,13 +691,15 @@ pub fn select_session(sid: usize) {
 
 extern "C" fn on_reveal_tab(data: *mut c_void) -> c_int {
     let sid = data as usize;
-    APP.with(|cell| {
-        let state = cell.borrow();
-        let Some(app) = state.as_ref().filter(|app| app.active_id == sid) else { return };
-        if let Some(session) = app.sessions.iter().find(|s| s.id == sid) {
-            app.tab_strip.reveal(&session.top_tab);
-        }
+    let reveal = APP.with(|cell| {
+        let Ok(state) = cell.try_borrow() else { return None };
+        let app = state.as_ref().filter(|app| app.active_id == sid)?;
+        let session = app.sessions.iter().find(|s| s.id == sid)?;
+        Some((app.tab_strip, session.top_tab.tab_widget()))
     });
+    if let Some((tab_strip, tab_widget)) = reveal {
+        tab_strip.reveal_widget(tab_widget);
+    }
     0
 }
 
@@ -644,6 +819,7 @@ fn retarget_remote_session(sid: usize, target_session: &str) {
             if let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid) {
                 if let Tab::Remote(remote) = &mut s.tab {
                     remote.tmux_session = Some(target_session.to_owned());
+                    s.base_title = remote.title();
                     s.title = remote.title();
                 }
                 s.remote_tmux = None;
@@ -651,6 +827,7 @@ fn retarget_remote_session(sid: usize, target_session: &str) {
                 s.work_started_at = None;
                 s.last_turn_secs = None;
                 s.telemetry = SessionTelemetry::default();
+                refresh_smart_title(s);
             }
         }
     });
@@ -706,6 +883,54 @@ fn create_terminal(cwd: &str, argv: &[&str], sid: usize, scale: f64) -> (*mut Gt
     (vte, pid)
 }
 
+fn spawn_tab_widgets(
+    sid: usize,
+    cwd: &str,
+    argv: &[&str],
+    scale: f64,
+    stack: *mut GtkWidget,
+) -> (*mut GtkWidget, *mut GtkWidget, TabPanes, i32) {
+    let (vte, pid) = create_terminal(cwd, argv, sid, scale);
+    let term_scroll = wrap_vte_scroll(vte);
+    let panes = TabPanes::new(term_scroll, vte);
+    unsafe {
+        if !stack.is_null() {
+            let stack_name = CString::new(format!("term_{sid}")).unwrap();
+            gtk_stack_add_named(stack, panes.root, stack_name.as_ptr());
+        }
+        gtk_widget_show_all(panes.root);
+    }
+    (vte, term_scroll, panes, pid)
+}
+
+fn build_term_session(
+    sid: usize,
+    title: &str,
+    profile_cwd: &str,
+    cwd: &str,
+    category: SessionCategory,
+    vte: *mut GtkWidget,
+    scroll_wrap: *mut GtkWidget,
+    panes: TabPanes,
+    sidebar_row: sidebar::SidebarRow,
+    top_tab: tab_strip::TabView,
+    child_pid: i32,
+    tab: Tab,
+) -> TermSession {
+    let now = Instant::now();
+    let mut session = TermSession {
+        id: sid, base_title: title.to_string(), profile_cwd: profile_cwd.to_string(),
+        title: title.to_string(), osc_title: String::new(), pinned_title: None,
+        cwd: cwd.to_string(), category, vte, scroll_wrap, panes, sidebar_row, top_tab, child_pid,
+        state: WorkState::Idle, unread: false, last_output: now, work_started: now,
+        work_started_at: None, last_turn_secs: None, last_notified: None,
+        proc_info: inspect_proc_tree(child_pid), tab, remote_tmux: None,
+        tmux_title_from_vte: false, telemetry: SessionTelemetry::default(),
+    };
+    refresh_smart_title(&mut session);
+    session
+}
+
 fn add_tab(
     title: &str,
     profile_cwd: &str,
@@ -714,62 +939,30 @@ fn add_tab(
     argv: &[&str],
     tab: Tab,
 ) -> usize {
-    let mut new_id = 0;
+    let Some((sid, scale, stack, sidebar, tab_strip)) = APP.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let app = state.as_mut()?;
+        let sid = app.next_id;
+        app.next_id += 1;
+        Some((sid, app.font_scale, app.stack, app.sidebar, app.tab_strip))
+    }) else {
+        return 0;
+    };
+    let (vte, scroll_wrap, panes, child_pid) = spawn_tab_widgets(sid, cwd, argv, scale, stack);
+    let sidebar_row = sidebar.append_tab(category, sid, on_select_session);
+    let top_tab = tab_strip.append(sid, category, tab_strip_handlers());
+    let session = build_term_session(
+        sid, title, profile_cwd, cwd, category, vte, scroll_wrap, panes, sidebar_row, top_tab,
+        child_pid, tab,
+    );
     APP.with(|cell| {
         if let Some(app) = cell.borrow_mut().as_mut() {
-            let sid = app.next_id;
-            app.next_id += 1;
-            new_id = sid;
-
-            let (vte, pid) = create_terminal(cwd, argv, sid, app.font_scale);
-            unsafe {
-                let term_scroll = wrap_vte_scroll(vte);
-                let panes = TabPanes::new(term_scroll, vte);
-
-                let stack_name = CString::new(format!("term_{sid}")).unwrap();
-                gtk_stack_add_named(app.stack, panes.root, stack_name.as_ptr());
-
-                let sidebar_row = app.sidebar.append_tab(category, sid, on_select_session);
-                let top_tab = app.tab_strip.append(sid, category, on_select_session, on_close_tab);
-
-                gtk_widget_show_all(panes.root);
-
-                let mut session = TermSession {
-                    id: sid,
-                    base_title: title.to_string(),
-                    profile_cwd: profile_cwd.to_string(),
-                    title: title.to_string(),
-                    osc_title: String::new(),
-                    custom_title: false,
-                    cwd: cwd.to_string(),
-                    category,
-                    vte,
-                    scroll_wrap: term_scroll,
-                    panes,
-                    sidebar_row,
-                    top_tab,
-                    child_pid: pid,
-                    state: WorkState::Idle,
-                    unread: false,
-                    last_output: Instant::now(),
-                    work_started: Instant::now(),
-                    work_started_at: None,
-                    last_turn_secs: None,
-                    last_notified: None,
-                    proc_info: inspect_proc_tree(pid),
-                    tab,
-                    remote_tmux: None,
-                    tmux_title_from_vte: false,
-                    telemetry: SessionTelemetry::default(),
-                };
-                refresh_smart_title(&mut session);
-                app.sessions.push(session);
-                app.active_id = sid;
-            }
+            app.sessions.push(session);
+            app.active_id = sid;
         }
     });
-    select_session(new_id);
-    new_id
+    select_session(sid);
+    sid
 }
 
 fn sync_tmux_jump_buttons(app: &mut AppState, items: &[RemoteTmuxItem]) {
@@ -1237,6 +1430,7 @@ fn split_active_tab(orientation: c_int) {
     });
     finish_split(split_op, new_scroll, new_vte);
     refresh_ui();
+    save_tabs();
 }
 
 extern "C" fn on_split_vert(_btn: *mut GtkWidget, _data: *mut c_void) {
@@ -1276,7 +1470,7 @@ extern "C" fn on_close_tab(_btn: *mut GtkWidget, data: *mut c_void) {
 
 fn close_session(sid: usize) {
     let removed = APP.with(|cell| {
-        let mut state = cell.borrow_mut();
+        let mut state = cell.try_borrow_mut().ok()?;
         let app = state.as_mut()?;
         let pos = app.sessions.iter().position(|s| s.id == sid)?;
         let removed = app.sessions.remove(pos);
@@ -1284,9 +1478,10 @@ fn close_session(sid: usize) {
             let neighbor = pos.min(app.sessions.len().saturating_sub(1));
             app.active_id = app.sessions.get(neighbor).map_or(0, |s| s.id);
         }
-        Some(removed)
+        Some((removed, app.pin_pop.clone()))
     });
-    if let Some(s) = removed {
+    if let Some((s, pin_pop)) = removed {
+        pin_pop.detach();
         s.panes.stop_all_extra();
         if s.remote().is_some() {
             stop_ssh(s.child_pid);
@@ -1344,7 +1539,9 @@ fn replace_terminal(sid: usize, vte: *mut GtkWidget, pid: i32, title: String) {
         s.remote_tmux = None;
         s.tmux_title_from_vte = false;
         s.osc_title.clear();
+        s.base_title.clone_from(&title);
         s.title = title;
+        refresh_smart_title(s);
         s.state = WorkState::Idle;
         s.unread = false;
         let now = Instant::now();
@@ -1754,11 +1951,17 @@ fn populate_git_popover(force_refresh: bool, popup_after: bool) {
         on_remove_wt: on_git_remove_worktree,
     };
     let (inner, entries) = rebuild_git_widgets(widgets, repo_ref, status.as_ref(), cbs);
-    APP.with(|cell| {
+    let pin_pop = APP.with(|cell| {
         if let Some(app) = cell.borrow_mut().as_mut() {
             app.git_menu.save_snapshot(inner, entries);
+            popup_after.then(|| app.pin_pop.clone())
+        } else {
+            None
         }
     });
+    if let Some(pin_pop) = pin_pop {
+        pin_pop.detach();
+    }
     if popup_after && !widgets.popover.is_null() {
         unsafe { gtk_popover_popup(widgets.popover) };
     }
@@ -2110,15 +2313,9 @@ extern "C" fn on_window_key_press(
             return 1;
         }
 
-        if (state & GDK_MOD1_MASK) != 0 && (b'1' as u32..=b'9' as u32).contains(&keyval) {
-            let idx = (keyval - b'1' as u32) as usize;
-            let mut target_sid = None;
-            APP.with(|cell| {
-                if let Some(app) = cell.borrow().as_ref() {
-                    if let Some(s) = app.sessions.get(idx) {
-                        target_sid = Some(s.id);
-                    }
-                }
+        if let Some(idx) = tab_order::alt_tab_index(keyval, state) {
+            let target_sid = APP.with(|cell| {
+                cell.try_borrow().ok()?.as_ref()?.sessions.get(idx).map(|s| s.id)
             });
             if let Some(sid) = target_sid {
                 select_session(sid);
@@ -2165,7 +2362,7 @@ extern "C" fn on_window_key_press(
         }
 
         if (state & GDK_CONTROL_MASK) != 0 && (state & GDK_SHIFT_MASK) != 0 {
-            if handle_tab_shortcut(keyval, keycode) {
+            if handle_tab_shortcut(keyval, state, keycode) {
                 return 1;
             }
             if keyval == b'C' as u32 || keyval == b'c' as u32 || keycode == 54 {
@@ -2192,7 +2389,11 @@ fn jump_next_attention() {
     }
 }
 
-fn handle_tab_shortcut(keyval: c_uint, keycode: u16) -> bool {
+fn handle_tab_shortcut(keyval: c_uint, state: c_uint, keycode: u16) -> bool {
+    if let Some(delta) = tab_order::tab_reorder_delta(keyval, state, keycode) {
+        move_active_tab(delta);
+        return true;
+    }
     if is_jump_attention_shortcut(keyval, keycode) {
         jump_next_attention();
         return true;
@@ -2318,15 +2519,16 @@ fn open_search_bar() {
 
 fn toggle_search_bar() {
     dismiss_git_popover();
-    let pair = APP.with(|cell| {
+    let triple = APP.with(|cell| {
         let state = cell.try_borrow().ok()?;
         let app = state.as_ref()?;
-        Some((app.palette.clone(), app.search_bar.clone()))
+        Some((app.palette.clone(), app.pin_pop.clone(), app.search_bar.clone()))
     });
-    if let Some((pal, bar)) = pair {
+    if let Some((pal, pin_pop, bar)) = triple {
         if pal.is_open() {
             pal.close();
         }
+        pin_pop.detach();
         bar.toggle();
     }
 }
@@ -2364,8 +2566,9 @@ fn toggle_palette() {
         let state = cell.try_borrow().ok()?;
         let app = state.as_ref()?;
         let pal = app.palette.clone();
+        let pin_pop = app.pin_pop.clone();
         if pal.is_open() {
-            return Some((pal, None));
+            return Some((pal, pin_pop, None));
         }
         let tmux_items = app.box_state.lock().ok().map(|g| g.tmux_items.clone()).unwrap_or_default();
         let (active_git, active_is_worktree) = active_palette_git_state(app);
@@ -2379,14 +2582,26 @@ fn toggle_palette() {
             active_git: active_git.as_ref(),
             active_is_worktree,
         };
-        Some((pal, Some(palette::collect_items(&src))))
+        Some((pal, pin_pop, Some(palette::collect_items(&src))))
     });
-    if let Some((pal, maybe_items)) = snapshot {
+    if let Some((pal, pin_pop, maybe_items)) = snapshot {
         match maybe_items {
-            Some(items) => pal.open(items),
+            Some(items) => {
+                pin_pop.detach();
+                pal.open(items);
+            }
             None => pal.close(),
         }
     }
+}
+
+fn is_overlay_open() -> bool {
+    APP.with(|cell| {
+        cell.try_borrow()
+            .ok()
+            .and_then(|g| g.as_ref().map(|app| app.palette.is_open() || app.pin_pop.is_open()))
+            .unwrap_or(false)
+    })
 }
 
 fn route_palette_key(keyval: c_uint, state: c_uint, keycode: u16) -> Option<c_int> {
@@ -2404,23 +2619,21 @@ fn route_palette_key(keyval: c_uint, state: c_uint, keycode: u16) -> Option<c_in
         return Some(1);
     }
     if is_git_popover_shortcut(keyval, state, keycode) {
-        let pal = APP.with(|cell| {
-            cell.try_borrow()
-                .ok()?
-                .as_ref()
-                .filter(|a| a.palette.is_open())
-                .map(|a| a.palette.clone())
+        let overlays = APP.with(|cell| {
+            let st = cell.try_borrow().ok()?;
+            let a = st.as_ref()?;
+            Some((a.palette.is_open().then(|| a.palette.clone()), a.pin_pop.clone()))
         });
-        if let Some(pal) = pal {
-            pal.close();
+        if let Some((pal, pin_pop)) = overlays {
+            if let Some(pal) = pal {
+                pal.close();
+            }
+            pin_pop.detach();
         }
         toggle_git_popover();
         return Some(1);
     }
-    let open = APP.with(|cell| {
-        cell.try_borrow().ok().is_some_and(|st| st.as_ref().is_some_and(|app| app.palette.is_open()))
-    });
-    open.then_some(0)
+    is_overlay_open().then_some(0)
 }
 
 fn open_default_tab() {
@@ -2482,19 +2695,89 @@ fn default_tabs(config: &WorkspaceConfig) -> TabsState {
     } else {
         config.startup.clone()
     };
-    TabsState { active: 0, tabs }
+    TabsState::new(0, tabs)
+}
+
+fn spawn_one_secondary_pane(
+    sid: usize,
+    raw_cwd: &str,
+    fallback_cwd: &str,
+    shell: &str,
+    scale: f64,
+) -> split_pane::SpawnedPane {
+    let cwd = split_pane::resolve_pane_cwd(raw_cwd, fallback_cwd);
+    let (vte, child_pid) = create_terminal(&cwd, &[shell], sid, scale);
+    let scroll = wrap_vte_scroll(vte);
+    split_pane::SpawnedPane { scroll, vte, child_pid, cwd }
+}
+
+fn spawn_secondary_panes(
+    sid: usize,
+    tree: &tabs::SplitTree,
+    fallback_cwd: &str,
+    shell: &str,
+    scale: f64,
+) -> (Vec<split_pane::SpawnedPane>, Vec<*mut GtkWidget>) {
+    let mut raw_cwds = Vec::new();
+    tree.secondary_cwds(&mut raw_cwds);
+    let mut spawned = Vec::with_capacity(raw_cwds.len());
+    let mut scrolls = Vec::with_capacity(raw_cwds.len());
+    for raw in raw_cwds {
+        let pane = spawn_one_secondary_pane(sid, &raw, fallback_cwd, shell, scale);
+        scrolls.push(pane.scroll);
+        spawned.push(pane);
+    }
+    (spawned, scrolls)
+}
+
+fn restore_session_splits(sid: usize, tree: &tabs::SplitTree) {
+    let ctx = APP.with(|cell| {
+        let state = cell.try_borrow().ok()?;
+        let app = state.as_ref()?;
+        let s = app.sessions.iter().find(|s| s.id == sid && s.category == SessionCategory::Project)?;
+        s.remote().is_none().then(|| (s.cwd.clone(), app.config.shell.clone(), app.font_scale))
+    });
+    let Some((fallback_cwd, shell, scale)) = ctx else { return };
+    let (spawned, raw_scrolls) = spawn_secondary_panes(sid, tree, &fallback_cwd, &shell, scale);
+    let op = APP.with(|cell| {
+        let mut state = cell.try_borrow_mut().ok()?;
+        let s = state.as_mut()?.sessions.iter_mut().find(|s| s.id == sid)?;
+        s.panes.prepare_restore_splits(s.scroll_wrap, s.vte, tree.clone(), spawned)
+    });
+    split_pane::finish_restore_splits(op, &raw_scrolls);
+}
+
+fn apply_restored_meta(sid: usize, pinned: Option<&str>, splits: Option<&tabs::SplitTree>) {
+    if let Some(pinned) = pinned {
+        APP.with(|cell| {
+            let Ok(mut state) = cell.try_borrow_mut() else { return };
+            if let Some(s) = state.as_mut().and_then(|app| app.sessions.iter_mut().find(|s| s.id == sid)) {
+                s.set_pinned_title(Some(pinned));
+            }
+        });
+    }
+    if let Some(tree) = splits {
+        restore_session_splits(sid, tree);
+    }
 }
 
 fn restore_tabs() {
     let (store, saved) = TabStore::load();
-    let TabsState { active, tabs } = saved.unwrap_or_else(|| {
+    let state = saved.unwrap_or_else(|| {
         APP.with(|cell| default_tabs(&cell.borrow().as_ref().expect("app is initialized").config))
     });
-    let ids: Vec<usize> = tabs.into_iter().map(open_tab).collect();
-    select_session(ids.get(active).copied().unwrap_or(0));
+    let mut ids = Vec::with_capacity(state.tabs.len());
+    for (idx, tab) in state.tabs.iter().cloned().enumerate() {
+        let sid = open_tab(tab);
+        apply_restored_meta(sid, state.pinned_at(idx), state.splits_at(idx));
+        ids.push(sid);
+    }
+    select_session(ids.get(state.active).copied().unwrap_or(0));
     APP.with(|cell| {
-        if let Some(app) = cell.borrow_mut().as_mut() {
-            app.tab_store = Some(store);
+        if let Ok(mut guard) = cell.try_borrow_mut() {
+            if let Some(app) = guard.as_mut() {
+                app.tab_store = Some(store);
+            }
         }
     });
     save_tabs();
@@ -2502,12 +2785,17 @@ fn restore_tabs() {
 
 fn save_tabs() {
     APP.with(|cell| {
-        let mut state = cell.borrow_mut();
+        let Ok(mut state) = cell.try_borrow_mut() else { return };
         let Some(app) = state.as_mut() else { return };
         let Some(store) = &mut app.tab_store else { return };
         let active = app.sessions.iter().position(|s| s.id == app.active_id).unwrap_or(0);
-        let tabs = app.sessions.iter_mut().map(TermSession::snapshot_tab).collect();
-        store.checkpoint(TabsState { active, tabs });
+        let mut tabs = Vec::with_capacity(app.sessions.len());
+        let mut meta = Vec::with_capacity(app.sessions.len());
+        for s in &mut app.sessions {
+            tabs.push(s.snapshot_tab());
+            meta.push(s.snapshot_meta());
+        }
+        store.checkpoint(TabsState::with_meta(active, tabs, meta));
     });
 }
 
@@ -2841,6 +3129,7 @@ fn run_app() {
         let git_scheduler = GitStatusScheduler::default();
         let box_state: Arc<Mutex<BoxTelemetry>> = Arc::new(Mutex::new(BoxTelemetry::default()));
         let cmd_palette = palette::CommandPalette::new(topbar, execute_palette_action, focus_active_vte);
+        let pin_pop = tab_order::TabPinPopover::new(topbar, apply_pinned_tab_title, focus_active_vte);
 
         APP.with(|cell| {
             *cell.borrow_mut() = Some(AppState {
@@ -2891,6 +3180,7 @@ fn run_app() {
                 box_state: Arc::clone(&box_state),
                 palette: cmd_palette,
                 search_bar,
+                pin_pop,
             });
         });
 
@@ -3005,6 +3295,11 @@ mod tests {
                 search_bar: search_bar::SearchBar::new(
                     active_search_vte,
                     collect_close_search_vtes,
+                ),
+                pin_pop: tab_order::TabPinPopover::new(
+                    vbox,
+                    apply_pinned_tab_title,
+                    focus_active_vte,
                 ),
             }
         }
