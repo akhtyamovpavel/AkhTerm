@@ -92,6 +92,10 @@ pub const HANDOFF_CAPTURE_TIP: &CStr = c"Сохранить последние �
 pub const HANDOFF_FORWARD_HEADER: &CStr = c"ПЕРЕДАТЬ ВЫВОД АКТИВНОЙ ВКЛАДКИ В СЕССИЮ";
 pub const HANDOFF_BRIEFS_HEADER: &CStr = c"БРИФЫ И СНИМКИ (.MD) — В АКТИВНУЮ ВКЛАДКУ";
 pub const HANDOFF_EMPTY: &CStr = c"Нет сохранённых .md-файлов — снимите вывод выше";
+pub const DROP_SCP_START: &CStr = c"⬆ Загрузка по SCP на";
+pub const DROP_SCP_DONE: &CStr = c"📎 Загружено по SCP на";
+pub const DROP_SCP_ERROR: &CStr = c"⚠ Ошибка SCP при загрузке на";
+pub const DROP_SCP_NO_FILE: &CStr = c"⚠ Ошибка SCP: локальный файл недоступен";
 
 pub fn theme_toggle_icon(is_light: bool) -> &'static CStr {
     if is_light { THEME_DARK_ICON } else { THEME_LIGHT_ICON }
@@ -99,4 +103,8 @@ pub fn theme_toggle_icon(is_light: bool) -> &'static CStr {
 
 pub fn theme_toggle_tooltip(is_light: bool) -> &'static CStr {
     if is_light { THEME_TO_DARK_TIP } else { THEME_TO_LIGHT_TIP }
+}
+
+pub fn cstr_text(value: &'static CStr) -> &'static str {
+    value.to_str().unwrap_or("")
 }

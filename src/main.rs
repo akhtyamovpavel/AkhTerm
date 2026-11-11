@@ -1,6 +1,7 @@
 mod approval;
 mod config;
 mod ffi;
+mod file_drop;
 mod git_wt;
 mod handoff;
 mod mi;
@@ -35,6 +36,9 @@ use approval::{
 };
 use config::WorkspaceConfig;
 use ffi::*;
+use file_drop::{
+    feed_vte_text, register_file_drop_hooks, DropTarget, FileDropHooks, UploadCompletion,
+};
 use git_wt::{agent_slug_from_cmd, create_agent_worktree};
 use handoff::{
     current_unix_secs, list_handoff_files, rebuild_handoff_widgets, resolve_handoff_delivery,
@@ -1284,10 +1288,94 @@ fn set_footer_message(message: &str) {
     if message.is_empty() {
         return;
     }
-    let footer = APP.with(|cell| cell.borrow().as_ref().map(|app| app.footer_status));
+    let footer = APP.with(|cell| {
+        cell.try_borrow().ok().and_then(|s| s.as_ref().map(|app| app.footer_status))
+    });
     if let Some(footer) = footer.filter(|w| !w.is_null()) {
         set_label_text(footer, message);
     }
+}
+
+pub(crate) fn find_live_drop_vte(
+    sessions: &[TermSession],
+    active_id: usize,
+    sid: usize,
+    target_vte: *mut GtkWidget,
+) -> Option<(*mut GtkWidget, bool)> {
+    if target_vte.is_null() {
+        return None;
+    }
+    let session = sessions.iter().find(|s| s.id == sid && s.has_vte(target_vte))?;
+    Some((target_vte, session.id == active_id))
+}
+
+enum PendingDropTarget {
+    Ignore,
+    Remote { sid: usize, host: String },
+    CheckLive { sid: usize, pid: Option<i32>, cached_host: Option<String> },
+}
+
+fn snapshot_drop_target(s: &TermSession, vte: *mut GtkWidget) -> PendingDropTarget {
+    if let Some(remote) = s.remote() {
+        return PendingDropTarget::Remote { sid: s.id, host: remote.host.clone() };
+    }
+    let cached_host = (vte == s.active_vte() && s.effective_category() == SessionCategory::Remote)
+        .then(|| s.proc_info.ssh_host.clone())
+        .filter(|h| !h.is_empty());
+    PendingDropTarget::CheckLive {
+        sid: s.id,
+        pid: s.pid_for_vte(vte).filter(|&p| p > 0),
+        cached_host,
+    }
+}
+
+pub(crate) fn lookup_vte_drop_target(vte: *mut GtkWidget) -> DropTarget {
+    let pending = APP.with(|cell| {
+        let Ok(state) = cell.try_borrow() else { return PendingDropTarget::Ignore };
+        let Some(app) = state.as_ref() else {
+            return PendingDropTarget::CheckLive { sid: 0, pid: None, cached_host: None };
+        };
+        app.sessions
+            .iter()
+            .find(|s| s.has_vte(vte))
+            .map_or(PendingDropTarget::Ignore, |s| snapshot_drop_target(s, vte))
+    });
+    match pending {
+        PendingDropTarget::Ignore => DropTarget::Ignore,
+        PendingDropTarget::Remote { sid, host } => DropTarget::Remote { sid, host },
+        PendingDropTarget::CheckLive { sid, pid, cached_host } => {
+            let live = pid.map(inspect_proc_tree).map(|p| p.ssh_host).filter(|h| !h.is_empty());
+            match live.or(cached_host) {
+                Some(host) if sid > 0 => DropTarget::Remote { sid, host },
+                _ => DropTarget::Local,
+            }
+        }
+    }
+}
+
+pub(crate) fn apply_vte_drop_upload(done: UploadCompletion) {
+    let target_vte = done.vte_addr as *mut GtkWidget;
+    let resolved = APP.with(|cell| {
+        let Ok(state) = cell.try_borrow() else { return None };
+        let app = state.as_ref()?;
+        let live = find_live_drop_vte(&app.sessions, app.active_id, done.sid, target_vte);
+        Some((app.footer_status, live))
+    });
+    let Some((footer, live)) = resolved else { return };
+    if !footer.is_null() && !done.footer_msg.is_empty() {
+        set_label_text(footer, &done.footer_msg);
+    }
+    if let (Some((vte, focus)), Some(text)) = (live, done.injected_text.as_deref()) {
+        feed_vte_text(vte, text, focus);
+    }
+}
+
+pub(crate) fn install_file_drop_hooks() {
+    register_file_drop_hooks(FileDropHooks {
+        resolve_target: lookup_vte_drop_target,
+        set_status: set_footer_message,
+        complete_upload: apply_vte_drop_upload,
+    });
 }
 
 extern "C" fn on_agent_worktree_cmd(_btn: *mut GtkWidget, code: *mut c_void) {
@@ -2003,6 +2091,7 @@ unsafe fn add_toolbar_action(
 fn run_app() {
     let _ui_font = ui_font::load().inspect_err(|error| eprintln!("AkhTerm: {error}"));
     register_link_cwd_lookup(lookup_vte_link_cwd);
+    install_file_drop_hooks();
     let config = WorkspaceConfig::load();
     let initial_theme = theme_mode::load_initial_theme(config.theme);
     let mi_dirs = config.mi_directories();
@@ -2373,5 +2462,127 @@ fn run_app() {
         gtk_widget_show_all(win);
         g_timeout_add(900, on_radar_tick, ptr::null_mut());
         gtk_main();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::file_drop::schedule_upload_completion;
+    use crate::proc_radar::tests::{pump_gtk_events, with_headless_gtk};
+
+    fn make_test_app(win: *mut GtkWidget) -> AppState {
+        unsafe {
+            let vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+            gtk_container_add(win, vbox);
+            let btn = gtk_button_new();
+            gtk_box_pack_start(vbox, btn, 0, 0, 0);
+            let lbl = gtk_label_new(c"".as_ptr());
+            gtk_box_pack_start(vbox, lbl, 0, 0, 0);
+            let footer = gtk_label_new(c"".as_ptr());
+            gtk_box_pack_start(vbox, footer, 0, 0, 0);
+            let stack = gtk_stack_new();
+            gtk_box_pack_start(vbox, stack, 1, 1, 0);
+            AppState {
+                config: WorkspaceConfig::load(),
+                win,
+                is_fullscreen: false,
+                sidebar: Sidebar::new(vbox, on_sidebar_search_changed),
+                sidebar_visible: true,
+                theme_mode: theme_mode::ThemeMode::Dark,
+                theme_btn: btn,
+                font_scale: 1.0,
+                zoom_btn: btn,
+                reconnect_btn: btn,
+                split_vert_btn: btn,
+                split_horiz_btn: btn,
+                next_id: 1,
+                active_id: 1,
+                sessions: Vec::new(),
+                tab_store: None,
+                stack,
+                tab_strip: TabStrip::new(vbox, on_new_tab),
+                mi_btn: btn,
+                mi_pop: ptr::null_mut(),
+                mi_pop_label: lbl,
+                mi_refactor_btn: btn,
+                agents_pop: ptr::null_mut(),
+                box_pop: ptr::null_mut(),
+                box_gpu_label: lbl,
+                box_tmux_pop_box: vbox,
+                settings_pop: ptr::null_mut(),
+                ssh_count_label: lbl,
+                handoff: HandoffMenu::new(btn, on_handoff_open),
+                footer_status: footer,
+                ssh_hosts: Vec::new(),
+                ssh_toggle_btns: Vec::new(),
+                ssh_rows: Vec::new(),
+                box_ssh_rows: Vec::new(),
+                sidebar_filter: String::new(),
+                box_filter: String::new(),
+                enabled_hosts_shared: Arc::new(Mutex::new(Vec::new())),
+                tmux_jump_btns: Vec::new(),
+                last_tmux_keys: Vec::new(),
+                mi_scheduler: MiScheduler::default(),
+                box_state: Arc::new(Mutex::new(BoxTelemetry::default())),
+                palette: palette::CommandPalette::new(vbox, execute_palette_action, focus_active_vte),
+                search_bar: search_bar::SearchBar::new(
+                    active_search_vte,
+                    collect_close_search_vtes,
+                ),
+            }
+        }
+    }
+
+    fn verify_app_drop_routing_and_mid_upload_close() {
+        install_file_drop_hooks();
+        let win = unsafe { gtk_window_new(GTK_WINDOW_TOPLEVEL) };
+        let app = make_test_app(win);
+        let footer = app.footer_status;
+        APP.with(|cell| *cell.borrow_mut() = Some(app));
+        let local_sid = add_tab("Local", "", "/tmp", SessionCategory::Project, &["sh"], Tab::local("shell"));
+        let rem_tab = Tab::remote("gpu-box", Some("main"));
+        let rem_sid = add_tab("gpu-box", "", "/tmp", SessionCategory::Remote, &["sh"], rem_tab);
+        let (local_vte, rem_vte) = APP.with(|cell| {
+            let st = cell.borrow();
+            let a = st.as_ref().unwrap();
+            (a.sessions[0].vte, a.sessions[1].vte)
+        });
+        assert_eq!(lookup_vte_drop_target(local_vte), DropTarget::Local);
+        APP.with(|cell| {
+            cell.borrow_mut().as_mut().unwrap().sessions[0].proc_info.ssh_host = "jump-box".into();
+        });
+        assert_eq!(
+            lookup_vte_drop_target(local_vte),
+            DropTarget::Remote { sid: local_sid, host: "jump-box".to_owned() }
+        );
+        APP.with(|cell| {
+            cell.borrow_mut().as_mut().unwrap().sessions[0].proc_info.ssh_host.clear();
+        });
+        assert_eq!(lookup_vte_drop_target(local_vte), DropTarget::Local);
+        assert_eq!(
+            lookup_vte_drop_target(rem_vte),
+            DropTarget::Remote { sid: rem_sid, host: "gpu-box".to_owned() }
+        );
+        close_session(rem_sid);
+        pump_gtk_events();
+        schedule_upload_completion(UploadCompletion {
+            sid: rem_sid,
+            vte_addr: rem_vte as usize,
+            injected_text: Some("/tmp/akhterm_closed ".to_owned()),
+            footer_msg: "📎 Загружено после закрытия".to_owned(),
+        });
+        pump_gtk_events();
+        let footer_txt = unsafe { CStr::from_ptr(gtk_label_get_text(footer)).to_string_lossy().into_owned() };
+        assert_eq!(footer_txt, "📎 Загружено после закрытия");
+        close_session(local_sid);
+        APP.with(|cell| *cell.borrow_mut() = None);
+        unsafe { gtk_widget_destroy(win) };
+        pump_gtk_events();
+    }
+
+    #[test]
+    fn app_routes_local_and_remote_drops_and_ignores_closed_vte_on_idle() {
+        with_headless_gtk(verify_app_drop_routing_and_mid_upload_close);
     }
 }
