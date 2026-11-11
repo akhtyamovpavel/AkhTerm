@@ -3,6 +3,7 @@ mod config;
 mod ffi;
 mod git_wt;
 mod mi;
+mod mi_watch;
 mod paste_route;
 mod paths;
 mod proc_radar;
@@ -15,14 +16,13 @@ mod ui_font;
 mod ui_text;
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use approval::{
     find_next_session_attention, is_jump_attention_shortcut, settle_working_session,
@@ -31,7 +31,11 @@ use approval::{
 use config::WorkspaceConfig;
 use ffi::*;
 use git_wt::{agent_slug_from_cmd, create_agent_worktree};
-use mi::{analyze_project_mi, ProjectMiReport};
+use mi::ProjectMiReport;
+use mi_watch::{
+    build_mi_refactor_prompt, format_mi_button_label, format_mi_popover_markup, lookup_mi,
+    mi_grade_class, resolve_active_mi, MiScheduler,
+};
 use paste_route::{choose_paste_route, PasteRoute};
 use paths::{expand_home, home_dir, shorten_home};
 use proc_radar::{
@@ -61,7 +65,9 @@ struct AppState {
     stack: *mut GtkWidget,
     tab_strip: TabStrip,
     mi_btn: *mut GtkWidget,
+    mi_pop: *mut GtkWidget,
     mi_pop_label: *mut GtkWidget,
+    mi_refactor_btn: *mut GtkWidget,
     agents_pop: *mut GtkWidget,
     box_pop: *mut GtkWidget,
     box_gpu_label: *mut GtkWidget,
@@ -80,7 +86,7 @@ struct AppState {
     enabled_hosts_shared: Arc<Mutex<Vec<String>>>,
     tmux_jump_btns: Vec<(String, String, String, *mut GtkWidget, *mut GtkWidget)>,
     last_tmux_keys: Vec<String>,
-    mi_cache: Arc<Mutex<HashMap<String, ProjectMiReport>>>,
+    mi_scheduler: MiScheduler,
     box_state: Arc<Mutex<BoxTelemetry>>,
 }
 
@@ -629,29 +635,119 @@ fn sync_tmux_jump_buttons(app: &mut AppState, items: &[RemoteTmuxItem]) {
     }
 }
 
+fn session_local_cwd(s: &TermSession) -> Option<String> {
+    if s.remote().is_some() {
+        return None;
+    }
+    if !s.proc_info.cwd.is_empty() {
+        Some(expand_home(&s.proc_info.cwd))
+    } else if !s.cwd.is_empty() {
+        Some(s.cwd.clone())
+    } else {
+        None
+    }
+}
+
+fn collect_local_cwds(app: &AppState) -> Vec<String> {
+    let mut cwds = Vec::new();
+    if let Some(active) = app.sessions.iter().find(|s| s.id == app.active_id) {
+        if let Some(cwd) = session_local_cwd(active) {
+            cwds.push(cwd);
+        }
+    }
+    for s in &app.sessions {
+        if let Some(cwd) = session_local_cwd(s) {
+            if !cwds.contains(&cwd) {
+                cwds.push(cwd);
+            }
+        }
+    }
+    cwds
+}
+
+fn update_mi_widgets(
+    app: &AppState,
+    cur_mi: Option<&ProjectMiReport>,
+    self_mi: Option<&ProjectMiReport>,
+) {
+    for cls in ["btn-mi-a", "btn-mi-b", "btn-mi-c"] {
+        remove_class(app.mi_btn, cls);
+    }
+    unsafe { gtk_widget_set_sensitive(app.mi_refactor_btn, i32::from(cur_mi.is_some())) };
+    let Some(rep) = cur_mi else {
+        unsafe {
+            gtk_button_set_label(app.mi_btn, text::MAINTAINABILITY.as_ptr());
+            gtk_label_set_text(app.mi_pop_label, text::MI_EMPTY.as_ptr());
+        }
+        return;
+    };
+    add_class(app.mi_btn, mi_grade_class(rep.grade));
+    if let Ok(c) = CString::new(format_mi_button_label(rep)) {
+        unsafe { gtk_button_set_label(app.mi_btn, c.as_ptr()) };
+    }
+    if let Ok(c) = CString::new(format_mi_popover_markup(rep, self_mi)) {
+        unsafe { gtk_label_set_markup(app.mi_pop_label, c.as_ptr()) };
+    }
+}
+
+extern "C" fn on_mi_ready(_data: *mut c_void) -> c_int {
+    refresh_ui();
+    0
+}
+
+extern "C" fn on_mi_refactor_clicked(_btn: *mut GtkWidget, _data: *mut c_void) {
+    let target = APP.with(|cell| {
+        let state = cell.borrow();
+        let app = state.as_ref()?;
+        let home = home_dir();
+        let mi_map = app.mi_scheduler.snapshot();
+        let active_cwd = app
+            .sessions
+            .iter()
+            .find(|s| s.id == app.active_id)
+            .and_then(session_local_cwd);
+        let (cur_mi, _) = resolve_active_mi(
+            &mi_map,
+            active_cwd.as_deref(),
+            app.config.mi_root.as_deref(),
+            &home,
+        );
+        Some((app.mi_pop, cur_mi.map(build_mi_refactor_prompt)))
+    });
+    if let Some((mi_pop, prompt)) = target {
+        if !mi_pop.is_null() {
+            unsafe { gtk_popover_popdown(mi_pop) };
+        }
+        if let Some(prompt) = prompt {
+            send_to_active(&prompt);
+        }
+    }
+}
+
 pub fn refresh_ui() {
     APP.with(|cell| {
         let Some(app) = cell.borrow().as_ref().map(|a| a as *const AppState) else {
             return;
         };
         let app = unsafe { &*app };
-        let mi_map = app.mi_cache.lock().ok().map(|g| g.clone()).unwrap_or_default();
+        let home = home_dir();
+        let local_cwds = collect_local_cwds(app);
+        app.mi_scheduler
+            .sync_targets(&app.config.mi_directories(), &local_cwds, &home);
+        let mi_map = app.mi_scheduler.snapshot();
 
         let mut working = 0usize;
         let mut ready = 0usize;
         let mut ssh_count = 0usize;
-        let mut active_cwd = String::new();
+        let mut active_cwd = None;
         let mut can_reconnect = false;
 
         for (idx, s) in app.sessions.iter().enumerate() {
             let is_act = s.id == app.active_id;
+            let local_dir = session_local_cwd(s);
             if is_act {
                 can_reconnect = s.remote().is_some();
-                active_cwd = if !s.proc_info.cwd.is_empty() {
-                    expand_home(&s.proc_info.cwd)
-                } else {
-                    s.cwd.clone()
-                };
+                active_cwd = local_dir.clone();
             }
             if s.state == WorkState::Working {
                 working += 1;
@@ -663,14 +759,11 @@ pub fn refresh_ui() {
                 ssh_count += 1;
             }
 
-            let lookup_dir = if !s.proc_info.cwd.is_empty() {
-                expand_home(&s.proc_info.cwd)
-            } else {
-                s.cwd.clone()
-            };
-            let mi_badge = mi_map
-                .get(&lookup_dir)
-                .or_else(|| mi_map.get(&s.cwd))
+            let mi_badge = local_dir
+                .as_deref()
+                .and_then(|dir| {
+                    lookup_mi(&mi_map, dir, &home).or_else(|| lookup_mi(&mi_map, &s.cwd, &home))
+                })
                 .map(|r| (r.avg_mi, r.grade));
 
             s.sidebar_row.update(idx, s, mi_badge, is_act);
@@ -679,52 +772,13 @@ pub fn refresh_ui() {
         filter_sidebar(app);
         unsafe { gtk_widget_set_sensitive(app.reconnect_btn, i32::from(can_reconnect)) };
 
-        let self_mi = app.config.mi_root.as_ref().and_then(|path| mi_map.get(path));
-        let cur_mi = mi_map.get(&active_cwd).or(self_mi);
-
-        if let Some(rep) = cur_mi {
-            remove_class(app.mi_btn, "btn-mi-a");
-            remove_class(app.mi_btn, "btn-mi-b");
-            remove_class(app.mi_btn, "btn-mi-c");
-            let cls = match rep.grade {
-                "A" => "btn-mi-a",
-                "B" => "btn-mi-b",
-                _ => "btn-mi-c",
-            };
-            add_class(app.mi_btn, cls);
-            let lbl = format!("MI {:.1} [{}] ▾", rep.avg_mi, rep.grade);
-            if let Ok(c) = CString::new(lbl) {
-                unsafe { gtk_button_set_label(app.mi_btn, c.as_ptr()) };
-            }
-
-            let mut pop_lines = Vec::new();
-            pop_lines.push(format!(
-                "<b>ИНДЕКС ПОДДЕРЖИВАЕМОСТИ (Maintainability Index)</b>\n<span foreground='#a1a1aa'>Каталог: {}</span>",
-                rep.root
-            ));
-            pop_lines.push(format!(
-                "Средний MI (по функциям): <b>{:.1} / 100 (Класс {})</b>  ·  Файлов: {}  ·  SLOC: {}  ·  Средняя CC: {:.1}",
-                rep.avg_mi, rep.grade, rep.files_count, rep.total_sloc, rep.avg_cc
-            ));
-            if !rep.worst_files.is_empty() {
-                pop_lines.push("\n<b>Точки внимания (файлы с минимальным MI):</b>".to_string());
-                for f in &rep.worst_files {
-                    pop_lines.push(format!(
-                        "  • <tt>{}</tt> — <b>MI {:.1}</b> (SLOC: {}, CC: {})",
-                        f.rel_path, f.mi, f.sloc, f.cc
-                    ));
-                }
-            }
-            if let Some(ar) = self_mi {
-                pop_lines.push(format!(
-                    "\n<span foreground='#c4b5fd'>Ядро AkhTerm (Rust · VTE-2.91): <b>MI {:.1} [{}]</b> ({} файлов, {} SLOC)</span>",
-                    ar.avg_mi, ar.grade, ar.files_count, ar.total_sloc
-                ));
-            }
-            if let Ok(c) = CString::new(pop_lines.join("\n")) {
-                unsafe { gtk_label_set_markup(app.mi_pop_label, c.as_ptr()) };
-            }
-        }
+        let (cur_mi, self_mi) = resolve_active_mi(
+            &mi_map,
+            active_cwd.as_deref(),
+            app.config.mi_root.as_deref(),
+            &home,
+        );
+        update_mi_widgets(app, cur_mi, self_mi);
 
         let footer = format!(
             "Вкладки: {}    В работе: {}    Готово: {}    SSH: {}",
@@ -1484,9 +1538,14 @@ fn run_app() {
         let mi_pop = gtk_popover_new(mi_btn);
         let mi_pop_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
         add_class(mi_pop_box, "popover-box");
-        let mi_pop_label = gtk_label_new(CString::new("Расчёт Maintainability Index...").unwrap().as_ptr());
+        let mi_pop_label = gtk_label_new(text::MI_EMPTY.as_ptr());
         gtk_label_set_xalign(mi_pop_label, 0.0);
-        gtk_container_add(mi_pop_box, mi_pop_label);
+        gtk_box_pack_start(mi_pop_box, mi_pop_label, 0, 1, 0);
+        let mi_refactor_btn = gtk_button_new_with_label(text::MI_REFACTOR.as_ptr());
+        gtk_widget_set_tooltip_text(mi_refactor_btn, text::MI_REFACTOR_TIP.as_ptr());
+        gtk_widget_set_sensitive(mi_refactor_btn, 0);
+        connect_click(mi_refactor_btn, on_mi_refactor_clicked, ptr::null_mut());
+        gtk_box_pack_start(mi_pop_box, mi_refactor_btn, 0, 1, 0);
         gtk_container_add(mi_pop, mi_pop_box);
         gtk_widget_show_all(mi_pop_box);
         connect_click(mi_btn, on_popup_popover, mi_pop);
@@ -1666,7 +1725,8 @@ fn run_app() {
             .map(|h| h.alias.clone())
             .collect();
         let enabled_hosts_shared = Arc::new(Mutex::new(initial_enabled));
-        let mi_cache: Arc<Mutex<HashMap<String, ProjectMiReport>>> = Arc::new(Mutex::new(HashMap::new()));
+        let mi_scheduler = MiScheduler::default();
+        mi_scheduler.sync_targets(&mi_dirs, &[], &home_dir());
         let box_state: Arc<Mutex<BoxTelemetry>> = Arc::new(Mutex::new(BoxTelemetry::default()));
 
         APP.with(|cell| {
@@ -1686,7 +1746,9 @@ fn run_app() {
                 stack,
                 tab_strip,
                 mi_btn,
+                mi_pop,
                 mi_pop_label,
+                mi_refactor_btn,
                 agents_pop,
                 box_pop,
                 box_gpu_label,
@@ -1705,23 +1767,18 @@ fn run_app() {
                 enabled_hosts_shared: Arc::clone(&enabled_hosts_shared),
                 tmux_jump_btns: Vec::new(),
                 last_tmux_keys: Vec::new(),
-                mi_cache: Arc::clone(&mi_cache),
+                mi_scheduler: mi_scheduler.clone(),
                 box_state: Arc::clone(&box_state),
             });
         });
 
-        if !mi_dirs.is_empty() {
-            let mi_cache_bg = Arc::clone(&mi_cache);
-            thread::spawn(move || {
-                loop {
-                    for d in &mi_dirs {
-                        let rep = analyze_project_mi(d);
-                        if let Ok(mut map) = mi_cache_bg.lock() {
-                            map.insert(d.clone(), rep);
-                        }
-                    }
-                    thread::sleep(std::time::Duration::from_secs(25));
+        {
+            let mi_bg = mi_scheduler.clone();
+            thread::spawn(move || loop {
+                if mi_bg.refresh_due(Instant::now()) > 0 {
+                    g_idle_add(on_mi_ready, ptr::null_mut());
                 }
+                mi_bg.wait_for_turn(Duration::from_secs(5));
             });
         }
 
