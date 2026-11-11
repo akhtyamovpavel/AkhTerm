@@ -516,23 +516,9 @@ pub fn resolve_link_target(raw_url: &str, cwd: Option<&str>) -> Option<String> {
     resolve_relative_file(trimmed, cwd)
 }
 
-fn spawn_xdg_open(target: &str) {
-    let _ = Command::new("xdg-open")
-        .arg(target)
-        .env_remove("HTTP_PROXY")
-        .env_remove("HTTPS_PROXY")
-        .env_remove("ALL_PROXY")
-        .env_remove("http_proxy")
-        .env_remove("https_proxy")
-        .env_remove("all_proxy")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
-}
-
 pub fn open_external_link(raw_url: &str) {
     if let Some(target) = resolve_link_target(raw_url, None) {
-        spawn_xdg_open(&target);
+        let _ = crate::platform::spawn_desktop_opener(&target);
     }
 }
 
@@ -645,14 +631,28 @@ fn clipboard_first_uri(clipboard: *mut GtkClipboard) -> Option<String> {
     first
 }
 
-fn clipboard_text_or_uri(clipboard: *mut GtkClipboard, targets: ClipboardTargets) -> Option<String> {
-    if targets.has_text {
-        let text = take_glib_string(unsafe { gtk_clipboard_wait_for_text(clipboard) });
-        if let Some(t) = text.filter(|s| !s.trim().is_empty()) {
-            return Some(t);
+fn first_clipboard_line(raw: &str) -> Option<&str> {
+    raw.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+}
+
+fn clipboard_uri_or_text(
+    clipboard: *mut GtkClipboard,
+    targets: ClipboardTargets,
+) -> Option<(String, bool)> {
+    if targets.has_uri {
+        if let Some(uri) = clipboard_first_uri(clipboard) {
+            return Some((uri, true));
         }
     }
-    targets.has_uri.then(|| clipboard_first_uri(clipboard)).flatten()
+    let text = targets
+        .has_text
+        .then(|| take_glib_string(unsafe { gtk_clipboard_wait_for_text(clipboard) }))
+        .flatten()
+        .filter(|s| !s.trim().is_empty())?;
+    let is_uri = first_clipboard_line(&text).is_some_and(|l| l.starts_with("file://"));
+    Some((text, is_uri))
 }
 
 fn uri_to_local_path(uri: &str) -> Option<PathBuf> {
@@ -662,7 +662,7 @@ fn uri_to_local_path(uri: &str) -> Option<PathBuf> {
 }
 
 fn parse_clipboard_image_file(raw: &str) -> Option<(PathBuf, String)> {
-    let first_line = raw.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let first_line = first_clipboard_line(raw)?;
     let path = if first_line.starts_with("file://") {
         uri_to_local_path(first_line)
             .unwrap_or_else(|| PathBuf::from(first_line.trim_start_matches("file://")))
@@ -670,7 +670,7 @@ fn parse_clipboard_image_file(raw: &str) -> Option<(PathBuf, String)> {
         PathBuf::from(first_line)
     };
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif") && path.is_file() {
+    if crate::platform::is_clipboard_image_ext(&ext) && path.is_file() {
         Some((path, ext))
     } else {
         None
@@ -704,6 +704,22 @@ fn save_or_upload_image(
     ))
 }
 
+fn save_clipboard_file_payload(
+    clipboard: *mut GtkClipboard,
+    targets: ClipboardTargets,
+    ssh_host: &str,
+    force_image: bool,
+    ts: u64,
+) -> Option<(String, String)> {
+    let (raw, from_uri) = clipboard_uri_or_text(clipboard, targets)?;
+    if ssh_host.is_empty() && !force_image && !from_uri {
+        return None;
+    }
+    let (path, ext) = parse_clipboard_image_file(&raw)?;
+    let bytes = fs::read(path).ok()?;
+    save_or_upload_image(ssh_host, &bytes, &ext, "Файл", ts)
+}
+
 pub fn try_paste_clipboard_image(ssh_host: &str, force_image: bool) -> Option<(String, String)> {
     let clipboard = unsafe { gtk_clipboard_get(GDK_SELECTION_CLIPBOARD) };
     if clipboard.is_null() {
@@ -712,22 +728,16 @@ pub fn try_paste_clipboard_image(ssh_host: &str, force_image: bool) -> Option<(S
     let targets = clipboard_targets(clipboard)?;
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
 
-    if targets.has_image && (force_image || !targets.has_text) {
-        let bytes = clipboard_png_bytes(clipboard)?;
-        return save_or_upload_image(ssh_host, &bytes, "png", "Скриншот", ts);
+    if targets.has_image && (force_image || !targets.has_text || targets.has_uri) {
+        if let Some(bytes) = clipboard_png_bytes(clipboard) {
+            return save_or_upload_image(ssh_host, &bytes, "png", "Скриншот", ts);
+        }
     }
-
-    if !ssh_host.is_empty() && (targets.has_text || targets.has_uri) {
-        let raw = clipboard_text_or_uri(clipboard, targets)?;
-        let (path, ext) = parse_clipboard_image_file(&raw)?;
-        let bytes = fs::read(path).ok()?;
-        return save_or_upload_image(ssh_host, &bytes, &ext, "Файл", ts);
-    }
-
-    None
+    (targets.has_uri || targets.has_text)
+        .then(|| save_clipboard_file_payload(clipboard, targets, ssh_host, force_image, ts))
+        .flatten()
 }
 
 #[cfg(test)]
@@ -848,30 +858,42 @@ pub(crate) mod tests {
         let _ = fs::remove_file(saved_path);
     }
 
+    fn clean_flat_dir(dir: &Path) {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for e in entries.flatten() {
+                let _ = fs::remove_file(e.path());
+            }
+        }
+        let _ = fs::remove_dir(dir);
+    }
+
     #[test]
     fn parses_local_image_paths_and_encoded_file_uris() {
         let dir = std::env::temp_dir().join(format!("akhterm_clip_uri_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        clean_flat_dir(&dir);
         fs::create_dir_all(&dir).unwrap();
         let img = dir.join("Снимок экрана 1.png");
-        let txt = dir.join("notes.txt");
         fs::write(&img, b"\x89PNG\r\n\x1a\n").unwrap();
+        assert_eq!(parse_clipboard_image_file(&img.to_string_lossy()), Some((img.clone(), "png".into())));
+        let encoded = format!("# KDE uri-list\r\nfile://{}/%D0%A1%D0%BD%D0%B8%D0%BC%D0%BE%D0%BA%20%D1%8D%D0%BA%D1%80%D0%B0%D0%BD%D0%B0%201.png\r\n", dir.display());
+        assert_eq!(parse_clipboard_image_file(&encoded), Some((img, "png".into())));
+        clean_flat_dir(&dir);
+    }
+
+    #[test]
+    fn parses_bmp_webp_clipboard_files_and_ignores_plain_text() {
+        let dir = std::env::temp_dir().join(format!("akhterm_clip_fmt_{}", std::process::id()));
+        clean_flat_dir(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (bmp, webp, txt) = (dir.join("clip.BMP"), dir.join("frame.webp"), dir.join("notes.txt"));
+        fs::write(&bmp, b"BM").unwrap();
+        fs::write(&webp, b"RIFF").unwrap();
         fs::write(&txt, b"plain").unwrap();
-
-        let (resolved, ext) = parse_clipboard_image_file(&img.to_string_lossy()).unwrap();
-        assert_eq!(resolved, img);
-        assert_eq!(ext, "png");
-
-        let encoded = format!(
-            "file://{}/%D0%A1%D0%BD%D0%B8%D0%BC%D0%BE%D0%BA%20%D1%8D%D0%BA%D1%80%D0%B0%D0%BD%D0%B0%201.png\r\n",
-            dir.to_string_lossy()
-        );
-        let (from_uri, ext_uri) = parse_clipboard_image_file(&encoded).unwrap();
-        assert_eq!(from_uri, img);
-        assert_eq!(ext_uri, "png");
+        assert_eq!(parse_clipboard_image_file(&format!("file://{}", bmp.display())).unwrap().1, "bmp");
+        assert_eq!(parse_clipboard_image_file(&webp.to_string_lossy()).unwrap().1, "webp");
         assert!(parse_clipboard_image_file(&txt.to_string_lossy()).is_none());
         assert!(parse_clipboard_image_file("cargo test --offline").is_none());
-        let _ = fs::remove_dir_all(&dir);
+        clean_flat_dir(&dir);
     }
 
     #[test]

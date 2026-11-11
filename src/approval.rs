@@ -1,7 +1,6 @@
 //! Agent approval prompt detection, next-attention tab cycling, and unfocused notifications.
 
 use std::ffi::{c_uint, c_void, CStr};
-use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -155,11 +154,7 @@ pub fn can_notify_session(last_notified: Option<Instant>, now: Instant) -> bool 
 }
 
 pub fn run_notify_command(program: &str, summary: &str, body: &str) -> bool {
-    Command::new(program)
-        .args(["-a", "AkhTerm", "-i", "utilities-terminal-symbolic", "--", summary, body])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+    crate::platform::build_notify_command(program, summary, body)
         .status()
         .is_ok_and(|st| st.success())
 }
@@ -259,7 +254,7 @@ mod tests {
     use std::ffi::c_char;
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::process::Child;
+    use std::process::{Child, Command, Stdio};
     use std::ptr;
 
     #[test]

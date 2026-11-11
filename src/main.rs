@@ -11,6 +11,7 @@ mod mi_watch;
 mod palette;
 mod paste_route;
 mod paths;
+mod platform;
 mod proc_radar;
 mod search_bar;
 mod session;
@@ -582,23 +583,19 @@ fn apply_pinned_tab_title(sid: usize, pinned: Option<String>) {
     focus_active_vte();
 }
 
-fn start_tab_mouse_drag(sid: usize, event: *const GdkEvent) {
-    let (mut root_x, mut root_y, mut lx, mut ly) = (0.0, 0.0, 0.0, 0.0);
-    unsafe {
-        if gdk_event_get_root_coords(event, &mut root_x, &mut root_y) == 0 {
-            return;
-        }
-        gdk_event_get_coords(event, &mut lx, &mut ly);
-    }
-    let widgets = APP.with(|cell| {
-        let Ok(state) = cell.try_borrow() else { return None };
-        let app = state.as_ref()?;
-        let s = app.sessions.iter().find(|s| s.id == sid)?;
-        Some((s.top_tab.tab_widget(), app.tab_strip.tabs_box()))
-    });
-    if let Some((tab_widget, tabs_box)) = widgets {
-        let tab_x = tab_order::widget_origin_x(tab_widget, tabs_box);
-        tab_order::begin_tab_drag(sid, root_x, f64::from(tab_x) + lx);
+fn lookup_tabs_box() -> Option<*mut GtkWidget> {
+    APP.with(|cell| {
+        let state = cell.try_borrow().ok()?;
+        Some(state.as_ref()?.tab_strip.tabs_box())
+    })
+}
+
+fn start_tab_mouse_drag(btn: *mut GtkWidget, sid: usize, event: *const GdkEvent) {
+    let Some(tabs_box) = lookup_tabs_box() else {
+        return;
+    };
+    if let Some(strip_x) = platform::translate_event_x_to_ancestor(btn, tabs_box, event) {
+        tab_order::begin_tab_drag(sid, strip_x);
     }
 }
 
@@ -623,7 +620,7 @@ extern "C" fn on_tab_button_press(
         return 1;
     }
     if button == 1 && ev_type == GDK_BUTTON_PRESS {
-        start_tab_mouse_drag(sid, event);
+        start_tab_mouse_drag(btn, sid, event);
     }
     0
 }
@@ -642,15 +639,20 @@ fn compute_drag_reorder(sid: usize, strip_x: f64) -> Option<usize> {
 }
 
 extern "C" fn on_tab_motion(
-    _btn: *mut GtkWidget,
+    btn: *mut GtkWidget,
     event: *const GdkEvent,
     _data: *mut c_void,
 ) -> c_int {
-    let (mut root_x, mut root_y) = (0.0, 0.0);
-    if unsafe { gdk_event_get_root_coords(event, &mut root_x, &mut root_y) } == 0 {
+    if !tab_order::is_tab_drag_pending() {
         return 0;
     }
-    let Some((sid, strip_x, started_now)) = tab_order::update_tab_drag(root_x) else {
+    let Some(tabs_box) = lookup_tabs_box() else {
+        return 0;
+    };
+    let Some(cur_strip_x) = platform::translate_event_x_to_ancestor(btn, tabs_box, event) else {
+        return 0;
+    };
+    let Some((sid, strip_x, started_now)) = tab_order::update_tab_drag(cur_strip_x) else {
         return 0;
     };
     if started_now && active_session_id() != sid {
@@ -3102,6 +3104,7 @@ unsafe fn add_toolbar_action(
 }
 
 fn run_app() {
+    platform::init_process_identity();
     let _ui_font = ui_font::load().inspect_err(|error| eprintln!("AkhTerm: {error}"));
     register_link_cwd_lookup(lookup_vte_link_cwd);
     install_file_drop_hooks();
@@ -3111,13 +3114,15 @@ fn run_app() {
     let mi_dirs = config.mi_directories();
     unsafe {
         gtk_init(ptr::null_mut(), ptr::null_mut());
+        let display_backend = platform::detect_display_backend();
+        let desktop_env = platform::detect_desktop_environment();
         theme::apply_gtk_theme_mode(initial_theme);
         const SIGTERM: c_int = 15;
         g_unix_signal_add(SIGTERM, on_terminate, ptr::null_mut());
 
         let win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
         gtk_window_set_title(win, text::APP_NAME.as_ptr());
-        gtk_window_set_wmclass(win, text::APP_NAME.as_ptr(), text::APP_NAME.as_ptr());
+        platform::configure_window_identity(win, display_backend, desktop_env);
         gtk_window_set_decorated(win, 1);
         gtk_window_set_resizable(win, 1);
         gtk_window_set_default_size(win, 1480, 900);
@@ -3653,11 +3658,83 @@ mod tests {
         let _ = std::fs::remove_file(&state_path);
     }
 
+    #[repr(C)]
+    struct RawTestEventButton {
+        type_: c_int,
+        window: *mut c_void,
+        send_event: i8,
+        time: u32,
+        x: f64,
+        y: f64,
+        axes: *mut f64,
+        state: c_uint,
+        button: c_uint,
+        device: *mut c_void,
+        x_root: f64,
+        y_root: f64,
+    }
+
+    fn current_session_ids() -> Vec<usize> {
+        APP.with(|cell| {
+            cell.borrow()
+                .as_ref()
+                .unwrap()
+                .sessions
+                .iter()
+                .map(|s| s.id)
+                .collect()
+        })
+    }
+
+    fn verify_wayland_safe_mouse_tab_drag_without_root_coords() {
+        let win = unsafe { gtk_window_new(GTK_WINDOW_TOPLEVEL) };
+        unsafe { gtk_window_set_default_size(win, 640, 320) };
+        let app = make_test_app(win);
+        let tabs_box = app.tab_strip.tabs_box();
+        APP.with(|cell| *cell.borrow_mut() = Some(app));
+        let sid1 = add_tab("Длинная вкладка ЦУ", "", "/tmp", SessionCategory::Project, &["sh"], Tab::local("shell"));
+        let sid2 = add_tab("Кратко", "", "/tmp", SessionCategory::Project, &["sh"], Tab::local("shell"));
+        unsafe { gtk_widget_show_all(win) };
+        thread::sleep(Duration::from_millis(25));
+        pump_gtk_events();
+        let btn1 = APP.with(|cell| cell.borrow().as_ref().unwrap().sessions[0].top_tab.select_button());
+
+        let press = unsafe { gdk_event_new(GDK_BUTTON_PRESS) };
+        let motion = unsafe { gdk_event_new(GDK_MOTION_NOTIFY) };
+        unsafe {
+            (*(press as *mut RawTestEventButton)).x = 12.0;
+            (*(press as *mut RawTestEventButton)).button = 1;
+            on_tab_button_press(btn1, press, sid1 as *mut c_void);
+            (*(motion as *mut RawTestEventButton)).x = 15.0;
+            assert_eq!(on_tab_motion(btn1, motion, sid1 as *mut c_void), 0);
+            assert_eq!(current_session_ids(), vec![sid1, sid2]);
+            (*(motion as *mut RawTestEventButton)).x = 300.0;
+            assert_eq!(on_tab_motion(btn1, motion, sid1 as *mut c_void), 1);
+            assert_eq!(current_session_ids(), vec![sid2, sid1]);
+            thread::sleep(Duration::from_millis(25));
+            pump_gtk_events();
+            let post_ox = platform::translate_widget_x_to_ancestor(btn1, tabs_box, 0.0).unwrap();
+            assert!(post_ox > 20.0, "expected shifted tab allocation, got {post_ox}");
+            (*(motion as *mut RawTestEventButton)).x = 300.0 - post_ox;
+            assert_eq!(on_tab_motion(btn1, motion, sid1 as *mut c_void), 1);
+            assert_eq!(current_session_ids(), vec![sid2, sid1]);
+            on_tab_button_release(btn1, press, sid1 as *mut c_void);
+            gdk_event_free(press);
+            gdk_event_free(motion);
+        }
+        close_session(sid1);
+        close_session(sid2);
+        APP.with(|cell| *cell.borrow_mut() = None);
+        unsafe { gtk_widget_destroy(win) };
+        pump_gtk_events();
+    }
+
     #[test]
     fn app_routes_local_and_remote_drops_and_ignores_closed_vte_on_idle() {
         with_headless_gtk(|| {
             verify_app_drop_routing_and_mid_upload_close();
             verify_unified_rename_persists_and_resets_in_tabs_v1();
+            verify_wayland_safe_mouse_tab_drag_without_root_coords();
         });
     }
 
@@ -3679,6 +3756,9 @@ mod tests {
             println!("{name:<18} | SLOC {sloc:>4} | CC {cc:>2} | MI {score:>6.2} | Grade {grade}");
             if name == "main.rs" {
                 assert!(*score >= 54.87, "main.rs MI {score:.2} < 54.87");
+            }
+            if name == "platform.rs" {
+                assert!(*score >= 60.0, "platform.rs MI {score:.2} < 60.0");
             }
             let is_new_v04 = matches!(
                 name.as_str(),

@@ -82,23 +82,12 @@ impl TabStrip {
     }
 
     pub fn reveal_widget(&self, tab_widget: *mut GtkWidget) {
-        if tab_widget.is_null() || self.tabs.is_null() {
+        let Some(x) = crate::platform::translate_widget_x_to_ancestor(tab_widget, self.tabs, 0.0) else {
             return;
-        }
-        let mut x = 0;
+        };
         unsafe {
-            if gtk_widget_translate_coordinates(
-                tab_widget,
-                self.tabs,
-                0,
-                0,
-                &mut x,
-                ptr::null_mut(),
-            ) != 0
-            {
-                let width = gtk_widget_get_allocated_width(tab_widget);
-                gtk_adjustment_clamp_page(self.adjustment, f64::from(x), f64::from(x + width));
-            }
+            let width = f64::from(gtk_widget_get_allocated_width(tab_widget));
+            gtk_adjustment_clamp_page(self.adjustment, x, x + width);
         }
     }
 }
@@ -154,7 +143,8 @@ impl TabView {
             let select = gtk_button_new();
             add_class(select, "tab-select");
             let content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 7);
-            let icon = gtk_image_new_from_icon_name(category.icon_name().as_ptr(), GTK_ICON_SIZE_MENU);
+            let icon_name = crate::platform::resolve_category_icon(category);
+            let icon = gtk_image_new_from_icon_name(icon_name.as_ptr(), GTK_ICON_SIZE_MENU);
             add_class(icon, "tab-icon");
             gtk_widget_set_valign(icon, GTK_ALIGN_CENTER);
             gtk_box_pack_start(content, icon, 0, 0, 0);
@@ -190,10 +180,10 @@ impl TabView {
         self.widget
     }
 
-    fn take_icon_change(&self, category: SessionCategory) -> Option<&'static CStr> {
+    fn take_icon_change(&self, category: SessionCategory) -> Option<SessionCategory> {
         (self.icon_cat.get() != category).then(|| {
             self.icon_cat.set(category);
-            category.icon_name()
+            category
         })
     }
 
@@ -264,7 +254,7 @@ pub struct TabUpdate {
     icon: *mut GtkWidget,
     label: *mut GtkWidget,
     status: *mut GtkWidget,
-    new_icon: Option<&'static CStr>,
+    new_icon: Option<SessionCategory>,
     new_tip: Option<String>,
     title: String,
     agent: String,
@@ -276,8 +266,8 @@ pub struct TabUpdate {
 
 impl TabUpdate {
     pub fn apply(self) {
-        if let Some(icon_name) = self.new_icon {
-            set_image_icon(self.icon, icon_name);
+        if let Some(cat) = self.new_icon.filter(|_| !self.icon.is_null()) {
+            set_image_icon(self.icon, crate::platform::resolve_category_icon(cat));
         }
         set_agent_accent(self.icon, &self.agent);
         set_class(self.widget, "tab-active", self.active);

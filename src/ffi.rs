@@ -19,8 +19,10 @@ pub type GtkCssProvider = c_void;
 pub type GtkSettings = c_void;
 pub type GtkHeaderBar = c_void;
 pub type GtkClipboard = c_void;
+pub type GtkIconTheme = c_void;
 pub type GtkSelectionData = c_void;
 pub type GtkTargetList = c_void;
+pub type GdkDisplay = c_void;
 pub type GdkDragContext = c_void;
 pub type GdkScreen = c_void;
 pub type GdkEvent = c_void;
@@ -102,6 +104,11 @@ extern "C" {
     // GLib / GObject
     pub fn g_free(mem: *mut c_void);
     pub fn g_strfreev(str_array: *mut *mut c_char);
+    pub fn g_set_prgname(prgname: *const c_char);
+    pub fn g_get_prgname() -> *const c_char;
+    pub fn g_set_application_name(application_name: *const c_char);
+    pub fn g_get_application_name() -> *const c_char;
+    pub fn g_type_name_from_instance(instance: *mut c_void) -> *const c_char;
     pub fn g_filename_from_uri(
         uri: *const c_char,
         hostname: *mut *mut c_char,
@@ -124,12 +131,14 @@ extern "C" {
     ) -> usize;
 
     // GDK3
+    pub fn gdk_display_get_default() -> *mut GdkDisplay;
     pub fn gdk_screen_get_default() -> *mut GdkScreen;
     pub fn gdk_atom_intern_static_string(atom_name: *const c_char) -> GdkAtom;
+    pub fn gdk_event_new(event_type: c_int) -> *mut GdkEvent;
+    pub fn gdk_event_free(event: *mut GdkEvent);
     pub fn gdk_event_get_event_type(event: *const GdkEvent) -> c_int;
     pub fn gdk_event_get_button(event: *const GdkEvent, button: *mut c_uint) -> c_int;
     pub fn gdk_event_get_coords(event: *const GdkEvent, x_win: *mut f64, y_win: *mut f64) -> c_int;
-    pub fn gdk_event_get_root_coords(event: *const GdkEvent, x_root: *mut f64, y_root: *mut f64) -> c_int;
     pub fn gdk_event_get_keyval(event: *const GdkEvent, keyval: *mut c_uint) -> c_int;
     pub fn gdk_event_get_keycode(event: *const GdkEvent, keycode: *mut u16) -> c_int;
     pub fn gdk_event_get_state(event: *const GdkEvent, state: *mut c_uint) -> c_int;
@@ -141,11 +150,15 @@ extern "C" {
     // GTK3
     pub fn gtk_init(argc: *mut c_int, argv: *mut *mut *mut c_char);
     pub fn gtk_settings_get_default() -> *mut GtkSettings;
+    pub fn gtk_icon_theme_get_default() -> *mut GtkIconTheme;
+    pub fn gtk_icon_theme_has_icon(icon_theme: *mut GtkIconTheme, icon_name: *const c_char) -> c_int;
     pub fn gtk_widget_set_name(widget: *mut GtkWidget, name: *const c_char);
     pub fn gtk_main();
     pub fn gtk_main_quit();
 
     pub fn gtk_window_new(wtype: c_int) -> *mut GtkWidget;
+    pub fn gtk_window_set_default_icon_name(name: *const c_char);
+    pub fn gtk_window_get_default_icon_name() -> *const c_char;
     pub fn gtk_window_set_title(window: *mut GtkWindow, title: *const c_char);
     pub fn gtk_window_set_titlebar(window: *mut GtkWindow, titlebar: *mut GtkWidget);
     pub fn gtk_window_set_default_size(window: *mut GtkWindow, width: c_int, height: c_int);
@@ -187,6 +200,7 @@ extern "C" {
     pub fn gtk_widget_get_style_context(widget: *mut GtkWidget) -> *mut GtkStyleContext;
     pub fn gtk_style_context_add_class(context: *mut GtkStyleContext, class_name: *const c_char);
     pub fn gtk_style_context_remove_class(context: *mut GtkStyleContext, class_name: *const c_char);
+    pub fn gtk_style_context_has_class(context: *mut GtkStyleContext, class_name: *const c_char) -> c_int;
 
     pub fn gtk_box_new(orientation: c_int, spacing: c_int) -> *mut GtkWidget;
     pub fn gtk_box_pack_start(box_: *mut GtkBox, child: *mut GtkWidget, expand: c_int, fill: c_int, padding: c_uint);
@@ -455,6 +469,12 @@ pub fn set_class(widget: *mut GtkWidget, class: &str, enabled: bool) {
     } else {
         remove_class(widget, class);
     }
+}
+
+pub fn has_class(widget: *mut GtkWidget, cls: &str) -> bool {
+    let (false, Ok(c)) = (widget.is_null(), CString::new(cls)) else { return false };
+    let ctx = unsafe { gtk_widget_get_style_context(widget) };
+    !ctx.is_null() && unsafe { gtk_style_context_has_class(ctx, c.as_ptr()) != 0 }
 }
 
 pub fn set_label_text(widget: *mut GtkWidget, text: &str) {
