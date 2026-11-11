@@ -337,6 +337,19 @@ extern "C" {
     pub fn gtk_drag_dest_get_target_list(widget: *mut GtkWidget) -> *mut GtkTargetList;
     pub fn gtk_target_list_find(list: *mut GtkTargetList, target: GdkAtom, info: *mut c_uint) -> c_int;
     pub fn gtk_selection_data_get_uris(selection_data: *const GtkSelectionData) -> *mut *mut c_char;
+    #[cfg(test)]
+    pub fn gtk_clipboard_set_with_data(
+        clipboard: *mut GtkClipboard,
+        targets: *const GtkTargetEntry,
+        n_targets: u32,
+        get_func: extern "C" fn(*mut GtkClipboard, *mut GtkSelectionData, u32, *mut c_void),
+        clear_func: extern "C" fn(*mut GtkClipboard, *mut c_void),
+        user_data: *mut c_void,
+    ) -> c_int;
+    #[cfg(test)]
+    pub fn gtk_selection_data_set_uris(selection_data: *mut GtkSelectionData, uris: *const *const c_char) -> c_int;
+    #[cfg(test)]
+    pub fn gtk_selection_data_set_text(selection_data: *mut GtkSelectionData, str: *const c_char, len: c_int) -> c_int;
     pub fn gtk_drag_finish(ctx: *mut GdkDragContext, success: c_int, del: c_int, time: c_uint);
     pub fn gdk_pixbuf_new(
         colorspace: c_int,
