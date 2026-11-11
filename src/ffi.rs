@@ -226,6 +226,7 @@ extern "C" {
     pub fn gtk_button_new_with_label(label: *const c_char) -> *mut GtkWidget;
     pub fn gtk_button_get_label(button: *mut GtkButton) -> *const c_char;
     pub fn gtk_button_set_label(button: *mut GtkButton, label: *const c_char);
+    pub fn gtk_button_clicked(button: *mut GtkButton);
     pub fn gtk_toggle_button_new_with_label(label: *const c_char) -> *mut GtkWidget;
     pub fn gtk_toggle_button_get_active(toggle_button: *mut GtkToggleButton) -> c_int;
     pub fn gtk_toggle_button_set_active(toggle_button: *mut GtkToggleButton, is_active: c_int);
@@ -248,6 +249,21 @@ extern "C" {
     pub fn gtk_popover_popup(popover: *mut GtkPopover);
     pub fn gtk_popover_popdown(popover: *mut GtkPopover);
 
+    pub fn gtk_menu_new() -> *mut GtkWidget;
+    pub fn gtk_menu_shell_append(menu_shell: *mut GtkWidget, child: *mut GtkWidget);
+    pub fn gtk_menu_item_new_with_label(label: *const c_char) -> *mut GtkWidget;
+    pub fn gtk_menu_item_get_label(menu_item: *mut GtkWidget) -> *const c_char;
+    pub fn gtk_menu_item_set_submenu(menu_item: *mut GtkWidget, submenu: *mut GtkWidget);
+    pub fn gtk_menu_item_get_submenu(menu_item: *mut GtkWidget) -> *mut GtkWidget;
+    pub fn gtk_menu_item_activate(menu_item: *mut GtkWidget);
+    pub fn gtk_separator_menu_item_new() -> *mut GtkWidget;
+    pub fn gtk_menu_attach_to_widget(
+        menu: *mut GtkWidget,
+        attach_widget: *mut GtkWidget,
+        detacher: *const c_void,
+    );
+    pub fn gtk_menu_popup_at_pointer(menu: *mut GtkWidget, trigger_event: *const GdkEvent);
+
     pub fn gtk_container_add(container: *mut GtkContainer, widget: *mut GtkWidget);
     pub fn gtk_container_remove(container: *mut GtkContainer, widget: *mut GtkWidget);
     pub fn gtk_container_set_focus_hadjustment(container: *mut GtkContainer, adjustment: *mut GtkAdjustment);
@@ -256,6 +272,7 @@ extern "C" {
     pub fn gtk_widget_show_all(widget: *mut GtkWidget);
     pub fn gtk_widget_get_visible(widget: *mut GtkWidget) -> c_int;
     pub fn gtk_widget_set_visible(widget: *mut GtkWidget, visible: c_int);
+    pub fn gtk_widget_get_sensitive(widget: *mut GtkWidget) -> c_int;
     pub fn gtk_widget_set_sensitive(widget: *mut GtkWidget, sensitive: c_int);
     pub fn gtk_widget_set_no_show_all(widget: *mut GtkWidget, no_show_all: c_int);
     pub fn gtk_widget_destroy(widget: *mut GtkWidget);
@@ -387,9 +404,15 @@ extern "C" {
     ) -> *mut c_char;
     pub fn vte_terminal_hyperlink_check_event(terminal: *mut VteTerminal, event: *const GdkEvent) -> *mut c_char;
     pub fn vte_terminal_get_window_title(terminal: *mut VteTerminal) -> *const c_char;
+    pub fn vte_terminal_get_text_selected(terminal: *mut VteTerminal, format: c_int) -> *mut c_char;
     pub fn vte_terminal_get_text_format(terminal: *mut VteTerminal, format: c_int) -> *mut c_char;
     pub fn vte_terminal_copy_clipboard_format(terminal: *mut VteTerminal, format: c_int);
     pub fn vte_terminal_paste_clipboard(terminal: *mut VteTerminal);
+    pub fn vte_terminal_reset(
+        terminal: *mut VteTerminal,
+        clear_tabstops: c_int,
+        clear_history: c_int,
+    );
     pub fn vte_terminal_get_text_range_format(
         terminal: *mut VteTerminal,
         format: c_int,

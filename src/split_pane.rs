@@ -385,9 +385,20 @@ impl TabPanes {
         primary_vte
     }
 
+    pub fn pid_for_vte(
+        &self,
+        vte: *mut GtkWidget,
+        primary_vte: *mut GtkWidget,
+        primary_pid: i32,
+    ) -> i32 {
+        if vte == primary_vte {
+            return primary_pid;
+        }
+        self.extra.iter().find(|p| p.vte == vte).map_or(primary_pid, |p| p.child_pid)
+    }
+
     pub fn active_pid(&self, primary_vte: *mut GtkWidget, primary_pid: i32) -> i32 {
-        let target = self.active_vte(primary_vte);
-        self.extra.iter().find(|p| p.vte == target).map_or(primary_pid, |p| p.child_pid)
+        self.pid_for_vte(self.active_vte(primary_vte), primary_vte, primary_pid)
     }
 
     pub fn live_cwd_for_vte(
@@ -475,9 +486,23 @@ impl TabPanes {
         }
     }
 
-    fn target_scroll(&self, primary_scroll: *mut GtkWidget, primary_vte: *mut GtkWidget) -> *mut GtkWidget {
-        let target = self.active_vte(primary_vte);
-        self.extra.iter().find(|p| p.vte == target).map_or(primary_scroll, |p| p.scroll)
+    pub fn prepare_split_vte(
+        &mut self,
+        target_vte: *mut GtkWidget,
+        primary_scroll: *mut GtkWidget,
+        primary_vte: *mut GtkWidget,
+        new_scroll: *mut GtkWidget,
+        new_vte: *mut GtkWidget,
+        new_pid: i32,
+        cwd: String,
+        orient: c_int,
+    ) -> SplitOp {
+        let chosen = if target_vte.is_null() { self.active_vte(primary_vte) } else { target_vte };
+        let target = self.extra.iter().find(|p| p.vte == chosen).map_or(primary_scroll, |p| p.scroll);
+        self.layout.replace_leaf(target, new_scroll, SplitOrientation::from_gtk(orient));
+        self.last_focus = new_vte;
+        self.extra.push(ExtraPane { scroll: new_scroll, vte: new_vte, child_pid: new_pid, cwd });
+        SplitOp { target, added: new_scroll, root: self.root, orient }
     }
 
     pub fn prepare_split(
@@ -490,11 +515,16 @@ impl TabPanes {
         cwd: String,
         orient: c_int,
     ) -> SplitOp {
-        let target = self.target_scroll(primary_scroll, primary_vte);
-        self.layout.replace_leaf(target, new_scroll, SplitOrientation::from_gtk(orient));
-        self.last_focus = new_vte;
-        self.extra.push(ExtraPane { scroll: new_scroll, vte: new_vte, child_pid: new_pid, cwd });
-        SplitOp { target, added: new_scroll, root: self.root, orient }
+        self.prepare_split_vte(
+            ptr::null_mut(),
+            primary_scroll,
+            primary_vte,
+            new_scroll,
+            new_vte,
+            new_pid,
+            cwd,
+            orient,
+        )
     }
 
     #[cfg(test)]
@@ -576,6 +606,24 @@ impl TabPanes {
         cwd: &mut String,
     ) -> Option<*mut GtkWidget> {
         self.prepare_close_active(scroll, vte, pid, cwd).map(CloseOp::apply)
+    }
+
+    pub fn prepare_close_vte(
+        &mut self,
+        target_vte: *mut GtkWidget,
+        scroll: &mut *mut GtkWidget,
+        vte: &mut *mut GtkWidget,
+        pid: &mut i32,
+        cwd: &mut String,
+    ) -> Option<CloseOp> {
+        if self.extra.is_empty() {
+            return None;
+        }
+        if target_vte == *vte {
+            return Some(self.promote_first_extra(scroll, vte, pid, cwd));
+        }
+        let idx = self.extra.iter().position(|p| p.vte == target_vte)?;
+        Some(self.remove_extra_at(idx, *vte, true))
     }
 
     pub fn prepare_close_exited(

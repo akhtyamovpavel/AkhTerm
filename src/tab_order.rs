@@ -430,7 +430,7 @@ mod tests {
         let vte = unsafe { vte_terminal_new() };
         let scroll_wrap = wrap_vte_scroll(vte);
         let panes = TabPanes::new(scroll_wrap, vte);
-        let sidebar_row = sidebar.append_tab(cat, sid, noop_click);
+        let sidebar_row = sidebar.append_tab(cat, sid, noop_click, noop_event);
         let top_tab = strip.append(sid, cat, dummy_handlers());
         let now = Instant::now();
         let (base_title, profile_cwd, title, cwd) =
