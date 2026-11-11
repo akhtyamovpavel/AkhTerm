@@ -66,7 +66,7 @@ If you built from source, copy [config.example.conf](config.example.conf) from t
 | `startup-ssh \| host \| session` | Opens a remote tmux session on the first run. Omit the session field for a plain SSH tab. |
 | `watch \| host` | Enables tmux and GPU polling for a host until changed in the SSH settings menu. |
 | `shell \| /path/to/shell` | Overrides the shell from `$SHELL`. |
-| `briefs \| directory` | Enables the Handoff menu for Markdown files in the directory. |
+| `briefs \| directory` | Adds a directory of Markdown briefs to the Handoff menu and uses it for saved terminal captures. |
 | `mi-root \| directory` | Adds a fallback project directory for the Maintainability Index. |
 
 AkhTerm stores tab layout and SSH monitoring preferences under `$XDG_STATE_HOME/akhterm`, or `~/.local/state/akhterm`. Saved tabs take precedence over startup entries. Restoring a tab starts a fresh shell or SSH client. A remote tmux session retains its running processes.

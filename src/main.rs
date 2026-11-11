@@ -2,6 +2,7 @@ mod approval;
 mod config;
 mod ffi;
 mod git_wt;
+mod handoff;
 mod mi;
 mod mi_watch;
 mod paste_route;
@@ -17,7 +18,6 @@ mod ui_text;
 
 use std::cell::{Cell, RefCell};
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::{Arc, Mutex};
@@ -31,6 +31,10 @@ use approval::{
 use config::WorkspaceConfig;
 use ffi::*;
 use git_wt::{agent_slug_from_cmd, create_agent_worktree};
+use handoff::{
+    current_unix_secs, list_handoff_files, rebuild_handoff_widgets, resolve_handoff_delivery,
+    save_vte_capture, CaptureMeta, HandoffCallbacks, HandoffMenu, HandoffTarget,
+};
 use mi::ProjectMiReport;
 use mi_watch::{
     build_mi_refactor_prompt, format_mi_button_label, format_mi_popover_markup, lookup_mi,
@@ -74,8 +78,7 @@ struct AppState {
     box_tmux_pop_box: *mut GtkWidget,
     settings_pop: *mut GtkWidget,
     ssh_count_label: *mut GtkWidget,
-    handoff_pop: *mut GtkWidget,
-    handoff_files: Vec<PathBuf>,
+    handoff: HandoffMenu,
     footer_status: *mut GtkWidget,
     ssh_hosts: Vec<SshHostEntry>,
     ssh_toggle_btns: Vec<*mut GtkWidget>,
@@ -1101,17 +1104,127 @@ extern "C" fn on_spawn_preset(_btn: *mut GtkWidget, index: *mut c_void) {
     }
 }
 
-extern "C" fn on_handoff_inject(_btn: *mut GtkWidget, idx_ptr: *mut c_void) {
-    let path = APP.with(|cell| {
+fn session_ssh_host(s: &TermSession) -> String {
+    s.remote().map_or(&s.proc_info.ssh_host, |r| &r.host).clone()
+}
+
+fn capture_active_to_file() -> Option<PathBuf> {
+    let ctx = APP.with(|cell| {
         let state = cell.borrow();
         let app = state.as_ref()?;
-        let chosen = app.handoff_files.get(idx_ptr as usize)?;
-        unsafe { gtk_popover_popdown(app.handoff_pop) };
-        Some(chosen.clone())
+        let s = app.sessions.iter().find(|s| s.id == app.active_id)?;
+        let cwd = if !s.proc_info.cwd.is_empty() { expand_home(&s.proc_info.cwd) } else { s.cwd.clone() };
+        Some((s.vte, s.title.clone(), cwd, session_ssh_host(s), app.config.briefs_dir.clone()))
+    })?;
+    let (vte, title, cwd, ssh_host, briefs_dir) = ctx;
+    let meta = CaptureMeta {
+        title: &title,
+        cwd: &cwd,
+        ssh_host: &ssh_host,
+        timestamp_secs: current_unix_secs(),
+    };
+    match save_vte_capture(vte, &meta, briefs_dir.as_deref()) {
+        Ok(path) => Some(path),
+        Err(err) => {
+            set_footer_message(&format!("⚠ Ошибка сохранения снимка: {err}"));
+            None
+        }
+    }
+}
+
+fn handoff_file_to_session(target_sid: usize, local_path: &Path) {
+    let target_host = APP.with(|cell| {
+        let state = cell.borrow();
+        let app = state.as_ref()?;
+        app.sessions.iter().find(|s| s.id == target_sid).map(session_ssh_host)
     });
-    if let Some(path) = path {
-        let message = format!("Прочитай файл {} и действуй по нему.", path.display());
-        send_to_active(&message);
+    let Some(host) = target_host else { return };
+    match resolve_handoff_delivery(local_path, &host) {
+        Ok((prompt, status)) => {
+            select_session(target_sid);
+            send_to_session(target_sid, &prompt);
+            set_footer_message(&status);
+        }
+        Err(err) => set_footer_message(&err),
+    }
+}
+
+extern "C" fn on_handoff_open(_btn: *mut GtkWidget, _data: *mut c_void) {
+    let prep = APP.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let app = state.as_mut()?;
+        let briefs_dir = app.config.briefs_dir.clone();
+        let has_regular = app.sessions.iter().any(|s| s.category != SessionCategory::Daemon);
+        let targets: Vec<HandoffTarget> = app
+            .sessions
+            .iter()
+            .filter(|s| !has_regular || s.category != SessionCategory::Daemon)
+            .map(|s| HandoffTarget {
+                sid: s.id,
+                title: s.title.clone(),
+                ssh_host: session_ssh_host(s),
+                is_active: s.id == app.active_id,
+            })
+            .collect();
+        Some((app.handoff.take_widgets(), briefs_dir, targets))
+    });
+    let Some((widgets, briefs_dir, targets)) = prep else { return };
+    let files = list_handoff_files(briefs_dir.as_deref());
+    let target_ids: Vec<usize> = targets.iter().map(|t| t.sid).collect();
+    let cbs = HandoffCallbacks {
+        on_capture: on_handoff_capture,
+        on_forward: on_handoff_forward,
+        on_inject: on_handoff_inject,
+    };
+    let new_inner = rebuild_handoff_widgets(widgets, &files, &targets, cbs);
+    APP.with(|cell| {
+        if let Some(app) = cell.borrow_mut().as_mut() {
+            app.handoff.save_snapshot(new_inner, files, target_ids);
+        }
+    });
+    if !widgets.popover.is_null() {
+        unsafe { gtk_popover_popup(widgets.popover) };
+    }
+}
+
+extern "C" fn on_handoff_capture(_btn: *mut GtkWidget, _data: *mut c_void) {
+    let popover = APP.with(|cell| cell.borrow().as_ref().map(|app| app.handoff.popover()));
+    if let Some(pop) = popover.filter(|p| !p.is_null()) {
+        unsafe { gtk_popover_popdown(pop) };
+    }
+    if let Some(path) = capture_active_to_file() {
+        let shown = shorten_home(&path.display().to_string());
+        set_footer_message(&format!("📋 Вывод сохранён в {shown}"));
+    }
+}
+
+extern "C" fn on_handoff_forward(_btn: *mut GtkWidget, idx_ptr: *mut c_void) {
+    let action = APP.with(|cell| {
+        let state = cell.borrow();
+        let app = state.as_ref()?;
+        Some((app.handoff.popover(), app.handoff.target_at(idx_ptr as usize)))
+    });
+    let Some((pop, target_sid)) = action else { return };
+    if !pop.is_null() {
+        unsafe { gtk_popover_popdown(pop) };
+    }
+    if let (Some(sid), Some(saved_path)) = (target_sid, capture_active_to_file()) {
+        handoff_file_to_session(sid, &saved_path);
+    }
+}
+
+extern "C" fn on_handoff_inject(_btn: *mut GtkWidget, idx_ptr: *mut c_void) {
+    let action = APP.with(|cell| {
+        let state = cell.borrow();
+        let app = state.as_ref()?;
+        Some((app.handoff.popover(), app.active_id, app.handoff.file_at(idx_ptr as usize)))
+    });
+    let Some((pop, sid, chosen)) = action else { return };
+    if !pop.is_null() {
+        unsafe { gtk_popover_popdown(pop) };
+    }
+    if let Some(path) = chosen {
+        handoff_file_to_session(sid, &path);
     }
 }
 
@@ -1415,18 +1528,6 @@ fn main() -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
-fn list_handoff_files(directory: Option<&Path>) -> Vec<PathBuf> {
-    let Some(entries) = directory.and_then(|path| fs::read_dir(path).ok()) else {
-        return Vec::new();
-    };
-    let mut files: Vec<_> = entries.flatten().map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "md"))
-        .collect();
-    files.sort_by(|left, right| right.cmp(left));
-    files.truncate(7);
-    files
-}
-
 unsafe fn add_toolbar_action(
     toolbar: *mut GtkWidget,
     label: &CStr,
@@ -1443,7 +1544,6 @@ unsafe fn add_toolbar_action(
 fn run_app() {
     let _ui_font = ui_font::load().inspect_err(|error| eprintln!("AkhTerm: {error}"));
     let config = WorkspaceConfig::load();
-    let handoff_files = list_handoff_files(config.briefs_dir.as_deref());
     let mi_dirs = config.mi_directories();
     unsafe {
         gtk_init(ptr::null_mut(), ptr::null_mut());
@@ -1523,9 +1623,7 @@ fn run_app() {
         gtk_box_pack_end(topbar, settings_btn, 0, 0, 0);
 
         let handoff_btn = gtk_button_new_with_label(text::HANDOFF.as_ptr());
-        if handoff_files.is_empty() {
-            gtk_widget_set_no_show_all(handoff_btn, 1);
-        }
+        gtk_widget_set_tooltip_text(handoff_btn, text::HANDOFF_TIP.as_ptr());
         gtk_box_pack_end(topbar, handoff_btn, 0, 0, 0);
 
         let agents_btn = gtk_button_new_with_label(text::AGENTS.as_ptr());
@@ -1688,20 +1786,8 @@ fn run_app() {
         gtk_widget_show_all(box_pop_vbox);
         connect_click(box_btn, on_popup_popover, box_pop);
 
-        // Popover: Handoff Briefs
-        let handoff_pop = gtk_popover_new(handoff_btn);
-        let handoff_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-        add_class(handoff_vbox, "popover-box");
-        for (idx, path) in handoff_files.iter().enumerate() {
-            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
-                let b = gtk_button_new_with_label(CString::new(name).unwrap().as_ptr());
-                connect_click(b, on_handoff_inject, idx as *mut c_void);
-                gtk_box_pack_start(handoff_vbox, b, 0, 1, 0);
-            }
-        }
-        gtk_container_add(handoff_pop, handoff_vbox);
-        gtk_widget_show_all(handoff_vbox);
-        connect_click(handoff_btn, on_popup_popover, handoff_pop);
+        // Popover: Handoff Briefs & Terminal Capture
+        let handoff = HandoffMenu::new(handoff_btn, on_handoff_open);
 
         // Workspace: Left Sidebar + Right Terminal Stack
         let workspace_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
@@ -1755,8 +1841,7 @@ fn run_app() {
                 box_tmux_pop_box,
                 settings_pop,
                 ssh_count_label,
-                handoff_pop,
-                handoff_files,
+                handoff,
                 footer_status,
                 ssh_hosts,
                 ssh_toggle_btns,
