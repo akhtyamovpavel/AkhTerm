@@ -546,9 +546,9 @@ fn visit_codex_entry(path: &Path, depth: usize, out: &mut Vec<(u64, PathBuf)>) {
     }
 }
 
-fn read_codex_header_cwd(path: &Path) -> Option<String> {
+fn read_codex_header_meta(path: &Path) -> Option<(String, bool)> {
     let file = File::open(path).ok()?;
-    let mut reader = BufReader::new(file.take(16_384));
+    let mut reader = BufReader::new(file.take(262_144));
     let mut line = String::new();
     for _ in 0..5 {
         line.clear();
@@ -556,7 +556,7 @@ fn read_codex_header_cwd(path: &Path) -> Option<String> {
             break;
         }
         if let Some(dir) = extract_header_cwd(&line) {
-            return Some(dir);
+            return Some((dir, is_codex_subagent_header(&line)));
         }
     }
     None
@@ -564,8 +564,24 @@ fn read_codex_header_cwd(path: &Path) -> Option<String> {
 
 fn extract_header_cwd(line: &str) -> Option<String> {
     let raw = json_str(line, "cwd")
-        .or_else(|| json_obj(line, "payload").and_then(|p| json_str(p, "cwd")))?;
+        .or_else(|| json_obj_prefix(line, "payload").and_then(|p| json_str(p, "cwd")))?;
     (!raw.is_empty()).then(|| trim_trailing_slash(&raw).to_owned())
+}
+
+fn is_codex_subagent_header(line: &str) -> bool {
+    let payload = json_obj_prefix(line, "payload").unwrap_or(line);
+    json_obj(payload, "source")
+        .and_then(|src| json_direct_value(src, "subagent"))
+        .is_some()
+}
+
+fn file_has_codex_tokens(path: &Path) -> bool {
+    let Ok(mut file) = File::open(path) else { return false };
+    let len = file.metadata().map_or(0, |m| m.len());
+    let _ = file.seek(SeekFrom::Start(len.saturating_sub(65_536)));
+    let mut buf = Vec::with_capacity(len.min(65_536) as usize);
+    file.read_to_end(&mut buf).is_ok()
+        && buf.windows(b"\"token_count\"".len()).any(|w| w == b"\"token_count\"")
 }
 
 fn discover_codex_transcript(home: &Path, cwd: &str) -> Option<PathBuf> {
@@ -576,23 +592,32 @@ fn discover_codex_transcript(home: &Path, cwd: &str) -> Option<PathBuf> {
     let mut files = Vec::new();
     collect_jsonl_recursive(&root, 0, &mut files);
     files.sort_by(|a, b| b.0.cmp(&a.0));
-    files.truncate(24);
+    files.truncate(48);
     match_codex_candidates(&files, cwd)
 }
 
 fn match_codex_candidates(files: &[(u64, PathBuf)], cwd: &str) -> Option<PathBuf> {
     let cwd_path = Path::new(cwd);
-    let mut sub_match = None;
+    let (mut exact_any, mut sub_tok, mut sub_any) = (None, None, None);
     for (_, path) in files {
-        let Some(hdr_cwd) = read_codex_header_cwd(path) else { continue };
-        if hdr_cwd == cwd {
-            return Some(path.clone());
+        let Some((hdr_cwd, is_sub)) = read_codex_header_meta(path) else { continue };
+        if is_sub {
+            continue;
         }
-        if sub_match.is_none() && cwd_path.starts_with(Path::new(&hdr_cwd)) {
-            sub_match = Some(path.clone());
+        if hdr_cwd == cwd {
+            if file_has_codex_tokens(path) {
+                return Some(path.clone());
+            }
+            exact_any.get_or_insert_with(|| path.clone());
+        } else if sub_tok.is_none() && cwd_path.starts_with(Path::new(&hdr_cwd)) {
+            if file_has_codex_tokens(path) {
+                sub_tok = Some(path.clone());
+            } else {
+                sub_any.get_or_insert_with(|| path.clone());
+            }
         }
     }
-    sub_match
+    exact_any.or(sub_tok).or(sub_any)
 }
 
 fn skip_ws(bytes: &[u8], mut idx: usize) -> usize {
@@ -756,6 +781,44 @@ pub(crate) fn json_u64(obj: &str, key: &str) -> Option<u64> {
 
 pub(crate) fn json_obj<'a>(obj: &'a str, key: &str) -> Option<&'a str> {
     json_direct_value(obj, key).filter(|v| v.starts_with('{'))
+}
+
+pub(crate) fn json_obj_prefix<'a>(obj: &'a str, target_key: &str) -> Option<&'a str> {
+    if let Some(full) = json_obj(obj, target_key) {
+        return Some(full);
+    }
+    let trimmed = obj.trim();
+    (trimmed.as_bytes().first() == Some(&b'{'))
+        .then(|| scan_obj_prefix(trimmed, target_key))
+        .flatten()
+}
+
+fn scan_obj_prefix<'a>(trimmed: &'a str, target_key: &str) -> Option<&'a str> {
+    let bytes = trimmed.as_bytes();
+    let mut idx = 1;
+    while idx < bytes.len() {
+        idx = skip_ws(bytes, idx);
+        match bytes.get(idx) {
+            None | Some(b'}') => return None,
+            Some(b',') => idx += 1,
+            _ => {
+                let (key, val_start) = parse_prefix_key(trimmed, idx)?;
+                if key == target_key {
+                    return (bytes.get(val_start) == Some(&b'{')).then_some(&trimmed[val_start..]);
+                }
+                idx = skip_json_value(bytes, val_start)?;
+            }
+        }
+    }
+    None
+}
+
+fn parse_prefix_key(trimmed: &str, idx: usize) -> Option<(&str, usize)> {
+    let bytes = trimmed.as_bytes();
+    let key_end = skip_json_string(bytes, idx)?;
+    let colon = skip_ws(bytes, key_end);
+    (bytes.get(colon) == Some(&b':'))
+        .then(|| (&trimmed[idx + 1..key_end - 1], skip_ws(bytes, colon + 1)))
 }
 
 pub fn apply_jsonl_line(
@@ -2127,6 +2190,40 @@ mod tests {
         let b2 = format!("{b1}{{\"type\":\"PLANNER_RESPONSE\",\"input_tokens\":9000,\"cache_read_tokens\":130000,\"output_tokens\":800}}\n");
         let (_, next) = run_poll_job_with_remote(make_remote_agy_job(kept), Some(make_remote_agy_tailer(&b2)), Path::new("/tmp"), Instant::now());
         assert_eq!((next.vte_panel_override, next.snapshot().context_tokens), (None, 139_800));
+    }
+
+    fn write_timed_codex_rollout(path: &Path, body: &str, plus_secs: u64) {
+        fs::write(path, body).unwrap();
+        let stamp = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_762_100_000 + plus_secs);
+        fs::OpenOptions::new().write(true).open(path).unwrap().set_modified(stamp).unwrap();
+    }
+
+    #[test]
+    fn discovers_local_codex_large_header_ignoring_subagents_and_empty_rollouts() {
+        let base = temp_dir("codex_large_hdr");
+        let home = base.join("home");
+        let repo = home.join("Development/Akhcheck");
+        let day = home.join(".codex/sessions/2026/11/03");
+        fs::create_dir_all(&repo).unwrap();
+        fs::create_dir_all(&day).unwrap();
+        let pad = "z".repeat(64_000);
+        let main_hdr = format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":\"{}\",\"source\":\"cli\",\"base_instructions\":\"subagent {pad}\"}}}}\n",
+            repo.display()
+        );
+        let tok = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":154000,\"cached_input_tokens\":120000,\"output_tokens\":800,\"total_tokens\":154800},\"last_token_usage\":{\"input_tokens\":154000,\"cached_input_tokens\":120000,\"output_tokens\":800,\"total_tokens\":154800},\"model_context_window\":258400}}}\n";
+        let main_path = day.join("rollout-main.jsonl");
+        write_timed_codex_rollout(&main_path, &format!("{main_hdr}{tok}"), 10);
+        let sub_body = format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":\"{}\",\"source\":{{\"subagent\":{{\"other\":\"guardian\"}}}}}}}}\n{tok}",
+            repo.display()
+        );
+        write_timed_codex_rollout(&day.join("rollout-sub.jsonl"), &sub_body, 50);
+        write_timed_codex_rollout(&day.join("rollout-empty.jsonl"), &main_hdr, 80);
+
+        let (found, kind) = discover_transcript(&home, &repo.to_string_lossy(), 0, "Codex").unwrap();
+        assert_eq!((found, kind), (main_path, TelemetrySource::Codex));
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
