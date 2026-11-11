@@ -60,6 +60,7 @@ pub const PALETTE_BADGE_AGENT: &CStr = c"Агент";
 pub const PALETTE_BADGE_HANDOFF: &CStr = c"Handoff";
 pub const PALETTE_BADGE_THEME: &CStr = c"Тема";
 pub const PALETTE_BADGE_SEARCH: &CStr = c"Поиск";
+pub const PALETTE_BADGE_GIT: &CStr = c"Git";
 pub const PALETTE_SEARCH_TITLE: &CStr = c"Поиск по выводу";
 pub const PALETTE_SEARCH_DETAIL: &CStr =
     c"Найти текст или regex в активном терминале · Ctrl+Shift+F";
@@ -77,6 +78,19 @@ pub const SEARCH_CLOSE_TIP: &CStr = c"Закрыть поиск (Esc)";
 pub const SEARCH_FOUND: &CStr = c"Найдено";
 pub const SEARCH_NOT_FOUND: &CStr = c"Нет совпадений";
 pub const SEARCH_REGEX_ERR: &CStr = c"Ошибка regex";
+
+pub const GIT_MENU: &CStr = c"Git ▾";
+pub const GIT_MENU_TIP: &CStr =
+    c"Изменённые файлы Git, быстрый diff и очистка worktree (Ctrl+Shift+G)";
+pub const GIT_LOCAL_ONLY: &CStr = c"⚠ Меню Git доступно только для локальной вкладки";
+pub const GIT_HEADER: &CStr = c"GIT · ЛОКАЛЬНАЯ ВКЛАДКА";
+pub const GIT_NOT_REPO: &CStr = c"Текущий каталог не является Git-репозиторием";
+pub const GIT_FILES_HEADER: &CStr = c"ИЗМЕНЁННЫЕ И НОВЫЕ ФАЙЛЫ (КЛИК — DIFF / ОТКРЫТЬ)";
+pub const GIT_CLEAN: &CStr = c"Рабочее дерево чистое — незакоммиченных изменений нет";
+pub const GIT_LOADING: &CStr = c"Обновление статуса Git в фоне…";
+pub const GIT_REMOVE_WT_BTN: &CStr = c"Удалить чистый worktree";
+pub const GIT_REMOVE_WT_TIP: &CStr =
+    c"Проверить отсутствие изменений и удалить изолированный Git worktree";
 
 pub const AGENT_ACTIONS: [(&CStr, &str); 5] = [
     (c"agy · Antigravity CLI", "agy\n"),

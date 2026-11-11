@@ -9,6 +9,7 @@ use std::rc::Rc;
 
 use crate::config::LocalProfile;
 use crate::ffi::*;
+use crate::git_status::{GitChangedFile, GitRepoStatus, MAX_GIT_FILES};
 use crate::paths::{shorten_home, state_dir};
 use crate::proc_radar::{RemoteTmuxItem, SshHostEntry};
 use crate::session::TermSession;
@@ -30,6 +31,7 @@ pub enum PaletteKind {
     Handoff,
     Theme,
     Search,
+    Git,
 }
 
 impl PaletteKind {
@@ -44,6 +46,7 @@ impl PaletteKind {
             Self::Handoff => text::PALETTE_BADGE_HANDOFF,
             Self::Theme => text::PALETTE_BADGE_THEME,
             Self::Search => text::PALETTE_BADGE_SEARCH,
+            Self::Git => text::PALETTE_BADGE_GIT,
         }
     }
 
@@ -55,6 +58,7 @@ impl PaletteKind {
             Self::SshPlain | Self::SshTmux => "palette-badge-ssh",
             Self::Agent => "palette-badge-agent",
             Self::Handoff => "palette-badge-handoff",
+            Self::Git => "palette-badge-git",
         }
     }
 }
@@ -69,6 +73,9 @@ pub enum PaletteAction {
     InjectHandoff(PathBuf),
     ToggleTheme,
     OpenSearch,
+    OpenGitMenu,
+    GitFile { repo_root: String, path: String, untracked: bool },
+    RemoveCleanWorktree,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,6 +104,8 @@ pub struct PaletteSource<'a> {
     pub ssh_hosts: &'a [SshHostEntry],
     pub briefs_dir: Option<&'a Path>,
     pub extra_handoffs: &'a [PathBuf],
+    pub active_git: Option<&'a GitRepoStatus>,
+    pub active_is_worktree: bool,
 }
 
 fn is_ctrl_shift_p(keyval: c_uint, state: c_uint, keycode: u16) -> bool {
@@ -304,6 +313,49 @@ fn push_search_item(out: &mut Vec<PaletteItem>) {
     out.push(new_item(PaletteKind::Search, title, detail, kw, PaletteAction::OpenSearch));
 }
 
+fn make_git_menu_item(active_git: Option<&GitRepoStatus>) -> PaletteItem {
+    let badge = active_git.map_or_else(String::new, GitRepoStatus::dirty_badge);
+    let detail = if badge.is_empty() {
+        "Ctrl+Shift+G · статус репозитория и diff".to_owned()
+    } else {
+        format!("Ctrl+Shift+G · {badge}")
+    };
+    let kw = "git diff статус изменения файлы репозиторий ctrl+shift+g".to_owned();
+    new_item(PaletteKind::Git, "Git · Изменённые файлы".to_owned(), detail, kw, PaletteAction::OpenGitMenu)
+}
+
+fn make_git_file_item(root: &str, file: &GitChangedFile) -> PaletteItem {
+    let untracked = file.kind.is_untracked();
+    let mode = if untracked { "открыть файл" } else { "git diff в сплите" };
+    let title = format!("[{}] {}", file.kind.tag(), file.path);
+    let detail = format!("{} · {mode}", shorten_home(root));
+    let kw = format!("git diff статус файл изменённый {} {}", file.path, root);
+    let act = PaletteAction::GitFile {
+        repo_root: root.to_owned(),
+        path: file.path.clone(),
+        untracked,
+    };
+    new_item(PaletteKind::Git, title, detail, kw, act)
+}
+
+fn make_git_wt_item() -> PaletteItem {
+    let kw = "git worktree удалить очистить чистый ветка remove clean".to_owned();
+    let detail = "Проверить отсутствие изменений и удалить worktree".to_owned();
+    new_item(PaletteKind::Git, "Удалить чистый worktree".to_owned(), detail, kw, PaletteAction::RemoveCleanWorktree)
+}
+
+fn push_git_items(src: &PaletteSource<'_>, out: &mut Vec<PaletteItem>) {
+    out.push(make_git_menu_item(src.active_git));
+    if src.active_is_worktree {
+        out.push(make_git_wt_item());
+    }
+    if let Some(st) = src.active_git {
+        for file in st.files.iter().take(MAX_GIT_FILES) {
+            out.push(make_git_file_item(&st.root, file));
+        }
+    }
+}
+
 pub fn collect_items(src: &PaletteSource<'_>) -> Vec<PaletteItem> {
     let mut out = Vec::new();
     push_session_items(src.sessions, &mut out);
@@ -313,6 +365,7 @@ pub fn collect_items(src: &PaletteSource<'_>) -> Vec<PaletteItem> {
     push_ssh_items(src.ssh_hosts, &mut out);
     push_agent_items(&mut out);
     push_theme_item(&mut out);
+    push_git_items(src, &mut out);
     let handoffs = discover_handoff_files(src.briefs_dir, src.extra_handoffs);
     push_handoff_items(&handoffs, &mut out);
     out
@@ -809,7 +862,41 @@ mod tests {
             ssh_hosts: hosts,
             briefs_dir: None,
             extra_handoffs: handoffs,
+            active_git: None,
+            active_is_worktree: false,
         }
+    }
+
+    fn sample_git_status() -> GitRepoStatus {
+        GitRepoStatus {
+            root: "/tmp/репо".into(),
+            head: "wt/agy-1".into(),
+            is_linked_worktree: true,
+            changed_count: 1,
+            insertions: 5,
+            deletions: 1,
+            files: vec![GitChangedFile {
+                path: "src/git_status.rs".into(),
+                kind: crate::git_status::GitFileKind::Modified,
+            }],
+        }
+    }
+
+    #[test]
+    fn indexes_git_files_and_clean_worktree_removal_action() {
+        let git_st = sample_git_status();
+        let mut src = sample_source(&[], &[], &[], &[]);
+        src.active_git = Some(&git_st);
+        src.active_is_worktree = true;
+        let items = collect_items(&src);
+        assert!(items.iter().any(|i| i.action == PaletteAction::OpenGitMenu));
+        assert!(items.iter().any(|i| i.action == PaletteAction::RemoveCleanWorktree));
+        let expected_file = PaletteAction::GitFile {
+            repo_root: "/tmp/репо".into(),
+            path: "src/git_status.rs".into(),
+            untracked: false,
+        };
+        assert!(items.iter().any(|i| i.action == expected_file));
     }
 
     #[test]

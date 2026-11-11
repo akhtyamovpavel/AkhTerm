@@ -31,17 +31,26 @@ pub fn detect_git_head(dir: &Path) -> Option<GitHeadInfo> {
     detect_git_head_bounded(dir, Path::new(&home))
 }
 
-fn detect_git_head_bounded(dir: &Path, home: &Path) -> Option<GitHeadInfo> {
+pub fn detect_git_repo(dir: &Path) -> Option<(PathBuf, GitHeadInfo)> {
+    let home = home_dir();
+    detect_git_repo_bounded(dir, Path::new(&home))
+}
+
+pub fn detect_git_repo_bounded(dir: &Path, home: &Path) -> Option<(PathBuf, GitHeadInfo)> {
     let stop_dir = home.parent().filter(|p| *p != Path::new("/"));
     for ancestor in dir.ancestors().take(32) {
         if ancestor.parent().is_none() || Some(ancestor) == stop_dir {
             break;
         }
         if let Some(info) = inspect_dot_git(&ancestor.join(".git")) {
-            return Some(info);
+            return Some((ancestor.to_path_buf(), info));
         }
     }
     None
+}
+
+fn detect_git_head_bounded(dir: &Path, home: &Path) -> Option<GitHeadInfo> {
+    detect_git_repo_bounded(dir, home).map(|(_, info)| info)
 }
 
 fn inspect_dot_git(dot_git: &Path) -> Option<GitHeadInfo> {

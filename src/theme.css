@@ -53,6 +53,8 @@
 @define-color badge_ssh_border rgba(147, 197, 253, 0.35);
 @define-color badge_handoff_fg #fdba74;
 @define-color badge_handoff_border rgba(253, 186, 116, 0.35);
+@define-color badge_git_fg #a7f3d0;
+@define-color badge_git_border rgba(167, 243, 208, 0.35);
 @define-color search_err_border #f43f5e;
 
 .tab-icon,

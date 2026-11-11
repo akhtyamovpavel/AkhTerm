@@ -349,6 +349,7 @@ impl SidebarRow {
         index: usize,
         session: &TermSession,
         mi: Option<(f64, &str)>,
+        git_dirty: &str,
         active: bool,
     ) -> RowUpdate {
         let now = Instant::now();
@@ -362,7 +363,7 @@ impl SidebarRow {
             .as_deref()
             .map_or_else(|| status.to_string_lossy(), std::borrow::Cow::Borrowed);
         let tip_status = format_settled_status(&status_text, session.settled_turn_secs());
-        let detail = tab_detail(session);
+        let detail = tab_detail(session, git_dirty);
         let snap = session.telemetry.snapshot();
         let ctx_badge = snap.compact_context_badge();
         let eff_mi = (eff_cat != SessionCategory::Remote).then_some(mi).flatten();
@@ -398,9 +399,10 @@ impl SidebarRow {
         index: usize,
         session: &TermSession,
         mi: Option<(f64, &str)>,
+        git_dirty: &str,
         active: bool,
     ) {
-        self.prepare_update(index, session, mi, active).apply();
+        self.prepare_update(index, session, mi, git_dirty, active).apply();
     }
 
     pub fn destroy(self) {
@@ -545,16 +547,37 @@ fn format_metric_tooltip(metric: &str, project_root: Option<&str>) -> String {
     }
 }
 
-fn format_local_detail(directory: &str, has_tmux: bool, git: Option<&GitHeadInfo>) -> String {
+fn format_git_suffix(git: Option<&GitHeadInfo>, git_dirty: &str) -> String {
+    let Some(info) = git else { return String::new() };
+    if git_dirty.is_empty() {
+        format!(" · {}", info.badge())
+    } else {
+        format!(" · {} · {git_dirty}", info.badge())
+    }
+}
+
+fn format_local_detail(
+    directory: &str,
+    has_tmux: bool,
+    git: Option<&GitHeadInfo>,
+    git_dirty: &str,
+) -> String {
     let base = if has_tmux {
         format!("tmux · {}", shorten_home(directory))
     } else {
         shorten_home(directory)
     };
-    match git {
-        Some(info) => format!("{base} · {}", info.badge()),
-        None => base,
-    }
+    format!("{base}{}", format_git_suffix(git, git_dirty))
+}
+
+fn fallback_session_dir(session: &TermSession) -> String {
+    session.active_local_cwd().unwrap_or_else(|| {
+        if session.proc_info.cwd.is_empty() {
+            session.cwd.clone()
+        } else {
+            session.proc_info.cwd.clone()
+        }
+    })
 }
 
 fn format_remote_detail(host: &str, osc_title: &str) -> String {
@@ -565,7 +588,7 @@ fn format_remote_detail(host: &str, osc_title: &str) -> String {
     }
 }
 
-pub fn tab_detail(session: &TermSession) -> String {
+pub fn tab_detail(session: &TermSession, git_dirty: &str) -> String {
     if let Some((name, window, _, directory)) = &session.remote_tmux {
         return format!("tmux:{name}/{window} · {}", shorten_home(directory));
     }
@@ -577,15 +600,9 @@ pub fn tab_detail(session: &TermSession) -> String {
             .unwrap_or(session.proc_info.ssh_host.as_str());
         return format_remote_detail(host, &session.osc_title);
     }
-    let directory = session.active_local_cwd().unwrap_or_else(|| {
-        if session.proc_info.cwd.is_empty() {
-            session.cwd.clone()
-        } else {
-            session.proc_info.cwd.clone()
-        }
-    });
+    let directory = fallback_session_dir(session);
     let git = local_git_head(session);
-    format_local_detail(&directory, !session.proc_info.has_tmux.is_empty(), git.as_ref())
+    format_local_detail(&directory, !session.proc_info.has_tmux.is_empty(), git.as_ref(), git_dirty)
 }
 
 fn search_text(session: &TermSession) -> String {
@@ -745,7 +762,7 @@ mod tests {
 
     fn sync_all_views(sidebar: &Sidebar, sessions: &[TermSession]) {
         for (idx, s) in sessions.iter().enumerate() {
-            s.sidebar_row.update(idx, s, Some((61.4, "B")), idx == 1);
+            s.sidebar_row.update(idx, s, Some((61.4, "B")), "+3 -1", idx == 1);
             s.top_tab.update(s, idx == 1);
         }
         sidebar.filter("", sessions, std::iter::empty());
@@ -756,10 +773,19 @@ mod tests {
     fn formats_local_detail_with_branch_and_worktree_marker() {
         let main = GitHeadInfo { head: "main".to_owned(), is_linked_worktree: false };
         let wt = GitHeadInfo { head: "wt/claude-1".to_owned(), is_linked_worktree: true };
-        assert_eq!(format_local_detail("~/proj", false, Some(&main)), "~/proj · ⎇ main");
-        assert_eq!(format_local_detail("~/proj-wt", false, Some(&wt)), "~/proj-wt · ⎇ wt/claude-1 [wt]");
-        assert_eq!(format_local_detail("~/proj", true, Some(&main)), "tmux · ~/proj · ⎇ main");
-        assert_eq!(format_local_detail("~/Downloads", false, None), "~/Downloads");
+        assert_eq!(format_local_detail("~/proj", false, Some(&main), ""), "~/proj · ⎇ main");
+        assert_eq!(format_local_detail("~/proj-wt", false, Some(&wt), ""), "~/proj-wt · ⎇ wt/claude-1 [wt]");
+        assert_eq!(format_local_detail("~/proj", true, Some(&main), ""), "tmux · ~/proj · ⎇ main");
+        assert_eq!(format_local_detail("~/Downloads", false, None, ""), "~/Downloads");
+    }
+
+    #[test]
+    fn formats_local_detail_with_dirty_stat_badge() {
+        let main = GitHeadInfo { head: "main".to_owned(), is_linked_worktree: false };
+        let wt = GitHeadInfo { head: "wt/claude-1".to_owned(), is_linked_worktree: true };
+        assert_eq!(format_local_detail("~/proj", false, Some(&main), "+14 -3"), "~/proj · ⎇ main · +14 -3");
+        assert_eq!(format_local_detail("~/proj-wt", false, Some(&wt), "±2"), "~/proj-wt · ⎇ wt/claude-1 [wt] · ±2");
+        assert_eq!(format_local_detail("~/Downloads", false, None, "+5 -1"), "~/Downloads");
     }
 
     #[test]
@@ -808,7 +834,7 @@ mod tests {
             assert_eq!(box_children(sidebar.groups[1].list), vec![rows[3]]);
             assert_eq!(widget_icon_name(sessions[1].sidebar_row.icon), "utilities-terminal-symbolic");
             assert_eq!(widget_icon_name(sessions[1].top_tab.icon_widget()), "utilities-terminal-symbolic");
-            assert!(widget_label_str(sessions[1].sidebar_row.detail).contains("⎇ main"));
+            assert!(widget_label_str(sessions[1].sidebar_row.detail).contains("⎇ main · +3 -1"));
             assert_eq!(widget_label_str(sessions[1].sidebar_row.metric), "MI 61.4 · B");
 
             sessions[1].apply_proc_snapshot(ProcInfo {
@@ -854,7 +880,7 @@ mod tests {
             assert_eq!(widget_icon_name(sessions[1].sidebar_row.icon), "utilities-terminal-symbolic");
             assert_eq!(widget_icon_name(sessions[1].top_tab.icon_widget()), "utilities-terminal-symbolic");
             assert_eq!(widget_label_str(sessions[1].sidebar_row.title), "Проект · Новая");
-            assert!(widget_label_str(sessions[1].sidebar_row.detail).contains("⎇ main"));
+            assert!(widget_label_str(sessions[1].sidebar_row.detail).contains("⎇ main · +3 -1"));
             assert_eq!(widget_label_str(sessions[1].sidebar_row.metric), "MI 61.4 · B");
             assert!(matches!(sessions[1].snapshot_tab(), Tab::Local { .. }));
 

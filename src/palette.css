@@ -116,6 +116,11 @@ button.palette-row.palette-row-active {
     border-color: @badge_handoff_border;
 }
 
+.palette-badge-git {
+    color: @badge_git_fg;
+    border-color: @badge_git_border;
+}
+
 .palette-empty {
     color: @muted;
     padding: 18px 8px;
