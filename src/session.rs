@@ -278,10 +278,10 @@ fn clean_local_osc_title(clean: &str) -> String {
 
 const URL_PATTERNS: &[&str] = &[
     r"https?://[^\s\x22'<>()`│┃┆┊║]+",
-    r"file://[^\s\x22'<>()`│┃┆┊║]+",
+    r"file://[^\s\x22'<>()\]`│┃┆┊║]+(?:\([^\s\x22'<>()\]`│┃┆┊║]*\)[^\s\x22'<>()\]`│┃┆┊║]*)*",
     r"\b(localhost|127\.0\.0\.1|0\.0\.0\.0):[0-9]{2,5}(/[^\s\x22'<>()`│┃┆┊║]*)?",
-    r"(~|/home/[a-zA-Z0-9_.-]+)/[^\s\x22'<>():`│┃┆┊║]+(?::[0-9]+){0,2}",
-    r"(?<![^\s\x22'<>(\[{=`│┃┆┊║])(?:(?:[^\s\x22'<>():`│┃┆┊║/\[\]{};,]+/)+[^\s\x22'<>():`│┃┆┊║/\[\]{};,]+\.[a-zA-Z][a-zA-Z0-9]{0,9}(?::[0-9]+){0,2}|(?:[^\s\x22'<>():`│┃┆┊║/\[\]{};,]*[^\s\x22'<>():`│┃┆┊║/\[\]{};,.])\.[a-zA-Z][a-zA-Z0-9]{0,9}:[0-9]+(?::[0-9]+)?)",
+    r"(?:~|/home/[a-zA-Z0-9_.-]+)/[^\s\x22'<>()\]`│┃┆┊║]+(?:\([^\s\x22'<>()\]`│┃┆┊║]*\)[^\s\x22'<>()\]`│┃┆┊║]*)*",
+    r"(?<![^\s\x22'<>(\[{=`│┃┆┊║])(?:(?:[^\s\x22'<>():~`│┃┆┊║/\[\]{};,]+/)+[^\s\x22'<>():~`│┃┆┊║/\[\]{};,]+\.[a-zA-Z][a-zA-Z0-9]{0,9}(?::[0-9]+){0,2}|(?:[^\s\x22'<>():~`│┃┆┊║/\[\]{};,]*[^\s\x22'<>():~`│┃┆┊║/\[\]{};,.])\.[a-zA-Z][a-zA-Z0-9]{0,9}:[0-9]+(?::[0-9]+)?)",
 ];
 
 pub enum LinkCwd {
@@ -769,8 +769,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn all_vte_url_patterns_compile_with_pcre2_multiline_utf() {
+    fn assert_regex_substitutions(pat: &str, cases: &[(&str, &str)]) {
         extern "C" {
             fn vte_regex_substitute(
                 regex: *mut VteRegex,
@@ -780,32 +779,170 @@ mod tests {
                 error: *mut *mut c_void,
             ) -> *mut c_char;
         }
-        for pat in URL_PATTERNS {
-            let pat_c = CString::new(*pat).unwrap();
-            let vreg = unsafe {
-                vte_regex_new_for_match(pat_c.as_ptr(), -1, PCRE2_MULTILINE_UTF, ptr::null_mut())
-            };
-            assert!(!vreg.is_null(), "failed to compile VTE regex: {pat}");
-            unsafe { vte_regex_unref(vreg) };
-        }
-        let rel_pat = CString::new(*URL_PATTERNS.last().unwrap()).unwrap();
+        let pat_c = CString::new(pat).unwrap();
         let vreg = unsafe {
-            vte_regex_new_for_match(rel_pat.as_ptr(), -1, PCRE2_MULTILINE_UTF, ptr::null_mut())
+            vte_regex_new_for_match(pat_c.as_ptr(), -1, PCRE2_MULTILINE_UTF, ptr::null_mut())
         };
-        for (line, expected) in [
-            ("  --> src/session.rs:241:5", "  --> <src/session.rs:241:5>"),
-            ("at (./app/main.py:42:5)", "at (<./app/main.py:42:5>)"),
-            ("see crates/core/lib.rs now", "see <crates/core/lib.rs> now"),
-            ("ошибка в учёба/модуль.py:18:3!", "ошибка в <учёба/модуль.py:18:3>!"),
-            ("version v0.2.1 on 127.0.0.1", "version v0.2.1 on 127.0.0.1"),
-        ] {
+        assert!(!vreg.is_null(), "failed to compile VTE regex: {pat}");
+        for &(line, expected) in cases {
             let subj = CString::new(line).unwrap();
             let out = unsafe {
                 take_c_string(vte_regex_substitute(vreg, subj.as_ptr(), c"<$0>".as_ptr(), 0, ptr::null_mut()))
             };
-            assert_eq!(out.as_deref(), Some(expected));
+            assert_eq!(out.as_deref(), Some(expected), "pattern={pat} line={line}");
         }
         unsafe { vte_regex_unref(vreg) };
+    }
+
+    #[test]
+    fn all_vte_url_patterns_compile_with_pcre2_multiline_utf() {
+        for pat in URL_PATTERNS {
+            assert_regex_substitutions(pat, &[]);
+        }
+        assert_regex_substitutions(
+            URL_PATTERNS[3],
+            &[
+                (
+                    "отзыв.docx~/Development/ЦБО/отзыв_финал.docx:42",
+                    "отзыв.docx<~/Development/ЦБО/отзыв_финал.docx:42>",
+                ),
+                (
+                    "[конспект](~/Development/Курс_(ЦУ)/неделя_1.md#L10-L20)",
+                    "[конспект](<~/Development/Курс_(ЦУ)/неделя_1.md#L10-L20>)",
+                ),
+                (
+                    "[~/Development/файл.md]хвост",
+                    "[<~/Development/файл.md>]хвост",
+                ),
+                (
+                    "ссылка/home/user/Development/Отзывы/рецензия.pdf'",
+                    "ссылка</home/user/Development/Отзывы/рецензия.pdf>'",
+                ),
+            ],
+        );
+        assert_regex_substitutions(
+            URL_PATTERNS[4],
+            &[
+                ("  --> src/session.rs:241:5", "  --> <src/session.rs:241:5>"),
+                ("at (./app/main.py:42:5)", "at (<./app/main.py:42:5>)"),
+                ("see crates/core/lib.rs now", "see <crates/core/lib.rs> now"),
+                ("ошибка в учёба/модуль.py:18:3!", "ошибка в <учёба/модуль.py:18:3>!"),
+                ("version v0.2.1 on 127.0.0.1", "version v0.2.1 on 127.0.0.1"),
+                (
+                    "ссылка~/Development/ЦБО/файл.md",
+                    "ссылка~/Development/ЦБО/файл.md",
+                ),
+            ],
+        );
+    }
+
+    #[repr(C)]
+    struct TestButtonEvent {
+        type_: c_int,
+        window: *mut c_void,
+        send_event: i8,
+        time: u32,
+        x: f64,
+        y: f64,
+        axes: *mut f64,
+        state: std::ffi::c_uint,
+        button: std::ffi::c_uint,
+        device: *mut c_void,
+        x_root: f64,
+        y_root: f64,
+    }
+
+    #[repr(C)]
+    struct RawGList {
+        data: *mut c_void,
+        next: *const RawGList,
+        prev: *const RawGList,
+    }
+
+    fn find_vte_event_win(vte: *mut GtkWidget, cw: f64, ch: f64) -> *mut c_void {
+        extern "C" {
+            fn gdk_event_new(type_: c_int) -> *mut GdkEvent;
+            fn gdk_event_free(event: *mut GdkEvent);
+            fn gtk_widget_get_window(widget: *mut GtkWidget) -> *mut c_void;
+            fn gdk_window_peek_children(window: *mut c_void) -> *const RawGList;
+            fn g_object_ref(obj: *mut c_void) -> *mut c_void;
+        }
+        unsafe {
+            let gwin = gtk_widget_get_window(vte);
+            let mut node = if gwin.is_null() { ptr::null() } else { gdk_window_peek_children(gwin) };
+            while !node.is_null() {
+                let cand = (*node).data;
+                node = (*node).next;
+                if cand.is_null() {
+                    continue;
+                }
+                let ev = gdk_event_new(GDK_BUTTON_PRESS);
+                (*(ev as *mut TestButtonEvent)).window = g_object_ref(cand);
+                (*(ev as *mut TestButtonEvent)).button = 1;
+                (*(ev as *mut TestButtonEvent)).x = cw * 36.5 + 2.0;
+                (*(ev as *mut TestButtonEvent)).y = ch * 0.5 + 2.0;
+                let matched = check_vte_event_link(vte, ev, None).is_some();
+                gdk_event_free(ev);
+                if matched {
+                    return cand;
+                }
+            }
+            ptr::null_mut()
+        }
+    }
+
+    fn probe_vte_cell(vte: *mut GtkWidget, ev_win: *mut c_void, col: f64, row: f64) -> Option<String> {
+        extern "C" {
+            fn gdk_event_new(type_: c_int) -> *mut GdkEvent;
+            fn gdk_event_free(event: *mut GdkEvent);
+            fn g_object_ref(obj: *mut c_void) -> *mut c_void;
+            fn vte_terminal_get_char_width(vte: *mut GtkWidget) -> std::ffi::c_long;
+            fn vte_terminal_get_char_height(vte: *mut GtkWidget) -> std::ffi::c_long;
+        }
+        unsafe {
+            let cw = vte_terminal_get_char_width(vte).max(8) as f64;
+            let ch = vte_terminal_get_char_height(vte).max(14) as f64;
+            let ev = gdk_event_new(GDK_BUTTON_PRESS);
+            (*(ev as *mut TestButtonEvent)).window = g_object_ref(ev_win);
+            (*(ev as *mut TestButtonEvent)).button = 1;
+            (*(ev as *mut TestButtonEvent)).x = cw * (col + 0.5) + 2.0;
+            (*(ev as *mut TestButtonEvent)).y = ch * (row + 0.5) + 2.0;
+            let out = check_vte_event_link(vte, ev, None);
+            gdk_event_free(ev);
+            out
+        }
+    }
+
+    #[test]
+    fn headless_vte_matches_glued_tilde_cyrillic_tail_cells() {
+        extern "C" {
+            fn vte_terminal_get_char_width(vte: *mut GtkWidget) -> std::ffi::c_long;
+            fn vte_terminal_get_char_height(vte: *mut GtkWidget) -> std::ffi::c_long;
+        }
+        crate::proc_radar::tests::with_headless_gtk(|| unsafe {
+            let win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+            gtk_window_set_default_size(win, 900, 300);
+            let vte = vte_terminal_new();
+            apply_vte_style(vte);
+            register_vte_url_matches(vte);
+            gtk_container_add(win, vte);
+            gtk_widget_show_all(win);
+            crate::proc_radar::tests::pump_gtk_events();
+            let feed = "отзыв.docx~/Development/ЦБО/отзыв_Иванов.docx\r\n[конспект](~/Development/Курс_(ЦУ)/неделя_1.md)\r\n";
+            vte_terminal_feed(vte, feed.as_ptr() as *const c_char, feed.len() as isize);
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            crate::proc_radar::tests::pump_gtk_events();
+
+            let cw = vte_terminal_get_char_width(vte).max(8) as f64;
+            let ch = vte_terminal_get_char_height(vte).max(14) as f64;
+            let ev_win = find_vte_event_win(vte, cw, ch);
+            assert!(!ev_win.is_null(), "expected VTE input child GdkWindow");
+            let home = crate::paths::home_dir();
+            assert_eq!(probe_vte_cell(vte, ev_win, 38.0, 0.0).as_deref(), Some(format!("{home}/Development/ЦБО/отзыв_Иванов.docx").as_str()));
+            assert_eq!(probe_vte_cell(vte, ev_win, 2.0, 0.0), None);
+            assert_eq!(probe_vte_cell(vte, ev_win, 38.0, 1.0).as_deref(), Some(format!("{home}/Development/Курс_(ЦУ)/неделя_1.md").as_str()));
+            gtk_widget_destroy(win);
+        });
     }
 
     extern "C" fn noop_click(_w: *mut GtkWidget, _d: *mut c_void) {}
