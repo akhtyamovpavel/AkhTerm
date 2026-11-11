@@ -1,10 +1,12 @@
 //! Sidebar navigation for open tabs and discoverable tmux sessions.
 
 use std::ffi::{c_void, CStr};
+use std::path::Path;
 use std::ptr;
 
 use crate::ffi::*;
-use crate::paths::shorten_home;
+use crate::git_wt::{detect_git_head, GitHeadInfo};
+use crate::paths::{expand_home, shorten_home};
 use crate::session::{SessionCategory, TermSession, WorkState};
 use crate::theme::set_agent_accent;
 use crate::ui_text as text;
@@ -229,23 +231,14 @@ impl SidebarRow {
     ) {
         set_agent_accent(self.icon, &session.proc_info.agent);
         set_class(self.widget, "sidebar-selected", active);
-        apply_row_status(self.status, session);
+        let status = apply_row_status(self.status, session);
         set_label_text(self.title, &session.title);
         let detail = tab_detail(session);
         set_label_text(self.detail, &detail);
-        let metric = mi.map_or(String::new(), |(score, grade)| {
-            format!("MI {score:.1} · {grade}")
-        });
+        let metric = mi.map_or(String::new(), |(score, grade)| format!("MI {score:.1} · {grade}"));
         set_label_text(self.metric, &metric);
-        let shortcut = if index < 9 {
-            format!("\nAlt+{}", index + 1)
-        } else {
-            String::new()
-        };
-        set_tooltip(
-            self.widget,
-            &format!("{}\n{detail}{shortcut}", session.title),
-        );
+        let tip = format_row_tooltip(&session.title, &status.to_string_lossy(), &detail, &metric, index);
+        set_tooltip(self.widget, &tip);
     }
 
     pub fn destroy(self) {
@@ -253,12 +246,32 @@ impl SidebarRow {
     }
 }
 
-fn apply_row_status(status_label: *mut GtkWidget, session: &TermSession) {
+fn format_row_tooltip(
+    title: &str,
+    status: &str,
+    detail: &str,
+    metric: &str,
+    index: usize,
+) -> String {
+    let head = if status.is_empty() { title.to_owned() } else { format!("{title} · {status}") };
+    let mut out = format!("{head}\n{detail}");
+    if !metric.is_empty() {
+        out.push('\n');
+        out.push_str(metric);
+    }
+    if index < 9 {
+        out.push_str(&format!("\nAlt+{}", index + 1));
+    }
+    out
+}
+
+fn apply_row_status(status_label: *mut GtkWidget, session: &TermSession) -> &'static CStr {
     let (status, style) = status_for(session);
     for class in ["sidebar-approval", "sidebar-ready", "sidebar-working", "sidebar-ended"] {
         set_class(status_label, class, style == class);
     }
     unsafe { gtk_label_set_text(status_label, status.as_ptr()) };
+    status
 }
 
 fn status_for(session: &TermSession) -> (&'static CStr, &'static str) {
@@ -273,6 +286,30 @@ fn status_for(session: &TermSession) -> (&'static CStr, &'static str) {
     }
 }
 
+fn local_git_head(session: &TermSession) -> Option<GitHeadInfo> {
+    if session.remote().is_some() {
+        return None;
+    }
+    let directory = if session.proc_info.cwd.is_empty() {
+        &session.cwd
+    } else {
+        &session.proc_info.cwd
+    };
+    detect_git_head(Path::new(&expand_home(directory)))
+}
+
+fn format_local_detail(directory: &str, has_tmux: bool, git: Option<&GitHeadInfo>) -> String {
+    let base = if has_tmux {
+        format!("tmux · {}", shorten_home(directory))
+    } else {
+        shorten_home(directory)
+    };
+    match git {
+        Some(info) => format!("{base} · {}", info.badge()),
+        None => base,
+    }
+}
+
 fn tab_detail(session: &TermSession) -> String {
     if let Some((name, window, _, directory)) = &session.remote_tmux {
         return format!("tmux:{name}/{window} · {}", shorten_home(directory));
@@ -282,21 +319,22 @@ fn tab_detail(session: &TermSession) -> String {
     } else {
         &session.proc_info.cwd
     };
-    if session.proc_info.has_tmux.is_empty() {
-        shorten_home(directory)
-    } else {
-        format!("tmux · {}", shorten_home(directory))
-    }
+    let git = local_git_head(session);
+    format_local_detail(directory, !session.proc_info.has_tmux.is_empty(), git.as_ref())
 }
 
 fn search_text(session: &TermSession) -> String {
+    let branch = local_git_head(session).map_or_else(String::new, |git| git.badge());
+    let status = status_for(session).0.to_string_lossy();
     format!(
-        "{} {} {} {} {}",
+        "{} {} {} {} {} {} {}",
         session.title,
         session.cwd,
         session.proc_info.cwd,
         session.proc_info.ssh_host,
-        session.proc_info.agent
+        session.proc_info.agent,
+        branch,
+        status
     )
     .to_lowercase()
 }
@@ -320,4 +358,19 @@ unsafe fn pack_hidden(parent: *mut GtkWidget, child: *mut GtkWidget) {
     gtk_widget_set_no_show_all(child, 1);
     gtk_widget_set_visible(child, 0);
     gtk_box_pack_start(parent, child, 0, 1, 0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_local_detail_with_branch_and_worktree_marker() {
+        let main = GitHeadInfo { head: "main".to_owned(), is_linked_worktree: false };
+        let wt = GitHeadInfo { head: "wt/claude-1".to_owned(), is_linked_worktree: true };
+        assert_eq!(format_local_detail("~/proj", false, Some(&main)), "~/proj · ⎇ main");
+        assert_eq!(format_local_detail("~/proj-wt", false, Some(&wt)), "~/proj-wt · ⎇ wt/claude-1 [wt]");
+        assert_eq!(format_local_detail("~/proj", true, Some(&main)), "tmux · ~/proj · ⎇ main");
+        assert_eq!(format_local_detail("~/Downloads", false, None), "~/Downloads");
+    }
 }

@@ -1,6 +1,7 @@
 mod approval;
 mod config;
 mod ffi;
+mod git_wt;
 mod mi;
 mod paste_route;
 mod paths;
@@ -29,11 +30,12 @@ use approval::{
 };
 use config::WorkspaceConfig;
 use ffi::*;
+use git_wt::{agent_slug_from_cmd, create_agent_worktree};
 use mi::{analyze_project_mi, ProjectMiReport};
 use paste_route::{choose_paste_route, PasteRoute};
-use paths::{expand_home, home_dir};
+use paths::{expand_home, home_dir, shorten_home};
 use proc_radar::{
-    inspect_proc_tree, load_ssh_hosts, query_ssh_servers, save_ssh_hosts,
+    foreground_cwd, inspect_proc_tree, load_ssh_hosts, query_ssh_servers, save_ssh_hosts,
     switch_remote_tmux_session, try_paste_clipboard_image, BoxTelemetry, RemoteTmuxItem,
     SshHostEntry,
 };
@@ -794,19 +796,22 @@ fn update_remote_proc_info(s: &mut TermSession, telemetry: &BoxTelemetry) {
     }
 }
 
-fn send_to_active(text: &str) {
-    APP.with(|cell| {
-        if let Some(app) = cell.borrow().as_ref() {
-            if let Some(s) = app.sessions.iter().find(|s| s.id == app.active_id) {
-                if let Ok(c) = CString::new(text) {
-                    unsafe {
-                        vte_terminal_feed_child(s.vte, c.as_ptr(), text.len() as isize);
-                        gtk_widget_grab_focus(s.vte);
-                    }
-                }
-            }
-        }
+fn send_to_session(sid: usize, text: &str) {
+    let vte = APP.with(|cell| {
+        let state = cell.borrow();
+        let app = state.as_ref()?;
+        app.sessions.iter().find(|s| s.id == sid).map(|s| s.vte)
     });
+    if let (Some(vte), Ok(c)) = (vte.filter(|w| !w.is_null()), CString::new(text)) {
+        unsafe {
+            vte_terminal_feed_child(vte, c.as_ptr(), text.len() as isize);
+            gtk_widget_grab_focus(vte);
+        }
+    }
+}
+
+fn send_to_active(text: &str) {
+    send_to_session(active_session_id(), text);
 }
 
 extern "C" fn on_sigint_clicked(_btn: *mut GtkWidget, _data: *mut c_void) {
@@ -931,16 +936,103 @@ extern "C" fn on_popup_popover(_btn: *mut GtkWidget, pop_ptr: *mut c_void) {
     unsafe { gtk_popover_popup(pop_ptr) };
 }
 
+fn dismiss_agents_popover() {
+    let pop = APP.with(|cell| cell.borrow().as_ref().map(|app| app.agents_pop));
+    if let Some(pop) = pop.filter(|p| !p.is_null()) {
+        unsafe { gtk_popover_popdown(pop) };
+    }
+}
+
 extern "C" fn on_agent_cmd(_btn: *mut GtkWidget, code: *mut c_void) {
     let Some((_, command)) = text::AGENT_ACTIONS.get(code as usize) else {
         return;
     };
-    APP.with(|cell| {
-        if let Some(app) = cell.borrow().as_ref() {
-            unsafe { gtk_popover_popdown(app.agents_pop) };
-        }
-    });
+    dismiss_agents_popover();
     send_to_active(command);
+}
+
+fn active_worktree_context() -> Result<(String, String), String> {
+    dismiss_agents_popover();
+    APP.with(|cell| {
+        let state = cell.borrow();
+        let app = state.as_ref().ok_or_else(String::new)?;
+        let err = || text::WORKTREE_LOCAL_ONLY.to_string_lossy().into_owned();
+        let s = app.sessions.iter().find(|s| s.id == app.active_id).ok_or_else(err)?;
+        let Tab::Local { ref profile, .. } = s.tab else { return Err(err()) };
+        let key = if app.config.profile(profile).monitor {
+            app.config.profile("shell").key
+        } else {
+            profile.clone()
+        };
+        let cwd = foreground_cwd(s.child_pid)
+            .or_else(|| (!s.proc_info.cwd.is_empty()).then(|| expand_home(&s.proc_info.cwd)))
+            .unwrap_or_else(|| s.cwd.clone());
+        Ok((key, cwd))
+    })
+}
+
+fn set_footer_message(message: &str) {
+    if message.is_empty() {
+        return;
+    }
+    let footer = APP.with(|cell| cell.borrow().as_ref().map(|app| app.footer_status));
+    if let Some(footer) = footer.filter(|w| !w.is_null()) {
+        set_label_text(footer, message);
+    }
+}
+
+extern "C" fn on_agent_worktree_cmd(_btn: *mut GtkWidget, code: *mut c_void) {
+    let Some((_, command)) = text::AGENT_ACTIONS.get(code as usize) else { return };
+    let (profile, cwd) = match active_worktree_context() {
+        Ok(ctx) => ctx,
+        Err(msg) => return set_footer_message(&msg),
+    };
+    let slug = agent_slug_from_cmd(command);
+    match create_agent_worktree(Path::new(&cwd), &slug) {
+        Ok(wt_path) => {
+            let wt_str = wt_path.to_string_lossy().into_owned();
+            let sid = open_local_tab(profile, &wt_str);
+            send_to_session(sid, command);
+            set_footer_message(&format!("⎇ Worktree {} · запущен {slug}", shorten_home(&wt_str)));
+        }
+        Err(err) => set_footer_message(&format!("⚠ {err}")),
+    }
+}
+
+fn build_agents_popover(agents_btn: *mut GtkWidget) -> *mut GtkWidget {
+    unsafe {
+        let agents_pop = gtk_popover_new(agents_btn);
+        let agents_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+        add_class(agents_box, "popover-box");
+        for (code, (label, _)) in text::AGENT_ACTIONS.iter().enumerate() {
+            let b = gtk_button_new_with_label(label.as_ptr());
+            connect_click(b, on_agent_cmd, code as *mut c_void);
+            gtk_box_pack_start(agents_box, b, 0, 1, 0);
+        }
+        pack_worktree_agent_actions(agents_box);
+        gtk_container_add(agents_pop, agents_box);
+        gtk_widget_show_all(agents_box);
+        connect_click(agents_btn, on_popup_popover, agents_pop);
+        agents_pop
+    }
+}
+
+fn pack_worktree_agent_actions(agents_box: *mut GtkWidget) {
+    unsafe {
+        let wt_hdr = gtk_label_new(text::AGENTS_WORKTREE_HEADER.as_ptr());
+        gtk_label_set_xalign(wt_hdr, 0.0);
+        add_class(wt_hdr, "section-header");
+        gtk_box_pack_start(agents_box, wt_hdr, 0, 0, 0);
+        let wt_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+        for (code, (_, cmd)) in text::AGENT_ACTIONS.iter().enumerate() {
+            let lbl = CString::new(format!("⎇ {}", agent_slug_from_cmd(cmd))).unwrap();
+            let b = gtk_button_new_with_label(lbl.as_ptr());
+            gtk_widget_set_tooltip_text(b, text::AGENT_WORKTREE_TIP.as_ptr());
+            connect_click(b, on_agent_worktree_cmd, code as *mut c_void);
+            gtk_box_pack_start(wt_row, b, 1, 1, 0);
+        }
+        gtk_box_pack_start(agents_box, wt_row, 0, 1, 0);
+    }
 }
 
 extern "C" fn on_spawn_preset(_btn: *mut GtkWidget, index: *mut c_void) {
@@ -1400,17 +1492,7 @@ fn run_app() {
         connect_click(mi_btn, on_popup_popover, mi_pop);
 
         // Popover: Agents
-        let agents_pop = gtk_popover_new(agents_btn);
-        let agents_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-        add_class(agents_box, "popover-box");
-        for (code, (label, _)) in text::AGENT_ACTIONS.iter().enumerate() {
-            let b = gtk_button_new_with_label(label.as_ptr());
-            connect_click(b, on_agent_cmd, code as *mut c_void);
-            gtk_box_pack_start(agents_box, b, 0, 1, 0);
-        }
-        gtk_container_add(agents_pop, agents_box);
-        gtk_widget_show_all(agents_box);
-        connect_click(agents_btn, on_popup_popover, agents_pop);
+        let agents_pop = build_agents_popover(agents_btn);
 
         // Popover: Settings (SSH Servers from ~/.ssh/config) with live Search + GtkScrolledWindow
         let ssh_hosts = load_ssh_hosts(&config.watch, &config.startup);
