@@ -24,13 +24,13 @@
 }
 
 .terminal-tab.tab-approval {
-    background-color: rgba(245, 158, 11, 0.10);
-    border-color: rgba(245, 158, 11, 0.45);
-    border-bottom-color: #f59e0b;
+    background-color: @approval_bg;
+    border-color: @approval_border;
+    border-bottom-color: @amber_border_strong;
 }
 
 .terminal-tab .tab-status {
-    color: #fbbf24;
+    color: @approval_fg;
     font-size: 11px;
     font-weight: 600;
 }

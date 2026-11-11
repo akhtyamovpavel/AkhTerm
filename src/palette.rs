@@ -12,6 +12,8 @@ use crate::ffi::*;
 use crate::paths::{shorten_home, state_dir};
 use crate::proc_radar::{RemoteTmuxItem, SshHostEntry};
 use crate::session::TermSession;
+use crate::theme::current_theme_mode;
+use crate::theme_mode::ThemeMode;
 use crate::ui_text as text;
 
 const MAX_VISIBLE_ROWS: usize = 48;
@@ -26,6 +28,7 @@ pub enum PaletteKind {
     SshTmux,
     Agent,
     Handoff,
+    Theme,
 }
 
 impl PaletteKind {
@@ -38,6 +41,7 @@ impl PaletteKind {
             Self::SshTmux => text::PALETTE_BADGE_SSH_TMUX,
             Self::Agent => text::PALETTE_BADGE_AGENT,
             Self::Handoff => text::PALETTE_BADGE_HANDOFF,
+            Self::Theme => text::PALETTE_BADGE_THEME,
         }
     }
 
@@ -45,7 +49,7 @@ impl PaletteKind {
         match self {
             Self::Tab => "palette-badge-tab",
             Self::RemoteTmux => "palette-badge-tmux",
-            Self::Profile => "palette-badge",
+            Self::Profile | Self::Theme => "palette-badge",
             Self::SshPlain | Self::SshTmux => "palette-badge-ssh",
             Self::Agent => "palette-badge-agent",
             Self::Handoff => "palette-badge-handoff",
@@ -61,6 +65,7 @@ pub enum PaletteAction {
     OpenSsh { host: String, tmux_session: Option<String> },
     RunAgent(usize),
     InjectHandoff(PathBuf),
+    ToggleTheme,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -274,6 +279,21 @@ fn push_handoff_items(files: &[PathBuf], out: &mut Vec<PaletteItem>) {
     }
 }
 
+pub fn make_theme_palette_item(mode: ThemeMode) -> PaletteItem {
+    let kw = "тема светлая тёмная темная переключить вид цвет theme light dark zinc ctrl+shift+l";
+    new_item(
+        PaletteKind::Theme,
+        mode.palette_title().to_owned(),
+        mode.palette_detail().to_owned(),
+        kw.to_owned(),
+        PaletteAction::ToggleTheme,
+    )
+}
+
+fn push_theme_item(out: &mut Vec<PaletteItem>) {
+    out.push(make_theme_palette_item(current_theme_mode()));
+}
+
 pub fn collect_items(src: &PaletteSource<'_>) -> Vec<PaletteItem> {
     let mut out = Vec::new();
     push_session_items(src.sessions, &mut out);
@@ -281,6 +301,7 @@ pub fn collect_items(src: &PaletteSource<'_>) -> Vec<PaletteItem> {
     push_profile_items(src.profiles, &mut out);
     push_ssh_items(src.ssh_hosts, &mut out);
     push_agent_items(&mut out);
+    push_theme_item(&mut out);
     let handoffs = discover_handoff_files(src.briefs_dir, src.extra_handoffs);
     push_handoff_items(&handoffs, &mut out);
     out
@@ -810,6 +831,14 @@ mod tests {
         assert!(all.iter().any(|i| matches!(i.action, PaletteAction::RunAgent(_))));
         assert!(all.iter().any(|i| i.action == PaletteAction::InjectHandoff(PathBuf::from("/tmp/plan.md"))));
         assert_eq!(handoff_prompt(Path::new("/tmp/plan.md")), "Прочитай файл /tmp/plan.md и действуй по нему.");
+    }
+
+    #[test]
+    fn indexes_theme_toggle_action_in_command_palette() {
+        let all = collect_items(&sample_source(&[], &[], &[], &[]));
+        assert!(all.iter().any(|i| i.action == PaletteAction::ToggleTheme));
+        assert!(score_query(&make_theme_palette_item(ThemeMode::Dark), "светлая тема").is_some());
+        assert!(score_query(&make_theme_palette_item(ThemeMode::Light), "dark zinc").is_some());
     }
 
     #[test]

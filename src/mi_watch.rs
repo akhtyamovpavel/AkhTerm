@@ -296,10 +296,10 @@ fn format_worst_markup_line(file: &FileMetrics) -> String {
     )
 }
 
-fn format_header_lines(rep: &ProjectMiReport) -> Vec<String> {
+fn format_header_lines(rep: &ProjectMiReport, muted_hex: &str) -> Vec<String> {
     vec![
         format!(
-            "<b>ИНДЕКС ПОДДЕРЖИВАЕМОСТИ (Maintainability Index)</b>\n<span foreground='#a1a1aa'>Каталог: {}</span>",
+            "<b>ИНДЕКС ПОДДЕРЖИВАЕМОСТИ (Maintainability Index)</b>\n<span foreground='{muted_hex}'>Каталог: {}</span>",
             escape_markup(&rep.root)
         ),
         format!(
@@ -309,20 +309,25 @@ fn format_header_lines(rep: &ProjectMiReport) -> Vec<String> {
     ]
 }
 
+fn format_self_mi_line(ar: &ProjectMiReport, accent_hex: &str) -> String {
+    format!(
+        "\n<span foreground='{accent_hex}'>Ядро AkhTerm (Rust · VTE-2.91): <b>MI {:.1} [{}]</b> ({} файлов, {} SLOC)</span>",
+        ar.avg_mi, ar.grade, ar.files_count, ar.total_sloc
+    )
+}
+
 pub fn format_mi_popover_markup(
     rep: &ProjectMiReport,
     self_mi: Option<&ProjectMiReport>,
 ) -> String {
-    let mut lines = format_header_lines(rep);
+    let (muted_hex, accent_hex) = crate::theme::current_theme_mode().mi_markup_colors();
+    let mut lines = format_header_lines(rep, muted_hex);
     if !rep.worst_files.is_empty() {
         lines.push("\n<b>Точки внимания (файлы с минимальным MI):</b>".to_string());
         lines.extend(rep.worst_files.iter().map(format_worst_markup_line));
     }
     if let Some(ar) = self_mi {
-        lines.push(format!(
-            "\n<span foreground='#c4b5fd'>Ядро AkhTerm (Rust · VTE-2.91): <b>MI {:.1} [{}]</b> ({} файлов, {} SLOC)</span>",
-            ar.avg_mi, ar.grade, ar.files_count, ar.total_sloc
-        ));
+        lines.push(format_self_mi_line(ar, accent_hex));
     }
     lines.join("\n")
 }

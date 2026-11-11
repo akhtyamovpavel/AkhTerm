@@ -1,5 +1,5 @@
 .sidebar {
-    background-color: #101012;
+    background-color: @sidebar_bg;
     border-right: 1px solid @border;
     padding: 12px;
 }
@@ -42,7 +42,7 @@ button.sidebar-action {
     background-color: transparent;
     border: 1px solid transparent;
     border-radius: 6px;
-    color: #d4d4d8;
+    color: @row_text;
     padding: 6px 8px;
 }
 
@@ -73,7 +73,7 @@ button.sidebar-action:focus {
 }
 
 .sidebar-selected .sidebar-icon {
-    color: #e4e4e7;
+    color: @text_secondary;
 }
 
 .sidebar-detail,
@@ -85,7 +85,7 @@ button.sidebar-action:focus {
 }
 
 .sidebar-status.sidebar-approval {
-    color: #fbbf24;
+    color: @approval_fg;
     font-weight: 600;
 }
 
@@ -94,11 +94,11 @@ button.sidebar-action:focus {
 }
 
 .sidebar-status.sidebar-working {
-    color: #9bbcf3;
+    color: @status_working;
 }
 
 .sidebar-status.sidebar-ended {
-    color: #e7c389;
+    color: @mi_b;
 }
 
 .sidebar-empty {
