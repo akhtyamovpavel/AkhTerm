@@ -2,6 +2,7 @@ mod approval;
 mod config;
 mod ffi;
 mod file_drop;
+mod git_status;
 mod git_wt;
 mod handoff;
 mod mi;
@@ -24,6 +25,7 @@ mod ui_font;
 mod ui_text;
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
 use std::ptr;
@@ -40,7 +42,12 @@ use ffi::*;
 use file_drop::{
     feed_vte_text, register_file_drop_hooks, DropTarget, FileDropHooks, UploadCompletion,
 };
-use git_wt::{agent_slug_from_cmd, create_agent_worktree};
+use git_status::{
+    build_diff_pane_argv, is_git_popover_shortcut, lookup_git_status, rebuild_git_widgets,
+    remove_clean_worktree, resolve_git_repo, update_git_button, GitMenu, GitMenuCallbacks,
+    GitMenuWidgets, GitRepoStatus, GitStatusScheduler, WorktreeRemovalOutcome,
+};
+use git_wt::{agent_slug_from_cmd, create_agent_worktree, GitHeadInfo};
 use handoff::{
     current_unix_secs, list_handoff_files, rebuild_handoff_widgets, resolve_handoff_delivery,
     save_vte_capture, CaptureMeta, HandoffCallbacks, HandoffMenu, HandoffTarget,
@@ -53,9 +60,9 @@ use mi_watch::{
 use paste_route::{choose_paste_route, resolve_pane_agent, PasteRoute};
 use paths::{expand_home, home_dir, shorten_home};
 use proc_radar::{
-    detect_local_agent, inspect_proc_tree, load_ssh_hosts, query_ssh_servers, save_ssh_hosts,
-    switch_remote_tmux_session, try_paste_clipboard_image, BoxTelemetry, RemoteTmuxItem,
-    SshHostEntry,
+    detect_local_agent, inspect_proc_tree, load_ssh_hosts, open_external_link, query_ssh_servers,
+    save_ssh_hosts, switch_remote_tmux_session, try_paste_clipboard_image, BoxTelemetry,
+    RemoteTmuxItem, SshHostEntry,
 };
 use session::{
     create_vte_widget, refresh_smart_title, register_link_cwd_lookup, LinkCwd, SessionCategory,
@@ -101,8 +108,10 @@ struct AppState {
     box_tmux_pop_box: *mut GtkWidget,
     settings_pop: *mut GtkWidget,
     ssh_count_label: *mut GtkWidget,
+    git_menu: GitMenu,
     handoff: HandoffMenu,
     footer_status: *mut GtkWidget,
+    footer_hold_until: Cell<Option<Instant>>,
     ssh_hosts: Vec<SshHostEntry>,
     ssh_toggle_btns: Vec<*mut GtkWidget>,
     ssh_rows: Vec<(String, *mut GtkWidget)>,
@@ -113,6 +122,7 @@ struct AppState {
     tmux_jump_btns: Vec<(String, String, String, *mut GtkWidget, *mut GtkWidget)>,
     last_tmux_keys: Vec<String>,
     mi_scheduler: MiScheduler,
+    git_scheduler: GitStatusScheduler,
     box_state: Arc<Mutex<BoxTelemetry>>,
     palette: palette::CommandPalette,
     search_bar: search_bar::SearchBar,
@@ -121,6 +131,7 @@ struct AppState {
 thread_local! {
     static APP: RefCell<Option<AppState>> = const { RefCell::new(None) };
     static PASTE_BUSY: Cell<bool> = const { Cell::new(false) };
+    static WT_REMOVE_BUSY: Cell<bool> = const { Cell::new(false) };
 }
 
 fn entry_text_lower(entry: *mut GtkWidget) -> String {
@@ -873,6 +884,12 @@ extern "C" fn on_mi_ready(_data: *mut c_void) -> c_int {
     0
 }
 
+extern "C" fn on_git_status_ready(_data: *mut c_void) -> c_int {
+    refresh_ui();
+    refresh_open_git_popover();
+    0
+}
+
 extern "C" fn on_mi_refactor_clicked(_btn: *mut GtkWidget, _data: *mut c_void) {
     let target = APP.with(|cell| {
         let state = cell.borrow();
@@ -954,20 +971,56 @@ fn poll_all_session_telemetry() {
     apply_telemetry_updates(updated);
 }
 
+fn session_git_badge(
+    s: &TermSession,
+    local_dir: Option<&str>,
+    git_map: &HashMap<String, GitRepoStatus>,
+    home: &str,
+) -> String {
+    local_dir
+        .and_then(|dir| {
+            lookup_git_status(git_map, dir, home)
+                .or_else(|| lookup_git_status(git_map, &s.cwd, home))
+        })
+        .map_or_else(String::new, GitRepoStatus::dirty_badge)
+}
+
+fn prepare_footer_update(
+    app: &AppState,
+    working: usize,
+    ready: usize,
+    ssh_count: usize,
+) -> Option<(*mut GtkWidget, String)> {
+    if app.footer_hold_until.get().is_some_and(|until| Instant::now() < until) {
+        return None;
+    }
+    app.footer_hold_until.set(None);
+    let footer = format!(
+        "Вкладки: {}    В работе: {}    Готово: {}    SSH: {}",
+        app.sessions.len(),
+        working,
+        ready,
+        ssh_count
+    );
+    Some((app.footer_status, footer))
+}
+
 struct UiRefreshPlan {
     rows: Vec<sidebar::RowUpdate>,
     tabs: Vec<tab_strip::TabUpdate>,
     sidebar: sidebar::SidebarUpdate,
     btns: [*mut GtkWidget; 3],
     flags: (bool, bool),
+    git: (*mut GtkWidget, bool, Option<GitRepoStatus>),
     mi: MiUiPlan,
     tokens: (TokensMenu, TokensViewData),
-    footer: (*mut GtkWidget, String),
+    footer: Option<(*mut GtkWidget, String)>,
 }
 
 fn prepare_session_views(
     app: &AppState,
-    mi_map: &std::collections::HashMap<String, ProjectMiReport>,
+    mi_map: &HashMap<String, ProjectMiReport>,
+    git_map: &HashMap<String, GitRepoStatus>,
     home: &str,
 ) -> (Vec<sidebar::RowUpdate>, Vec<tab_strip::TabUpdate>, Option<String>, bool, [usize; 3]) {
     let mut counts = [0usize; 3];
@@ -989,7 +1042,8 @@ fn prepare_session_views(
             .as_deref()
             .and_then(|d| lookup_mi(mi_map, d, home).or_else(|| lookup_mi(mi_map, &s.cwd, home)))
             .map(|r| (r.avg_mi, r.grade));
-        rows.push(s.sidebar_row.prepare_update(idx, s, mi_badge, is_act));
+        let git_badge = session_git_badge(s, local_dir.as_deref(), git_map, home);
+        rows.push(s.sidebar_row.prepare_update(idx, s, mi_badge, &git_badge, is_act));
         tabs.push(s.top_tab.prepare_update(s, is_act));
     }
     (rows, tabs, active_cwd, can_reconnect, counts)
@@ -1000,21 +1054,20 @@ impl UiRefreshPlan {
         let home = home_dir();
         let local_cwds = collect_local_cwds(app);
         app.mi_scheduler.sync_targets(&app.config.mi_directories(), &local_cwds, &home);
+        app.git_scheduler.sync_targets(&local_cwds, &home);
         let mi_map = app.mi_scheduler.snapshot();
+        let git_map = app.git_scheduler.snapshot();
         let (rows, tabs, active_cwd, can_rec, [working, ready, ssh_count]) =
-            prepare_session_views(app, &mi_map, &home);
+            prepare_session_views(app, &mi_map, &git_map, &home);
+        let active_git = active_cwd
+            .as_deref()
+            .and_then(|dir| lookup_git_status(&git_map, dir, &home))
+            .cloned();
         let (cur_mi, self_mi) = resolve_active_mi(
             &mi_map,
             active_cwd.as_deref(),
             app.config.mi_root.as_deref(),
             &home,
-        );
-        let footer = format!(
-            "Вкладки: {}    В работе: {}    Готово: {}    SSH: {}",
-            app.sessions.len(),
-            working,
-            ready,
-            ssh_count
         );
         Self {
             rows,
@@ -1022,9 +1075,10 @@ impl UiRefreshPlan {
             sidebar: prepare_sidebar_filter(app),
             btns: [app.reconnect_btn, app.split_vert_btn, app.split_horiz_btn],
             flags: (can_rec, !app.sessions.is_empty() && !can_rec),
+            git: (app.git_menu.button(), active_cwd.is_some(), active_git),
             mi: MiUiPlan::from_state(app, cur_mi, self_mi),
             tokens: collect_tokens_view(app, Instant::now()),
-            footer: (app.footer_status, footer),
+            footer: prepare_footer_update(app, working, ready, ssh_count),
         }
     }
 
@@ -1042,9 +1096,12 @@ impl UiRefreshPlan {
             gtk_widget_set_sensitive(split_vert_btn, i32::from(self.flags.1));
             gtk_widget_set_sensitive(split_horiz_btn, i32::from(self.flags.1));
         }
+        update_git_button(self.git.0, self.git.1, self.git.2.as_ref());
         self.mi.apply();
         self.tokens.0.apply(&self.tokens.1);
-        set_label_text(self.footer.0, &self.footer.1);
+        if let Some((lbl, text)) = self.footer {
+            set_label_text(lbl, &text);
+        }
     }
 }
 
@@ -1352,7 +1409,7 @@ fn active_worktree_context() -> Result<(String, String), String> {
         } else {
             profile.clone()
         };
-        let cwd = s.active_local_cwd().unwrap_or_else(|| s.cwd.clone());
+        let cwd = s.active_local_cwd().ok_or_else(err)?;
         Ok((key, cwd))
     })
 }
@@ -1362,7 +1419,10 @@ fn set_footer_message(message: &str) {
         return;
     }
     let footer = APP.with(|cell| {
-        cell.try_borrow().ok().and_then(|s| s.as_ref().map(|app| app.footer_status))
+        let state = cell.try_borrow().ok()?;
+        let app = state.as_ref()?;
+        app.footer_hold_until.set(Some(Instant::now() + Duration::from_secs(4)));
+        Some(app.footer_status)
     });
     if let Some(footer) = footer.filter(|w| !w.is_null()) {
         set_label_text(footer, message);
@@ -1647,6 +1707,278 @@ extern "C" fn on_handoff_inject(_btn: *mut GtkWidget, idx_ptr: *mut c_void) {
     }
 }
 
+fn dismiss_git_popover() {
+    let pop = APP.with(|cell| cell.try_borrow().ok()?.as_ref().map(|app| app.git_menu.popover()));
+    if let Some(pop) = pop.filter(|p| !p.is_null()) {
+        unsafe { gtk_popover_popdown(pop) };
+    }
+}
+
+fn prepare_git_popover_state(
+    force_refresh: bool,
+) -> Result<(GitMenuWidgets, Option<(String, GitHeadInfo)>, Option<GitRepoStatus>), String> {
+    APP.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let app = state.as_mut().ok_or_else(String::new)?;
+        let local_err = || text::GIT_LOCAL_ONLY.to_string_lossy().into_owned();
+        let active = app
+            .sessions
+            .iter()
+            .find(|s| s.id == app.active_id)
+            .ok_or_else(local_err)?;
+        let cwd = active.active_local_cwd().ok_or_else(local_err)?;
+        let repo = resolve_git_repo(&cwd, &home_dir());
+        let status = repo.as_ref().and_then(|(root, _)| {
+            let cached = app.git_scheduler.snapshot().remove(root);
+            if force_refresh || cached.is_none() {
+                app.git_scheduler.request_refresh(root);
+            }
+            cached
+        });
+        Ok((app.git_menu.take_widgets(), repo, status))
+    })
+}
+
+fn populate_git_popover(force_refresh: bool, popup_after: bool) {
+    let (widgets, repo, status) = match prepare_git_popover_state(force_refresh) {
+        Ok(prep) => prep,
+        Err(msg) => {
+            set_footer_message(&msg);
+            focus_active_vte();
+            return;
+        }
+    };
+    let repo_ref = repo.as_ref().map(|(r, h)| (r.as_str(), h));
+    let cbs = GitMenuCallbacks {
+        on_file: on_git_file_clicked,
+        on_remove_wt: on_git_remove_worktree,
+    };
+    let (inner, entries) = rebuild_git_widgets(widgets, repo_ref, status.as_ref(), cbs);
+    APP.with(|cell| {
+        if let Some(app) = cell.borrow_mut().as_mut() {
+            app.git_menu.save_snapshot(inner, entries);
+        }
+    });
+    if popup_after && !widgets.popover.is_null() {
+        unsafe { gtk_popover_popup(widgets.popover) };
+    }
+}
+
+fn refresh_open_git_popover() {
+    let pop = APP.with(|cell| cell.borrow().as_ref().map(|app| app.git_menu.popover()));
+    let is_open = pop
+        .filter(|p| !p.is_null())
+        .is_some_and(|p| unsafe { gtk_widget_get_visible(p) != 0 });
+    if is_open {
+        populate_git_popover(false, false);
+    }
+}
+
+fn toggle_git_popover() {
+    let pop = APP.with(|cell| cell.borrow().as_ref().map(|app| app.git_menu.popover()));
+    let is_open = pop
+        .filter(|p| !p.is_null())
+        .is_some_and(|p| unsafe { gtk_widget_get_visible(p) != 0 });
+    if is_open {
+        if let Some(pop) = pop {
+            unsafe { gtk_popover_popdown(pop) };
+        }
+        focus_active_vte();
+    } else {
+        populate_git_popover(true, true);
+    }
+}
+
+extern "C" fn on_git_open(_btn: *mut GtkWidget, _data: *mut c_void) {
+    populate_git_popover(true, true);
+}
+
+extern "C" fn on_git_popover_key_press(
+    _pop: *mut GtkWidget,
+    event: *const GdkEvent,
+    _data: *mut c_void,
+) -> c_int {
+    let mut keyval: c_uint = 0;
+    let mut state: c_uint = 0;
+    let mut keycode: u16 = 0;
+    unsafe {
+        if gdk_event_get_keyval(event, &mut keyval) == 0 {
+            return 0;
+        }
+        gdk_event_get_state(event, &mut state);
+        gdk_event_get_keycode(event, &mut keycode);
+    }
+    if keyval == 0xff1b || is_git_popover_shortcut(keyval, state, keycode) {
+        dismiss_git_popover();
+        focus_active_vte();
+        return 1;
+    }
+    0
+}
+
+fn open_git_diff_split(repo_root: &str, rel_path: &str) {
+    let Some((sid, _, shell, scale)) = active_local_split_context() else {
+        return set_footer_message(&text::GIT_LOCAL_ONLY.to_string_lossy());
+    };
+    let argv = build_diff_pane_argv(repo_root, rel_path, &shell);
+    let (new_vte, new_pid) = create_terminal(repo_root, &argv, sid, scale);
+    let new_scroll = wrap_vte_scroll(new_vte);
+    let split_op = APP.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let s = state.as_mut()?.sessions.iter_mut().find(|s| s.id == sid)?;
+        Some(s.panes.prepare_split(
+            s.scroll_wrap,
+            s.vte,
+            new_scroll,
+            new_vte,
+            new_pid,
+            repo_root.to_owned(),
+            GTK_ORIENTATION_HORIZONTAL,
+        ))
+    });
+    finish_split(split_op, new_scroll, new_vte);
+    refresh_ui();
+    set_footer_message(&format!("⎇ Diff: {rel_path}"));
+}
+
+fn open_git_file_action(repo_root: &str, rel_path: &str, untracked: bool) {
+    if untracked {
+        let full = Path::new(repo_root).join(rel_path);
+        open_external_link(&full.to_string_lossy());
+        set_footer_message(&format!("📄 Открыт файл {rel_path}"));
+        focus_active_vte();
+    } else {
+        open_git_diff_split(repo_root, rel_path);
+    }
+}
+
+extern "C" fn on_git_file_clicked(_btn: *mut GtkWidget, idx_ptr: *mut c_void) {
+    let chosen = APP.with(|cell| {
+        let state = cell.borrow();
+        let app = state.as_ref()?;
+        Some((app.git_menu.popover(), app.git_menu.entry_at(idx_ptr as usize)))
+    });
+    let Some((pop, entry)) = chosen else { return };
+    if !pop.is_null() {
+        unsafe { gtk_popover_popdown(pop) };
+    }
+    if let Some(item) = entry {
+        open_git_file_action(&item.repo_root, &item.path, item.kind.is_untracked());
+    }
+}
+
+struct WtRemoveDone {
+    sid: usize,
+    profile: String,
+    cwd: String,
+    outcome: Result<WorktreeRemovalOutcome, String>,
+}
+
+fn request_git_refresh_for_cwd(cwd: &str) {
+    let Some((root, _)) = resolve_git_repo(cwd, &home_dir()) else { return };
+    APP.with(|cell| {
+        if let Some(app) = cell.borrow().as_ref() {
+            app.git_scheduler.request_refresh(&root);
+        }
+    });
+}
+
+fn find_main_repo_tab(
+    sessions: &[TermSession],
+    skip_sid: usize,
+    main_root: &str,
+    home: &str,
+) -> Option<usize> {
+    sessions.iter().find_map(|s| {
+        if s.id == skip_sid || s.remote().is_some() {
+            return None;
+        }
+        let cwd = s.active_local_cwd()?;
+        let (root, _) = resolve_git_repo(&cwd, home)?;
+        (root == main_root).then_some(s.id)
+    })
+}
+
+fn finish_worktree_removal(sid: usize, profile: &str, outcome: WorktreeRemovalOutcome) {
+    let wt_str = outcome.wt_root.to_string_lossy().into_owned();
+    let main_str = outcome.main_repo.to_string_lossy().into_owned();
+    let nav = APP.with(|cell| {
+        let state = cell.borrow();
+        let app = state.as_ref()?;
+        app.git_scheduler.remove_root(&wt_str);
+        app.git_scheduler.request_refresh(&main_str);
+        let has_tab = app.sessions.iter().any(|s| s.id == sid);
+        let sole_tab = has_tab && app.sessions.len() == 1;
+        let main_sid = find_main_repo_tab(&app.sessions, sid, &main_str, &home_dir());
+        Some((has_tab, sole_tab, main_sid))
+    });
+    if let Some((has_tab, sole_tab, main_sid)) = nav {
+        if sole_tab {
+            open_local_tab(profile.to_owned(), &main_str);
+            close_session(sid);
+        } else if has_tab {
+            close_session(sid);
+            if let Some(target_sid) = main_sid {
+                select_session(target_sid);
+            }
+        }
+    }
+    set_footer_message(&outcome.success_message());
+}
+
+extern "C" fn on_worktree_remove_done(data: *mut c_void) -> c_int {
+    WT_REMOVE_BUSY.with(|b| b.set(false));
+    if data.is_null() {
+        return 0;
+    }
+    let done = unsafe { *Box::from_raw(data as *mut WtRemoveDone) };
+    match done.outcome {
+        Ok(outcome) => finish_worktree_removal(done.sid, &done.profile, outcome),
+        Err(err) => {
+            request_git_refresh_for_cwd(&done.cwd);
+            set_footer_message(&err);
+            focus_active_vte();
+        }
+    }
+    0
+}
+
+fn start_remove_clean_worktree() {
+    dismiss_git_popover();
+    if WT_REMOVE_BUSY.with(|b| b.replace(true)) {
+        return;
+    }
+    let ctx = APP.with(|cell| {
+        let state = cell.borrow();
+        let app = state.as_ref()?;
+        let s = app.sessions.iter().find(|s| s.id == app.active_id)?;
+        let Tab::Local { ref profile, .. } = s.tab else { return None };
+        let key = if app.config.profile(profile).monitor {
+            app.config.profile("shell").key
+        } else {
+            profile.clone()
+        };
+        let cwd = s.active_local_cwd()?;
+        Some((s.id, key, cwd))
+    });
+    let Some((sid, profile, cwd)) = ctx else {
+        WT_REMOVE_BUSY.with(|b| b.set(false));
+        set_footer_message(&text::GIT_LOCAL_ONLY.to_string_lossy());
+        focus_active_vte();
+        return;
+    };
+    focus_active_vte();
+    thread::spawn(move || {
+        let outcome = remove_clean_worktree(Path::new(&cwd));
+        let payload = Box::new(WtRemoveDone { sid, profile, cwd, outcome });
+        unsafe { g_idle_add(on_worktree_remove_done, Box::into_raw(payload) as *mut c_void) };
+    });
+}
+
+extern "C" fn on_git_remove_worktree(_btn: *mut GtkWidget, _data: *mut c_void) {
+    start_remove_clean_worktree();
+}
+
 struct PasteGuard;
 
 impl Drop for PasteGuard {
@@ -1907,6 +2239,11 @@ fn execute_palette_action(action: palette::PaletteAction) {
         }
         palette::PaletteAction::ToggleTheme => toggle_theme(),
         palette::PaletteAction::OpenSearch => open_search_bar(),
+        palette::PaletteAction::OpenGitMenu => populate_git_popover(true, true),
+        palette::PaletteAction::GitFile { repo_root, path, untracked } => {
+            open_git_file_action(&repo_root, &path, untracked);
+        }
+        palette::PaletteAction::RemoveCleanWorktree => start_remove_clean_worktree(),
     }
 }
 
@@ -1980,6 +2317,7 @@ fn open_search_bar() {
 }
 
 fn toggle_search_bar() {
+    dismiss_git_popover();
     let pair = APP.with(|cell| {
         let state = cell.try_borrow().ok()?;
         let app = state.as_ref()?;
@@ -2002,6 +2340,25 @@ fn route_search_key(keyval: c_uint, state: c_uint, keycode: u16) -> Option<c_int
     focused.then_some(0)
 }
 
+fn active_palette_git_state(app: &AppState) -> (Option<GitRepoStatus>, bool) {
+    let Some(cwd) = app
+        .sessions
+        .iter()
+        .find(|s| s.id == app.active_id)
+        .and_then(TermSession::active_local_cwd)
+    else {
+        return (None, false);
+    };
+    let Some((root, head)) = resolve_git_repo(&cwd, &home_dir()) else {
+        return (None, false);
+    };
+    let status = app.git_scheduler.snapshot().remove(&root);
+    if status.is_none() {
+        app.git_scheduler.request_refresh(&root);
+    }
+    (status, head.is_linked_worktree)
+}
+
 fn toggle_palette() {
     let snapshot = APP.with(|cell| {
         let state = cell.try_borrow().ok()?;
@@ -2011,6 +2368,7 @@ fn toggle_palette() {
             return Some((pal, None));
         }
         let tmux_items = app.box_state.lock().ok().map(|g| g.tmux_items.clone()).unwrap_or_default();
+        let (active_git, active_is_worktree) = active_palette_git_state(app);
         let src = palette::PaletteSource {
             sessions: &app.sessions,
             tmux_items: &tmux_items,
@@ -2018,6 +2376,8 @@ fn toggle_palette() {
             ssh_hosts: &app.ssh_hosts,
             briefs_dir: app.config.briefs_dir.as_deref(),
             extra_handoffs: app.handoff.files(),
+            active_git: active_git.as_ref(),
+            active_is_worktree,
         };
         Some((pal, Some(palette::collect_items(&src))))
     });
@@ -2031,6 +2391,7 @@ fn toggle_palette() {
 
 fn route_palette_key(keyval: c_uint, state: c_uint, keycode: u16) -> Option<c_int> {
     if palette::is_palette_shortcut(keyval, state, keycode) {
+        dismiss_git_popover();
         toggle_palette();
         return Some(1);
     }
@@ -2040,6 +2401,20 @@ fn route_palette_key(keyval: c_uint, state: c_uint, keycode: u16) -> Option<c_in
     }
     if search_bar::is_search_shortcut(keyval, state, keycode) {
         toggle_search_bar();
+        return Some(1);
+    }
+    if is_git_popover_shortcut(keyval, state, keycode) {
+        let pal = APP.with(|cell| {
+            cell.try_borrow()
+                .ok()?
+                .as_ref()
+                .filter(|a| a.palette.is_open())
+                .map(|a| a.palette.clone())
+        });
+        if let Some(pal) = pal {
+            pal.close();
+        }
+        toggle_git_popover();
         return Some(1);
     }
     let open = APP.with(|cell| {
@@ -2265,6 +2640,10 @@ fn run_app() {
         let agents_btn = gtk_button_new_with_label(text::AGENTS.as_ptr());
         gtk_box_pack_end(topbar, agents_btn, 0, 0, 0);
 
+        let git_btn = gtk_button_new_with_label(text::GIT_MENU.as_ptr());
+        gtk_widget_set_tooltip_text(git_btn, text::GIT_MENU_TIP.as_ptr());
+        gtk_box_pack_end(topbar, git_btn, 0, 0, 0);
+
         let mi_btn = gtk_button_new_with_label(text::MAINTAINABILITY.as_ptr());
         gtk_box_pack_end(topbar, mi_btn, 0, 0, 0);
 
@@ -2424,6 +2803,9 @@ fn run_app() {
         gtk_widget_show_all(box_pop_vbox);
         connect_click(box_btn, on_popup_popover, box_pop);
 
+        // Popover: Git Changed Files & Clean Worktree Removal
+        let git_menu = GitMenu::new(git_btn, on_git_open, on_git_popover_key_press);
+
         // Popover: Handoff Briefs & Terminal Capture
         let handoff = HandoffMenu::new(handoff_btn, on_handoff_open);
 
@@ -2456,6 +2838,7 @@ fn run_app() {
         let enabled_hosts_shared = Arc::new(Mutex::new(initial_enabled));
         let mi_scheduler = MiScheduler::default();
         mi_scheduler.sync_targets(&mi_dirs, &[], &home_dir());
+        let git_scheduler = GitStatusScheduler::default();
         let box_state: Arc<Mutex<BoxTelemetry>> = Arc::new(Mutex::new(BoxTelemetry::default()));
         let cmd_palette = palette::CommandPalette::new(topbar, execute_palette_action, focus_active_vte);
 
@@ -2490,8 +2873,10 @@ fn run_app() {
                 box_tmux_pop_box,
                 settings_pop,
                 ssh_count_label,
+                git_menu,
                 handoff,
                 footer_status,
+                footer_hold_until: Cell::new(None),
                 ssh_hosts,
                 ssh_toggle_btns,
                 ssh_rows,
@@ -2502,6 +2887,7 @@ fn run_app() {
                 tmux_jump_btns: Vec::new(),
                 last_tmux_keys: Vec::new(),
                 mi_scheduler: mi_scheduler.clone(),
+                git_scheduler: git_scheduler.clone(),
                 box_state: Arc::clone(&box_state),
                 palette: cmd_palette,
                 search_bar,
@@ -2515,6 +2901,16 @@ fn run_app() {
                     g_idle_add(on_mi_ready, ptr::null_mut());
                 }
                 mi_bg.wait_for_turn(Duration::from_secs(5));
+            });
+        }
+
+        {
+            let git_bg = git_scheduler.clone();
+            thread::spawn(move || loop {
+                if git_bg.refresh_due(Instant::now()) > 0 {
+                    g_idle_add(on_git_status_ready, ptr::null_mut());
+                }
+                git_bg.wait_for_turn(Duration::from_secs(4));
             });
         }
 
@@ -2589,8 +2985,10 @@ mod tests {
                 box_tmux_pop_box: vbox,
                 settings_pop: ptr::null_mut(),
                 ssh_count_label: lbl,
+                git_menu: GitMenu::new(btn, on_git_open, on_git_popover_key_press),
                 handoff: HandoffMenu::new(btn, on_handoff_open),
                 footer_status: footer,
+                footer_hold_until: Cell::new(None),
                 ssh_hosts: Vec::new(),
                 ssh_toggle_btns: Vec::new(),
                 ssh_rows: Vec::new(),
@@ -2601,6 +2999,7 @@ mod tests {
                 tmux_jump_btns: Vec::new(),
                 last_tmux_keys: Vec::new(),
                 mi_scheduler: MiScheduler::default(),
+                git_scheduler: GitStatusScheduler::default(),
                 box_state: Arc::new(Mutex::new(BoxTelemetry::default())),
                 palette: palette::CommandPalette::new(vbox, execute_palette_action, focus_active_vte),
                 search_bar: search_bar::SearchBar::new(
