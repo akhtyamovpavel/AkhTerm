@@ -15,7 +15,6 @@ pub const DRAG_THRESHOLD_PX: f64 = 6.0;
 #[derive(Clone, Copy, Debug)]
 struct TabDragState {
     sid: usize,
-    start_root_x: f64,
     start_strip_x: f64,
     dragging: bool,
 }
@@ -83,15 +82,6 @@ pub fn drag_target_index(widths: &[i32], spacing: i32, cur_idx: usize, strip_x: 
     target
 }
 
-pub fn widget_origin_x(widget: *mut GtkWidget, ancestor: *mut GtkWidget) -> i32 {
-    if widget.is_null() || ancestor.is_null() {
-        return 0;
-    }
-    let mut x = 0;
-    unsafe { gtk_widget_translate_coordinates(widget, ancestor, 0, 0, &mut x, ptr::null_mut()) };
-    x
-}
-
 pub fn allocated_widths(widgets: &[*mut GtkWidget]) -> Vec<i32> {
     widgets
         .iter()
@@ -99,27 +89,30 @@ pub fn allocated_widths(widgets: &[*mut GtkWidget]) -> Vec<i32> {
         .collect()
 }
 
-pub fn begin_tab_drag(sid: usize, start_root_x: f64, start_strip_x: f64) {
+pub fn begin_tab_drag(sid: usize, start_strip_x: f64) {
     TAB_DRAG.with(|slot| {
         slot.set(Some(TabDragState {
             sid,
-            start_root_x,
             start_strip_x,
             dragging: false,
         }));
     });
 }
 
-pub fn update_tab_drag(cur_root_x: f64) -> Option<(usize, f64, bool)> {
+pub fn is_tab_drag_pending() -> bool {
+    TAB_DRAG.with(|slot| slot.get().is_some())
+}
+
+pub fn update_tab_drag(cur_strip_x: f64) -> Option<(usize, f64, bool)> {
     TAB_DRAG.with(|slot| {
         let mut st = slot.get()?;
-        let dx = cur_root_x - st.start_root_x;
+        let dx = cur_strip_x - st.start_strip_x;
         let started_now = !st.dragging && dx.abs() >= DRAG_THRESHOLD_PX;
         if started_now {
             st.dragging = true;
             slot.set(Some(st));
         }
-        st.dragging.then_some((st.sid, st.start_strip_x + dx, started_now))
+        st.dragging.then_some((st.sid, cur_strip_x, started_now))
     })
 }
 
@@ -527,13 +520,16 @@ mod tests {
         assert_eq!(drag_target_index(&[160, 80], 4, 0, 210.0), 1);
         assert_eq!(drag_target_index(&[80, 160], 4, 1, 210.0), 1);
         assert_eq!(drag_target_index(&[80, 160], 4, 1, 35.0), 0);
+    }
 
-        begin_tab_drag(7, 100.0, 40.0);
-        assert!(update_tab_drag(103.0).is_none());
-        assert_eq!(update_tab_drag(230.0), Some((7, 170.0, true)));
-        assert_eq!(update_tab_drag(250.0), Some((7, 190.0, false)));
-        assert!(end_tab_drag());
-        assert!(!end_tab_drag());
+    #[test]
+    fn tracks_rootless_tab_drag_threshold_and_latch() {
+        begin_tab_drag(7, 40.0);
+        assert!(is_tab_drag_pending() && update_tab_drag(43.0).is_none());
+        assert_eq!(update_tab_drag(170.0), Some((7, 170.0, true)));
+        assert_eq!(update_tab_drag(190.0), Some((7, 190.0, false)));
+        assert_eq!(update_tab_drag(40.0), Some((7, 40.0, false)));
+        assert!(end_tab_drag() && !is_tab_drag_pending() && !end_tab_drag());
     }
 
     #[test]

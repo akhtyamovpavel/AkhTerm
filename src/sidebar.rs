@@ -10,6 +10,7 @@ use crate::ffi::*;
 use crate::git_wt::{detect_git_head, GitHeadInfo};
 use crate::mi_watch::resolve_project_root;
 use crate::paths::{home_dir, shorten_home};
+use crate::platform::resolve_category_icon;
 use crate::session::{SessionCategory, TermSession, WorkState};
 use crate::tab_order::BoxReorder;
 use crate::telemetry::{
@@ -345,7 +346,7 @@ impl SidebarRow {
             add_class(widget, "sidebar-row");
             let content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 9);
             gtk_container_add(widget, content);
-            let icon = gtk_image_new_from_icon_name(category.icon_name().as_ptr(), GTK_ICON_SIZE_MENU);
+            let icon = gtk_image_new_from_icon_name(resolve_category_icon(category).as_ptr(), GTK_ICON_SIZE_MENU);
             add_class(icon, "sidebar-icon");
             gtk_widget_set_valign(icon, GTK_ALIGN_START);
             gtk_box_pack_start(content, icon, 0, 0, 0);
@@ -372,10 +373,10 @@ impl SidebarRow {
         }
     }
 
-    fn take_icon_change(&self, category: SessionCategory) -> Option<&'static CStr> {
+    fn take_icon_change(&self, category: SessionCategory) -> Option<SessionCategory> {
         (self.icon_cat.get() != category).then(|| {
             self.icon_cat.set(category);
-            category.icon_name()
+            category
         })
     }
 
@@ -524,7 +525,7 @@ pub struct RowUpdate {
     detail_lbl: *mut GtkWidget,
     status_lbl: *mut GtkWidget,
     metric_lbl: *mut GtkWidget,
-    new_icon: Option<&'static CStr>,
+    new_icon: Option<SessionCategory>,
     agent: String,
     active: bool,
     status: &'static CStr,
@@ -539,8 +540,8 @@ pub struct RowUpdate {
 
 impl RowUpdate {
     pub fn apply(self) {
-        if let Some(icon_name) = self.new_icon {
-            set_image_icon(self.icon, icon_name);
+        if let Some(cat) = self.new_icon.filter(|_| !self.icon.is_null()) {
+            set_image_icon(self.icon, resolve_category_icon(cat));
         }
         set_agent_accent(self.icon, &self.agent);
         set_class(self.widget, "sidebar-selected", self.active);

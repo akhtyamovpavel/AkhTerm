@@ -23,7 +23,7 @@ pub enum SessionCategory {
 }
 
 impl SessionCategory {
-    pub fn icon_name(self) -> &'static CStr {
+    pub fn default_icon_name(self) -> &'static CStr {
         match self {
             Self::Project => c"utilities-terminal-symbolic",
             Self::Remote => c"network-server-symbolic",
