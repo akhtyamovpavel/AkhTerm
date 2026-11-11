@@ -308,6 +308,22 @@ extern "C" {
     pub fn vte_terminal_get_text_format(terminal: *mut VteTerminal, format: c_int) -> *mut c_char;
     pub fn vte_terminal_copy_clipboard_format(terminal: *mut VteTerminal, format: c_int);
     pub fn vte_terminal_paste_clipboard(terminal: *mut VteTerminal);
+    pub fn vte_terminal_get_text_range_format(
+        terminal: *mut VteTerminal,
+        format: c_int,
+        start_row: isize,
+        start_col: isize,
+        end_row: isize,
+        end_col: isize,
+        length: *mut usize,
+    ) -> *mut c_char;
+    pub fn vte_terminal_get_cursor_position(
+        terminal: *mut VteTerminal,
+        column: *mut isize,
+        row: *mut isize,
+    );
+    pub fn vte_terminal_get_row_count(terminal: *mut VteTerminal) -> isize;
+    pub fn vte_terminal_get_column_count(terminal: *mut VteTerminal) -> isize;
 }
 
 pub fn add_class(widget: *mut GtkWidget, cls: &str) {
