@@ -1,12 +1,17 @@
-popover.palette-popover {
+popover.palette-popover,
+popover.background.palette-popover,
+.csd popover.background.palette-popover {
+    background-image: none;
     background-color: @elevated;
     border: 1px solid @border_strong;
     border-radius: 10px;
+    box-shadow: none;
     padding: 8px;
 }
 
 .palette-box {
     font-family: "Geist", sans-serif;
+    background-image: none;
     background-color: @elevated;
     padding: 4px;
 }
@@ -26,19 +31,33 @@ popover.palette-popover {
     font-size: 11px;
 }
 
-entry.palette-entry {
+entry.palette-entry,
+entry.search.palette-entry {
+    background-image: none;
     background-color: @surface;
     color: @text;
     border: 1px solid @border;
     border-radius: 7px;
+    box-shadow: none;
     min-height: 30px;
     padding: 6px 10px;
     font-size: 14px;
 }
 
-entry.palette-entry:focus {
+entry.palette-entry:focus,
+entry.search.palette-entry:focus {
+    background-image: none;
     border-color: @focus;
     background-color: @palette_entry_focus;
+    box-shadow: none;
+}
+
+popover.palette-popover scrollbar,
+popover.palette-popover scrollbar contents,
+popover.palette-popover scrollbar trough {
+    background-image: none;
+    background-color: @elevated;
+    border: none;
 }
 
 .palette-list {
@@ -50,17 +69,20 @@ button.palette-row {
     background-color: transparent;
     border: 1px solid transparent;
     border-radius: 7px;
+    box-shadow: none;
     padding: 7px 10px;
     color: @row_text;
 }
 
 button.palette-row:hover {
+    background-image: none;
     background-color: @hover;
     border-color: @border;
     color: @text;
 }
 
 button.palette-row.palette-row-active {
+    background-image: none;
     background-color: @selected;
     border-color: @selected_border;
     color: @text;
@@ -82,6 +104,7 @@ button.palette-row.palette-row-active {
 }
 
 .palette-badge {
+    background-image: none;
     background-color: @surface;
     border: 1px solid @border;
     border-radius: 5px;

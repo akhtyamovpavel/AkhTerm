@@ -20,6 +20,10 @@ const EXTRA_COMPONENTS_CSS: &str = concat!(
     include_str!("palette.css"),
 );
 
+/// Above `GTK_STYLE_PROVIDER_PRIORITY_USER` (800) so `kde-gtk-config`'s
+/// `~/.config/gtk-3.0/gtk.css` (`window_decorations.css`) cannot hide titlebuttons.
+pub const APP_CSS_PROVIDER_PRIORITY: u32 = GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 201;
+
 static ACTIVE_THEME: AtomicU8 = AtomicU8::new(0);
 static APP_CSS_PROVIDER: AtomicUsize = AtomicUsize::new(0);
 
@@ -46,7 +50,7 @@ fn ensure_css_provider() -> *mut GtkCssProvider {
         gtk_style_context_add_provider_for_screen(
             gdk_screen_get_default(),
             provider,
-            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION,
+            APP_CSS_PROVIDER_PRIORITY,
         );
         APP_CSS_PROVIDER.store(provider as usize, Ordering::Release);
         provider
