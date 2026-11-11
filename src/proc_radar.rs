@@ -424,54 +424,16 @@ pub fn query_ssh_servers(hosts: &[String]) -> BoxTelemetry {
     out
 }
 
-fn strip_link_punctuation(raw: &str) -> &str {
-    raw.trim().trim_end_matches(|c: char| ".,;:!?)]}\"'".contains(c))
-}
-
-fn parse_line_num(part: &str) -> Option<u32> {
-    (!part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
-        .then(|| part.parse::<u32>().ok())
-        .flatten()
-}
-
-pub fn split_path_line_col(raw: &str) -> (&str, Option<u32>, Option<u32>) {
-    let clean = strip_link_punctuation(raw);
-    let Some((head, tail)) = clean.rsplit_once(':') else {
-        return (clean, None, None);
-    };
-    let Some(n1) = parse_line_num(tail) else {
-        return (clean, None, None);
-    };
-    if let Some((head2, line_s)) = head.rsplit_once(':') {
-        if let Some(n2) = parse_line_num(line_s) {
-            return (head2, Some(n2), Some(n1));
-        }
-    }
-    (head, Some(n1), None)
-}
-
-fn clean_joined_path(base: &Path, rel: &str) -> PathBuf {
-    use std::path::Component;
-    let mut out = PathBuf::new();
-    for comp in base.join(rel).components() {
-        match comp {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out
-}
+pub use crate::paths::split_path_line_col;
+use crate::paths::{clean_joined_path, strip_anchor_or_line, strip_link_punctuation};
 
 fn resolve_abs_file_target(path_str: &str) -> String {
     if Path::new(path_str).exists() {
         return path_str.to_owned();
     }
-    let (base, line, _) = split_path_line_col(path_str);
-    if line.is_some() && Path::new(base).exists() {
-        return base.to_owned();
+    let candidate = strip_anchor_or_line(path_str);
+    if candidate != path_str && Path::new(candidate).exists() {
+        return candidate.to_owned();
     }
     path_str.to_owned()
 }
@@ -479,12 +441,24 @@ fn resolve_abs_file_target(path_str: &str) -> String {
 fn resolve_relative_file(trimmed: &str, cwd: Option<&str>) -> Option<String> {
     let dir = cwd.map(str::trim).filter(|d| !d.is_empty())?;
     let base_dir = PathBuf::from(expand_home(dir));
-    let (rel_path, _, _) = split_path_line_col(trimmed);
+    let rel_path = strip_anchor_or_line(trimmed);
     if rel_path.is_empty() {
         return None;
     }
     let resolved = clean_joined_path(&base_dir, rel_path);
     resolved.exists().then(|| resolved.to_string_lossy().into_owned())
+}
+
+fn resolve_file_uri_target(trimmed: &str) -> String {
+    if let Some(full) = crate::file_drop::decode_file_uri(trimmed).filter(|p| p.exists()) {
+        return full.to_string_lossy().into_owned();
+    }
+    let base_uri = trimmed.split(['#', '?']).next().unwrap_or(trimmed);
+    let local = crate::file_drop::decode_file_uri(base_uri)
+        .or_else(|| uri_to_local_path(base_uri))
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| base_uri.trim_start_matches("file://").to_owned());
+    resolve_abs_file_target(&local)
 }
 
 pub fn resolve_link_target(raw_url: &str, cwd: Option<&str>) -> Option<String> {
@@ -493,10 +467,7 @@ pub fn resolve_link_target(raw_url: &str, cwd: Option<&str>) -> Option<String> {
         return None;
     }
     if trimmed.starts_with("file://") {
-        let local = uri_to_local_path(trimmed)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| trimmed.trim_start_matches("file://").to_owned());
-        return Some(resolve_abs_file_target(&local));
+        return Some(resolve_file_uri_target(trimmed));
     }
     if trimmed.contains("://") {
         return Some(trimmed.to_owned());
@@ -1235,11 +1206,16 @@ pub(crate) mod tests {
         let (sub_dir, py_file, rs_file) = seed_relative_link_fixture(&root);
         let (root_s, sub_s) = (root.to_string_lossy(), sub_dir.to_string_lossy());
         assert_eq!(resolve_link_target("./учёба/курс/модуль.py:42:5", Some(&root_s)).as_deref(), py_file.to_str());
+        assert_eq!(resolve_link_target("./учёба/курс/модуль.py#L10-L20", Some(&root_s)).as_deref(), py_file.to_str());
         assert_eq!(resolve_link_target("../lib.rs:10", Some(&sub_s)).as_deref(), rs_file.to_str());
         assert_eq!(resolve_link_target("учёба/нет_файла.py:3", Some(&root_s)), None);
         assert_eq!(resolve_link_target("crates/lib.rs:10", None), None);
         assert_eq!(resolve_link_target("localhost:8080/health", None).as_deref(), Some("http://localhost:8080/health"));
         assert_eq!(resolve_link_target(&format!("{}:99:2", rs_file.display()), None).as_deref(), rs_file.to_str());
+        assert_eq!(resolve_link_target(&format!("{}#L12-L34", py_file.display()), None).as_deref(), py_file.to_str());
+        let enc_uri = format!("file://{}/%D1%83%D1%87%D1%91%D0%B1%D0%B0/%D0%BA%D1%83%D1%80%D1%81/%D0%BC%D0%BE%D0%B4%D1%83%D0%BB%D1%8C.py#L5-L9", root.display());
+        assert_eq!(resolve_link_target(&enc_uri, None).as_deref(), py_file.to_str());
+        assert_eq!(strip_link_punctuation("~/Development/Курс_(ЦУ))"), "~/Development/Курс_(ЦУ)");
         let _ = fs::remove_dir_all(&root);
     }
 
