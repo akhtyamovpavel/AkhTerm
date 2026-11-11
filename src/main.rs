@@ -9,6 +9,7 @@ mod palette;
 mod paste_route;
 mod paths;
 mod proc_radar;
+mod search_bar;
 mod session;
 mod sidebar;
 mod split_pane;
@@ -104,6 +105,7 @@ struct AppState {
     mi_scheduler: MiScheduler,
     box_state: Arc<Mutex<BoxTelemetry>>,
     palette: palette::CommandPalette,
+    search_bar: search_bar::SearchBar,
 }
 
 thread_local! {
@@ -327,16 +329,17 @@ extern "C" fn on_vte_focus_in(
 ) -> c_int {
     let sid = user_data as usize;
     let updated = APP.with(|cell| {
-        let Ok(mut state) = cell.try_borrow_mut() else { return false };
-        let Some(app) = state.as_mut() else { return false };
-        let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid && s.has_vte(vte)) else {
-            return false;
-        };
+        let Ok(mut state) = cell.try_borrow_mut() else { return None };
+        let app = state.as_mut()?;
+        let s = app.sessions.iter_mut().find(|s| s.id == sid && s.has_vte(vte))?;
         s.panes.record_focus(vte);
         sync_session_proc(s, None);
-        true
+        Some((s.id == app.active_id, app.search_bar.clone()))
     });
-    if updated {
+    if let Some((is_active, bar)) = updated {
+        if is_active {
+            bar.sync_active_vte(vte);
+        }
         refresh_ui();
     }
     0
@@ -468,9 +471,12 @@ pub fn select_session(sid: usize) {
         if s.state == WorkState::Ready {
             s.state = WorkState::Idle;
         }
-        Some((app.stack, s.active_vte()))
+        let mut vtes = Vec::new();
+        s.panes.collect_vtes(s.vte, &mut vtes);
+        Some((app.stack, vtes, s.panes.last_focus, app.search_bar.clone()))
     });
-    if let Some((stack, focus_vte)) = targets {
+    if let Some((stack, vtes, last_focus, search_bar)) = targets {
+        let focus_vte = pick_focused_vte(&vtes, last_focus);
         if !stack.is_null() {
             if let Ok(name_c) = CString::new(format!("term_{sid}")) {
                 unsafe { gtk_stack_set_visible_child_name(stack, name_c.as_ptr()) };
@@ -479,6 +485,7 @@ pub fn select_session(sid: usize) {
         if !focus_vte.is_null() {
             unsafe { gtk_widget_grab_focus(focus_vte) };
         }
+        search_bar.sync_active_vte(focus_vte);
     }
     refresh_ui();
     // The tab can be new and still waiting for its GTK size allocation.
@@ -1600,6 +1607,9 @@ extern "C" fn on_window_key_press(
         if let Some(handled) = route_palette_key(keyval, state, keycode) {
             return handled;
         }
+        if let Some(handled) = route_search_key(keyval, state, keycode) {
+            return handled;
+        }
 
         // F11 -> toggle window square / fullscreen
         if keyval == 0xffc8 {
@@ -1735,12 +1745,105 @@ fn execute_palette_action(action: palette::PaletteAction) {
             handoff_file_to_session(active_session_id(), &path);
         }
         palette::PaletteAction::ToggleTheme => toggle_theme(),
+        palette::PaletteAction::OpenSearch => open_search_bar(),
     }
+}
+
+fn snapshot_active_panes() -> Option<(usize, Vec<*mut GtkWidget>, *mut GtkWidget)> {
+    APP.with(|cell| {
+        let state = cell.try_borrow().ok()?;
+        let app = state.as_ref()?;
+        let s = app.sessions.iter().find(|s| s.id == app.active_id)?;
+        let mut vtes = Vec::new();
+        s.panes.collect_vtes(s.vte, &mut vtes);
+        Some((s.id, vtes, s.panes.last_focus))
+    })
+}
+
+fn record_pane_focus(sid: usize, vte: *mut GtkWidget) {
+    if vte.is_null() {
+        return;
+    }
+    APP.with(|cell| {
+        let Ok(mut state) = cell.try_borrow_mut() else { return };
+        let Some(app) = state.as_mut() else { return };
+        if let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid) {
+            s.panes.record_focus(vte);
+        }
+    });
+}
+
+fn pick_focused_vte(vtes: &[*mut GtkWidget], last_focus: *mut GtkWidget) -> *mut GtkWidget {
+    vtes.iter()
+        .copied()
+        .find(|&w| split_pane::is_widget_focused(w))
+        .or_else(|| vtes.contains(&last_focus).then_some(last_focus))
+        .or_else(|| vtes.first().copied())
+        .unwrap_or(ptr::null_mut())
+}
+
+fn active_search_vte() -> *mut GtkWidget {
+    let Some((sid, vtes, last_focus)) = snapshot_active_panes() else {
+        return ptr::null_mut();
+    };
+    let chosen = pick_focused_vte(&vtes, last_focus);
+    record_pane_focus(sid, chosen);
+    chosen
+}
+
+fn collect_close_search_vtes() -> (Vec<*mut GtkWidget>, *mut GtkWidget) {
+    let focus_vte = active_search_vte();
+    let mut all = Vec::new();
+    APP.with(|cell| {
+        let Ok(state) = cell.try_borrow() else { return };
+        if let Some(app) = state.as_ref() {
+            for s in &app.sessions {
+                s.panes.collect_vtes(s.vte, &mut all);
+            }
+        }
+    });
+    (all, focus_vte)
+}
+
+fn clone_search_bar() -> Option<search_bar::SearchBar> {
+    APP.with(|cell| {
+        let state = cell.try_borrow().ok()?;
+        Some(state.as_ref()?.search_bar.clone())
+    })
+}
+
+fn open_search_bar() {
+    if let Some(bar) = clone_search_bar() {
+        bar.open();
+    }
+}
+
+fn toggle_search_bar() {
+    let pair = APP.with(|cell| {
+        let state = cell.try_borrow().ok()?;
+        let app = state.as_ref()?;
+        Some((app.palette.clone(), app.search_bar.clone()))
+    });
+    if let Some((pal, bar)) = pair {
+        if pal.is_open() {
+            pal.close();
+        }
+        bar.toggle();
+    }
+}
+
+fn route_search_key(keyval: c_uint, state: c_uint, keycode: u16) -> Option<c_int> {
+    if search_bar::is_search_shortcut(keyval, state, keycode) {
+        toggle_search_bar();
+        return Some(1);
+    }
+    let focused = clone_search_bar().is_some_and(|bar| bar.entry_has_focus());
+    focused.then_some(0)
 }
 
 fn toggle_palette() {
     let snapshot = APP.with(|cell| {
-        let state = cell.borrow();
+        let state = cell.try_borrow().ok()?;
         let app = state.as_ref()?;
         let pal = app.palette.clone();
         if pal.is_open() {
@@ -1774,7 +1877,13 @@ fn route_palette_key(keyval: c_uint, state: c_uint, keycode: u16) -> Option<c_in
         toggle_theme();
         return Some(1);
     }
-    let open = APP.with(|cell| cell.borrow().as_ref().is_some_and(|app| app.palette.is_open()));
+    if search_bar::is_search_shortcut(keyval, state, keycode) {
+        toggle_search_bar();
+        return Some(1);
+    }
+    let open = APP.with(|cell| {
+        cell.try_borrow().ok().is_some_and(|st| st.as_ref().is_some_and(|app| app.palette.is_open()))
+    });
     open.then_some(0)
 }
 
@@ -2160,8 +2269,13 @@ fn run_app() {
 
         let sidebar = Sidebar::new(workspace_hbox, on_sidebar_search_changed);
 
+        let term_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+        gtk_box_pack_start(workspace_hbox, term_vbox, 1, 1, 0);
+        let search_bar = search_bar::SearchBar::new(active_search_vte, collect_close_search_vtes);
+        gtk_box_pack_start(term_vbox, search_bar.widget(), 0, 1, 0);
+
         let stack = gtk_stack_new();
-        gtk_box_pack_start(workspace_hbox, stack, 1, 1, 0);
+        gtk_box_pack_start(term_vbox, stack, 1, 1, 0);
 
         let footer_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         add_class(footer_box, "footer-bar");
@@ -2225,6 +2339,7 @@ fn run_app() {
                 mi_scheduler: mi_scheduler.clone(),
                 box_state: Arc::clone(&box_state),
                 palette: cmd_palette,
+                search_bar,
             });
         });
 

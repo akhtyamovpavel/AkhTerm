@@ -59,6 +59,24 @@ pub const PALETTE_BADGE_SSH_TMUX: &CStr = c"SSH · tmux";
 pub const PALETTE_BADGE_AGENT: &CStr = c"Агент";
 pub const PALETTE_BADGE_HANDOFF: &CStr = c"Handoff";
 pub const PALETTE_BADGE_THEME: &CStr = c"Тема";
+pub const PALETTE_BADGE_SEARCH: &CStr = c"Поиск";
+pub const PALETTE_SEARCH_TITLE: &CStr = c"Поиск по выводу";
+pub const PALETTE_SEARCH_DETAIL: &CStr =
+    c"Найти текст или regex в активном терминале · Ctrl+Shift+F";
+
+pub const SEARCH_PLACEHOLDER: &CStr = c"Поиск по выводу терминала...";
+pub const SEARCH_PREV: &CStr = c"↑";
+pub const SEARCH_PREV_TIP: &CStr = c"Предыдущее совпадение (Shift+Enter)";
+pub const SEARCH_NEXT: &CStr = c"↓";
+pub const SEARCH_NEXT_TIP: &CStr = c"Следующее совпадение (Enter)";
+pub const SEARCH_CASE: &CStr = c"Aa";
+pub const SEARCH_CASE_TIP: &CStr = c"Учитывать регистр";
+pub const SEARCH_REGEX: &CStr = c".*";
+pub const SEARCH_REGEX_TIP: &CStr = c"Регулярное выражение (PCRE2)";
+pub const SEARCH_CLOSE_TIP: &CStr = c"Закрыть поиск (Esc)";
+pub const SEARCH_FOUND: &CStr = c"Найдено";
+pub const SEARCH_NOT_FOUND: &CStr = c"Нет совпадений";
+pub const SEARCH_REGEX_ERR: &CStr = c"Ошибка regex";
 
 pub const AGENT_ACTIONS: [(&CStr, &str); 5] = [
     (c"agy · Antigravity CLI", "agy\n"),

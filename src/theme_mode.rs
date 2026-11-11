@@ -67,7 +67,8 @@ pub const LIGHT_ZINC_TOKENS: &str = "\
 @define-color badge_ssh_fg #1d4ed8;\n\
 @define-color badge_ssh_border rgba(29, 78, 216, 0.30);\n\
 @define-color badge_handoff_fg #c2410c;\n\
-@define-color badge_handoff_border rgba(194, 65, 12, 0.30);\n";
+@define-color badge_handoff_border rgba(194, 65, 12, 0.30);\n\
+@define-color search_err_border #e11d48;\n";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ThemeMode {

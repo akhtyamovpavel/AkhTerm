@@ -53,6 +53,7 @@
 @define-color badge_ssh_border rgba(147, 197, 253, 0.35);
 @define-color badge_handoff_fg #fdba74;
 @define-color badge_handoff_border rgba(253, 186, 116, 0.35);
+@define-color search_err_border #f43f5e;
 
 .tab-icon,
 .sidebar-icon {
@@ -295,4 +296,76 @@ paned > separator {
 
 paned > separator:hover {
     background-color: @focus;
+}
+
+.term-search-bar {
+    background-color: @canvas;
+    border-bottom: 1px solid @border;
+    padding: 4px 10px;
+}
+
+entry.term-search-entry {
+    background-color: @surface;
+    color: @text;
+    border: 1px solid @border;
+    border-radius: 6px;
+    min-height: 26px;
+    min-width: 240px;
+    padding: 3px 8px;
+    font-size: 13px;
+}
+
+entry.term-search-entry:focus {
+    border-color: @focus;
+}
+
+entry.term-search-entry.term-search-entry-err {
+    border-color: @search_err_border;
+}
+
+.term-search-bar button.term-search-btn,
+.term-search-bar button.term-search-toggle,
+.term-search-bar button.term-search-close {
+    background-color: @surface;
+    color: @muted;
+    border: 1px solid @border;
+    border-radius: 6px;
+    min-height: 26px;
+    min-width: 28px;
+    padding: 0 7px;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.term-search-bar button.term-search-btn:hover,
+.term-search-bar button.term-search-toggle:hover,
+.term-search-bar button.term-search-close:hover {
+    background-color: @hover;
+    color: @text;
+}
+
+.term-search-bar button.term-search-toggle:checked,
+.term-search-bar button.term-search-toggle.term-search-toggle-active {
+    background-color: @selected;
+    border-color: @focus;
+    color: @text;
+    font-weight: 600;
+}
+
+.term-search-status {
+    color: @muted;
+    font-size: 12px;
+    padding: 0 6px;
+}
+
+.term-search-status-ok {
+    color: @ready;
+}
+
+.term-search-status-miss {
+    color: @muted;
+}
+
+.term-search-status-err {
+    color: @mi_c;
 }
