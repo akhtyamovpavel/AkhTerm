@@ -424,7 +424,6 @@ pub fn query_ssh_servers(hosts: &[String]) -> BoxTelemetry {
     out
 }
 
-pub use crate::paths::split_path_line_col;
 use crate::paths::{clean_joined_path, strip_anchor_or_line, strip_link_punctuation};
 
 fn resolve_abs_file_target(path_str: &str) -> String {
@@ -863,6 +862,7 @@ pub fn try_paste_clipboard_image(ssh_host: &str, force_image: bool) -> Option<(S
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::paths::split_path_line_col;
     use std::process::Child;
     use std::sync::{Mutex, OnceLock};
     use std::time::{Duration, Instant};

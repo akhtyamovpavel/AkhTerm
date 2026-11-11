@@ -11,7 +11,7 @@ AkhTerm is a native Linux terminal built with Rust, GTK 3 and VTE. It puts local
 The `amd64` package was tested on Ubuntu 24.04 and 26.04. Open the `.deb` in your graphical package installer, or install it with APT from the directory containing the file.
 
 ```sh
-sudo apt install ./akhterm_0.4.1-1_amd64.deb
+sudo apt install ./akhterm_0.4.2-1_amd64.deb
 ```
 
 Start **AkhTerm** from the application menu or run `akhterm`. Remove it with `sudo apt remove akhterm`. Your configuration and saved tabs stay in your home directory.
@@ -23,7 +23,7 @@ The [Build Debian package workflow](.github/workflows/build-deb.yml) runs on pus
 The `x86_64` RPM package is tested on Fedora 41 and 42. Install it with DNF from the directory containing the file.
 
 ```sh
-sudo dnf install ./akhterm-0.4.1-1.x86_64.rpm
+sudo dnf install ./akhterm-0.4.2-1.x86_64.rpm
 ```
 
 Start **AkhTerm** from the application menu or run `akhterm`. Remove it with `sudo dnf remove akhterm`.
