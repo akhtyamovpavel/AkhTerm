@@ -88,6 +88,21 @@ pub fn copy_text_to_clipboard(value: &str) {
     }
 }
 
+pub fn copy_vte_selection_to_clipboard(vte: *mut GtkWidget, clear_after: bool) -> bool {
+    if vte.is_null() || unsafe { vte_terminal_get_has_selection(vte) } == 0 {
+        return false;
+    }
+    let Some(sel) = read_vte_selection(vte) else {
+        return false;
+    };
+    unsafe { vte_terminal_copy_clipboard_format(vte, VTE_FORMAT_TEXT) };
+    copy_text_to_clipboard(&sel);
+    if clear_after {
+        unsafe { vte_terminal_unselect_all(vte) };
+    }
+    true
+}
+
 pub fn save_forward_capture(
     briefs_dir: Option<&Path>,
     pane_vte: *mut GtkWidget,
@@ -667,16 +682,48 @@ mod tests {
         assert_eq!(*renamed.borrow(), Some((3, "Бэкенд ЦУ".to_owned())));
     }
 
+    fn read_clipboard_text() -> String {
+        unsafe {
+            let clip = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+            let raw = gtk_clipboard_wait_for_text(clip);
+            assert!(!raw.is_null());
+            let out = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            g_free(raw as *mut c_void);
+            out
+        }
+    }
+
+    fn check_smart_copy_persists_after_unselect(vte: *mut GtkWidget) {
+        assert!(!copy_vte_selection_to_clipboard(ptr::null_mut(), true));
+        unsafe {
+            let clip = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+            let pix = gdk_pixbuf_new(0, 1, 8, 4, 4);
+            gtk_clipboard_set_image(clip, pix);
+            g_object_unref(pix);
+            pump_gtk_events();
+        }
+        assert!(crate::proc_radar::clipboard_has_direct_image());
+        unsafe { vte_terminal_select_all(vte) };
+        pump_gtk_events();
+        assert!(copy_vte_selection_to_clipboard(vte, false));
+        assert!(unsafe { vte_terminal_get_has_selection(vte) != 0 });
+        assert!(!crate::proc_radar::clipboard_has_direct_image());
+        assert!(read_clipboard_text().contains("Привет из терминала"));
+        assert!(copy_vte_selection_to_clipboard(vte, true));
+        pump_gtk_events();
+        assert_eq!(unsafe { vte_terminal_get_has_selection(vte) }, 0);
+        assert!(read_clipboard_text().contains("Привет из терминала"));
+        assert!(!copy_vte_selection_to_clipboard(vte, true));
+    }
+
     fn check_vte_selection_and_clear(vte: *mut GtkWidget) {
         let sample = "Привет из терминала\r\nВторая строка\r\n";
         unsafe { vte_terminal_feed(vte, sample.as_ptr() as *const c_char, sample.len() as isize) };
         thread::sleep(Duration::from_millis(50));
         pump_gtk_events();
         assert_eq!(read_vte_selection(vte), None);
-        unsafe { vte_terminal_select_all(vte) };
-        pump_gtk_events();
-        let selected = read_vte_selection(vte).expect("selected text");
-        assert!(selected.contains("Привет из терминала"), "selected: {selected:?}");
+        assert!(!copy_vte_selection_to_clipboard(vte, true));
+        check_smart_copy_persists_after_unselect(vte);
         unsafe { vte_terminal_reset(vte, 0, 1) };
         thread::sleep(Duration::from_millis(30));
         pump_gtk_events();
@@ -686,15 +733,7 @@ mod tests {
     fn check_cyrillic_clipboard() {
         copy_text_to_clipboard("/tmp/кириллический_путь");
         pump_gtk_events();
-        let clip_txt = unsafe {
-            let clip = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
-            let raw = gtk_clipboard_wait_for_text(clip);
-            assert!(!raw.is_null());
-            let out = CStr::from_ptr(raw).to_string_lossy().into_owned();
-            g_free(raw as *mut c_void);
-            out
-        };
-        assert_eq!(clip_txt, "/tmp/кириллический_путь");
+        assert_eq!(read_clipboard_text(), "/tmp/кириллический_путь");
     }
 
     #[test]

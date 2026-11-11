@@ -65,12 +65,15 @@ use mi_watch::{
     build_mi_refactor_prompt, format_mi_button_label, format_mi_popover_markup, lookup_mi,
     mi_grade_class, resolve_active_mi, MiScheduler,
 };
-use paste_route::{choose_paste_route, resolve_pane_agent, PasteRoute};
+use paste_route::{
+    choose_paste_route, is_c_key, is_ctrl_shift_shortcut, is_plain_ctrl_shortcut, is_v_key,
+    resolve_pane_agent, PasteRoute,
+};
 use paths::{expand_home, home_dir, shorten_home};
 use proc_radar::{
-    detect_local_agent, inspect_proc_tree, load_ssh_hosts, open_external_link, query_ssh_servers,
-    save_ssh_hosts, switch_remote_tmux_session, try_paste_clipboard_image, BoxTelemetry,
-    RemoteTmuxItem, SshHostEntry,
+    clipboard_has_direct_image, detect_local_agent, inspect_proc_tree, load_ssh_hosts,
+    open_external_link, query_ssh_servers, save_ssh_hosts, switch_remote_tmux_session,
+    try_paste_clipboard_image, BoxTelemetry, RemoteTmuxItem, SshHostEntry,
 };
 use session::{
     create_vte_widget, refresh_smart_title, register_link_cwd_lookup, register_vte_menu_hook,
@@ -2329,7 +2332,8 @@ fn paste_routed_to(sid_opt: Option<usize>, preferred_vte: *mut GtkWidget, plain_
     }
     let _guard = PasteGuard;
     let Some((sid, target_vte, host, agent)) = pane_paste_context(sid_opt, preferred_vte) else { return false };
-    if choose_paste_route(plain_ctrl_v, &host, &agent) == PasteRoute::PassThroughToPty {
+    let has_image = plain_ctrl_v && clipboard_has_direct_image();
+    if choose_paste_route(plain_ctrl_v, has_image, &host, &agent) == PasteRoute::PassThroughToPty {
         return false;
     }
     let image = try_paste_clipboard_image(&host, force_image);
@@ -2348,7 +2352,7 @@ fn paste_smart(force_image: bool) -> bool {
 
 fn paste_plain_ctrl_v() -> bool {
     let sid = active_session_id();
-    paste_routed_to(Some(sid), ptr::null_mut(), true, true)
+    paste_routed_to(Some(sid), ptr::null_mut(), true, false)
 }
 
 fn has_live_vte(vte: *mut GtkWidget) -> bool {
@@ -2469,10 +2473,8 @@ fn copy_vte_selection(vte: *mut GtkWidget) {
     if !has_live_vte(vte) {
         return;
     }
-    unsafe {
-        vte_terminal_copy_clipboard_format(vte, VTE_FORMAT_TEXT);
-        gtk_widget_grab_focus(vte);
-    }
+    let _ = context_menu::copy_vte_selection_to_clipboard(vte, false);
+    unsafe { gtk_widget_grab_focus(vte) };
 }
 
 fn execute_vte_action(action: ContextAction) -> Result<(), ContextAction> {
@@ -2544,15 +2546,13 @@ extern "C" fn on_tab_context_menu(widget: *mut GtkWidget, event: *const GdkEvent
     1
 }
 
-fn copy_active_selection() {
+fn copy_active_selection(clear_after: bool) -> bool {
     let vte = APP.with(|cell| {
-        let state = cell.borrow();
+        let state = cell.try_borrow().ok()?;
         let app = state.as_ref()?;
         app.sessions.iter().find(|s| s.id == app.active_id).map(TermSession::active_vte)
     });
-    if let Some(vte) = vte.filter(|w| !w.is_null()) {
-        unsafe { vte_terminal_copy_clipboard_format(vte, 1) };
-    }
+    vte.is_some_and(|w| context_menu::copy_vte_selection_to_clipboard(w, clear_after))
 }
 
 extern "C" fn on_paste_image_clicked(_btn: *mut GtkWidget, _data: *mut c_void) {
@@ -2625,11 +2625,11 @@ extern "C" fn on_window_key_press(
                 set_zoom(1.0);
                 return 1;
             }
-            // Plain Ctrl + V (keycode 55): pass through to local multimodal TUI agents, else paste image path!
-            if (state & GDK_SHIFT_MASK) == 0
-                && (keyval == b'v' as u32 || keyval == b'V' as u32 || keycode == 55)
-            {
-                if paste_plain_ctrl_v() {
+            if is_plain_ctrl_shortcut(state) {
+                if is_c_key(keyval, keycode) {
+                    return c_int::from(copy_active_selection(true));
+                }
+                if is_v_key(keyval, keycode) && paste_plain_ctrl_v() {
                     return 1;
                 }
             }
@@ -2639,11 +2639,11 @@ extern "C" fn on_window_key_press(
             if handle_tab_shortcut(keyval, state, keycode) {
                 return 1;
             }
-            if keyval == b'C' as u32 || keyval == b'c' as u32 || keycode == 54 {
-                copy_active_selection();
+            if is_ctrl_shift_shortcut(state) && is_c_key(keyval, keycode) {
+                let _ = copy_active_selection(false);
                 return 1;
             }
-            if keyval == b'V' as u32 || keyval == b'v' as u32 || keycode == 55 {
+            if is_ctrl_shift_shortcut(state) && is_v_key(keyval, keycode) {
                 let _ = paste_smart(false);
                 return 1;
             }
@@ -3729,12 +3729,77 @@ mod tests {
         pump_gtk_events();
     }
 
+    fn set_test_clipboard_pixbuf() {
+        unsafe {
+            let clip = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+            let pix = gdk_pixbuf_new(0, 1, 8, 4, 4);
+            gtk_clipboard_set_image(clip, pix);
+            g_object_unref(pix);
+            pump_gtk_events();
+        }
+    }
+
+    fn wait_captured_output(path: &Path, needle: &str) -> String {
+        for _ in 0..40 {
+            pump_gtk_events();
+            if std::fs::read_to_string(path).is_ok_and(|s| s.contains(needle)) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        std::fs::read_to_string(path).unwrap_or_default()
+    }
+
+    fn verify_smart_copy_on_vte(vte: *mut GtkWidget) {
+        let banner = "Скопируй меня";
+        unsafe { vte_terminal_feed(vte, banner.as_ptr() as *const c_char, banner.len() as isize) };
+        thread::sleep(Duration::from_millis(40));
+        pump_gtk_events();
+        unsafe { vte_terminal_select_all(vte) };
+        pump_gtk_events();
+        assert!(copy_active_selection(true));
+        assert!(!copy_active_selection(true));
+        assert!(!clipboard_has_direct_image());
+    }
+
+    fn verify_smart_ctrl_c_and_ctrl_v_across_shell_and_agy() {
+        let out_file = std::env::temp_dir().join(format!("akhterm_ctrlv_{}", std::process::id()));
+        let _ = std::fs::remove_file(&out_file);
+        let cmd = format!("cat > '{}'", out_file.display());
+        let win = unsafe { gtk_window_new(GTK_WINDOW_TOPLEVEL) };
+        APP.with(|cell| *cell.borrow_mut() = Some(make_test_app(win)));
+        let sid = add_tab("AGY", "", "/tmp", SessionCategory::Project, &["sh", "-c", &cmd], Tab::local("shell"));
+        let vte = APP.with(|cell| cell.borrow().as_ref().unwrap().sessions[0].vte);
+        unsafe { gtk_widget_show_all(win) };
+        pump_gtk_events();
+
+        APP.with(|c| c.borrow_mut().as_mut().unwrap().sessions[0].proc_info.agent = "AGY".into());
+        context_menu::copy_text_to_clipboard("текст для AGY\n");
+        pump_gtk_events();
+        assert!(paste_plain_ctrl_v());
+
+        set_test_clipboard_pixbuf();
+        APP.with(|c| c.borrow_mut().as_mut().unwrap().sessions[0].proc_info.agent = "AGY".into());
+        assert!(!paste_plain_ctrl_v());
+
+        verify_smart_copy_on_vte(vte);
+        feed_vte_text(vte, "\x04", false);
+        let captured = wait_captured_output(&out_file, "текст для AGY");
+        assert!(captured.contains("текст для AGY"), "captured: {captured:?}");
+        let _ = std::fs::remove_file(&out_file);
+        close_session(sid);
+        APP.with(|cell| *cell.borrow_mut() = None);
+        unsafe { gtk_widget_destroy(win) };
+        pump_gtk_events();
+    }
+
     #[test]
     fn app_routes_local_and_remote_drops_and_ignores_closed_vte_on_idle() {
         with_headless_gtk(|| {
             verify_app_drop_routing_and_mid_upload_close();
             verify_unified_rename_persists_and_resets_in_tabs_v1();
             verify_wayland_safe_mouse_tab_drag_without_root_coords();
+            verify_smart_ctrl_c_and_ctrl_v_across_shell_and_agy();
         });
     }
 

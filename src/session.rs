@@ -379,12 +379,39 @@ fn handle_vte_right_click(
     1
 }
 
+pub fn should_open_vte_link(button: u32, state: u32) -> bool {
+    if button != 1 {
+        return false;
+    }
+    let ctrl_held = (state & GDK_CONTROL_MASK) != 0;
+    let no_alt = (state & GDK_MOD1_MASK) == 0;
+    ctrl_held && no_alt
+}
+
+fn handle_vte_left_click(
+    vte: *mut GtkWidget,
+    event: *const GdkEvent,
+    state: u32,
+    user_data: *mut c_void,
+) -> c_int {
+    if !should_open_vte_link(1, state) {
+        return 0;
+    }
+    let cwd = resolve_vte_cwd(vte, user_data);
+    if let Some(target) = check_vte_event_link(vte, event, cwd.as_deref()) {
+        open_external_link(&target);
+        return 1;
+    }
+    0
+}
+
 extern "C" fn on_vte_button_press(
     vte: *mut GtkWidget,
     event: *const GdkEvent,
     user_data: *mut c_void,
 ) -> c_int {
     let mut button: u32 = 0;
+    let mut state: u32 = 0;
     let is_press = unsafe {
         !event.is_null()
             && gdk_event_get_event_type(event) == GDK_BUTTON_PRESS
@@ -393,18 +420,12 @@ extern "C" fn on_vte_button_press(
     if !is_press {
         return 0;
     }
-    if button == 1 {
-        let cwd = resolve_vte_cwd(vte, user_data);
-        if let Some(target) = check_vte_event_link(vte, event, cwd.as_deref()) {
-            open_external_link(&target);
-            return 1;
-        }
-        return 0;
+    unsafe { gdk_event_get_state(event, &mut state) };
+    match button {
+        1 => handle_vte_left_click(vte, event, state, user_data),
+        3 => handle_vte_right_click(vte, event, user_data),
+        _ => 0,
     }
-    if button == 3 {
-        return handle_vte_right_click(vte, event, user_data);
-    }
-    0
 }
 
 fn apply_vte_style(vte: *mut GtkWidget) {
@@ -807,54 +828,68 @@ mod tests {
         s.proc_info.agent.clear();
     }
 
+    fn build_headless_rename_session(root: *mut GtkWidget) -> TermSession {
+        let sidebar = crate::sidebar::Sidebar::new(root, noop_click);
+        let strip = crate::tab_strip::TabStrip::new(root, noop_click);
+        let vte = unsafe { vte_terminal_new() };
+        let scroll = crate::split_pane::wrap_vte_scroll(vte);
+        let panes = TabPanes::new(scroll, vte);
+        unsafe { gtk_box_pack_start(root, panes.root, 1, 1, 0) };
+        new_headless_project_session(vte, scroll, panes, &sidebar, &strip)
+    }
+
+    fn new_headless_project_session(
+        vte: *mut GtkWidget,
+        scroll: *mut GtkWidget,
+        panes: TabPanes,
+        sidebar: &crate::sidebar::Sidebar,
+        strip: &crate::tab_strip::TabStrip,
+    ) -> TermSession {
+        let now = Instant::now();
+        let handlers = crate::tab_strip::TabHandlers {
+            on_select: noop_click,
+            on_close: noop_click,
+            on_press: noop_ctx,
+            on_motion: noop_ctx,
+            on_release: noop_ctx,
+        };
+        TermSession {
+            id: 1,
+            base_title: "Проект · Новая".to_owned(),
+            profile_cwd: "/home/user/Проект".to_owned(),
+            title: "Проект · Новая".to_owned(),
+            osc_title: String::new(),
+            pinned_title: None,
+            cwd: "/home/user/ДругаяПапка".to_owned(),
+            category: SessionCategory::Project,
+            vte,
+            scroll_wrap: scroll,
+            panes,
+            sidebar_row: sidebar.append_tab(SessionCategory::Project, 1, noop_click, noop_ctx),
+            top_tab: strip.append(1, SessionCategory::Project, handlers),
+            child_pid: 0,
+            state: WorkState::Idle,
+            unread: false,
+            last_output: now,
+            work_started: now,
+            work_started_at: None,
+            last_turn_secs: None,
+            last_notified: None,
+            proc_info: ProcInfo::default(),
+            tab: Tab::local("default"),
+            remote_tmux: None,
+            tmux_title_from_vte: false,
+            telemetry: SessionTelemetry::default(),
+        }
+    }
+
     #[test]
     fn custom_rename_overrides_smart_title_and_resets_when_blank() {
         crate::proc_radar::tests::with_headless_gtk(|| unsafe {
             let win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
             let root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
             gtk_container_add(win, root);
-            let sidebar = crate::sidebar::Sidebar::new(root, noop_click);
-            let strip = crate::tab_strip::TabStrip::new(root, noop_click);
-            let vte = vte_terminal_new();
-            let scroll = crate::split_pane::wrap_vte_scroll(vte);
-            let panes = TabPanes::new(scroll, vte);
-            gtk_box_pack_start(root, panes.root, 1, 1, 0);
-            let now = Instant::now();
-            let handlers = crate::tab_strip::TabHandlers {
-                on_select: noop_click,
-                on_close: noop_click,
-                on_press: noop_ctx,
-                on_motion: noop_ctx,
-                on_release: noop_ctx,
-            };
-            let mut s = TermSession {
-                id: 1,
-                base_title: "Проект · Новая".to_owned(),
-                profile_cwd: "/home/user/Проект".to_owned(),
-                title: "Проект · Новая".to_owned(),
-                osc_title: String::new(),
-                pinned_title: None,
-                cwd: "/home/user/ДругаяПапка".to_owned(),
-                category: SessionCategory::Project,
-                vte,
-                scroll_wrap: scroll,
-                panes,
-                sidebar_row: sidebar.append_tab(SessionCategory::Project, 1, noop_click, noop_ctx),
-                top_tab: strip.append(1, SessionCategory::Project, handlers),
-                child_pid: 0,
-                state: WorkState::Idle,
-                unread: false,
-                last_output: now,
-                work_started: now,
-                work_started_at: None,
-                last_turn_secs: None,
-                last_notified: None,
-                proc_info: ProcInfo::default(),
-                tab: Tab::local("default"),
-                remote_tmux: None,
-                tmux_title_from_vte: false,
-                telemetry: SessionTelemetry::default(),
-            };
+            let mut s = build_headless_rename_session(root);
             s.apply_rename("  Сборка релиза ЦУ  ");
             assert_eq!(s.pinned_title.as_deref(), Some("Сборка релиза ЦУ"));
             assert_eq!(s.title, "Сборка релиза ЦУ");
@@ -864,5 +899,37 @@ mod tests {
             assert_eq!(s.title, "ДругаяПапка");
             gtk_widget_destroy(win);
         });
+    }
+
+    fn check_left_click_modifiers() {
+        const LOCK_AND_MOD2: u32 = (1 << 1) | (1 << 4);
+        for state in [0, LOCK_AND_MOD2, GDK_SHIFT_MASK, GDK_MOD1_MASK, GDK_CONTROL_MASK | GDK_MOD1_MASK] {
+            assert!(!should_open_vte_link(1, state));
+        }
+        for state in [GDK_CONTROL_MASK, GDK_CONTROL_MASK | LOCK_AND_MOD2, GDK_CONTROL_MASK | GDK_SHIFT_MASK] {
+            assert!(should_open_vte_link(1, state));
+        }
+        assert!(!should_open_vte_link(2, GDK_CONTROL_MASK));
+        assert!(!should_open_vte_link(3, GDK_CONTROL_MASK));
+    }
+
+    #[test]
+    fn left_click_link_predicate_requires_ctrl_and_keeps_drag_selection_free() {
+        check_left_click_modifiers();
+        crate::proc_radar::tests::with_headless_gtk(|| unsafe {
+            let win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+            let vte = vte_terminal_new();
+            gtk_container_add(win, vte);
+            assert_eq!(handle_vte_left_click(vte, ptr::null(), 0, ptr::null_mut()), 0);
+            assert_eq!(handle_vte_left_click(vte, ptr::null(), GDK_CONTROL_MASK, ptr::null_mut()), 0);
+            assert_eq!(on_vte_button_press(vte, ptr::null(), ptr::null_mut()), 0);
+            gtk_widget_destroy(win);
+        });
+    }
+
+    #[test]
+    fn session_module_meets_grade_b_mi_target() {
+        let (_, _, mi) = crate::mi::compute_file_mi(include_str!("session.rs"));
+        assert!(mi >= 58.0, "session.rs MI {mi:.2} < 58.0");
     }
 }

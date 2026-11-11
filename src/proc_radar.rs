@@ -523,6 +523,7 @@ pub fn open_external_link(raw_url: &str) {
 }
 
 fn upload_bytes_to_ssh(ssh_host: &str, remote_path: &str, bytes: &[u8]) -> bool {
+    let remote_cmd = format!("cat > {}", shell_quote(remote_path));
     let Ok(mut child) = Command::new("ssh")
         .args([
             "-o",
@@ -533,7 +534,7 @@ fn upload_bytes_to_ssh(ssh_host: &str, remote_path: &str, bytes: &[u8]) -> bool 
             "ClearAllForwardings=yes",
             "--",
             ssh_host,
-            &format!("cat > {remote_path}"),
+            &remote_cmd,
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -586,6 +587,14 @@ fn clipboard_targets(clipboard: *mut GtkClipboard) -> Option<ClipboardTargets> {
     Some(info)
 }
 
+pub fn clipboard_has_direct_image() -> bool {
+    let clipboard = unsafe { gtk_clipboard_get(GDK_SELECTION_CLIPBOARD) };
+    if clipboard.is_null() {
+        return false;
+    }
+    clipboard_targets(clipboard).is_some_and(|t| t.has_image && !t.has_text)
+}
+
 fn pixbuf_to_png(pixbuf: *mut GdkPixbuf) -> Option<Vec<u8>> {
     let mut buf: *mut c_char = ptr::null_mut();
     let mut size: usize = 0;
@@ -619,16 +628,129 @@ fn clipboard_png_bytes(clipboard: *mut GtkClipboard) -> Option<Vec<u8>> {
     bytes
 }
 
-fn clipboard_first_uri(clipboard: *mut GtkClipboard) -> Option<String> {
+fn clipboard_uris(clipboard: *mut GtkClipboard) -> Vec<String> {
     let uris = unsafe { gtk_clipboard_wait_for_uris(clipboard) };
     if uris.is_null() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut idx = 0usize;
+    unsafe {
+        while !(*uris.add(idx)).is_null() {
+            let item = CStr::from_ptr(*uris.add(idx)).to_string_lossy().into_owned();
+            if !item.trim().is_empty() {
+                out.push(item);
+            }
+            idx += 1;
+        }
+        g_strfreev(uris);
+    }
+    out
+}
+
+fn is_file_uri_text_only(raw: &str) -> bool {
+    let mut has_line = false;
+    for line in raw.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        if !line.starts_with("file://") {
+            return false;
+        }
+        has_line = true;
+    }
+    has_line
+}
+
+fn clipboard_allows_uri_paste(clipboard: *mut GtkClipboard, targets: ClipboardTargets) -> bool {
+    if !targets.has_uri {
+        return false;
+    }
+    if !targets.has_text {
+        return true;
+    }
+    let text = take_glib_string(unsafe { gtk_clipboard_wait_for_text(clipboard) });
+    text.as_deref().map_or(true, is_file_uri_text_only)
+}
+
+fn format_local_uri_paste(paths: &[PathBuf]) -> Option<(String, String)> {
+    let formatted = crate::file_drop::format_local_drop_paths(paths);
+    if formatted.is_empty() {
         return None;
     }
-    let first = unsafe {
-        (!(*uris).is_null()).then(|| CStr::from_ptr(*uris).to_string_lossy().into_owned())
+    let status = if paths.len() == 1 {
+        format!("📎 Вставлен путь: {}", paths[0].display())
+    } else {
+        format!("📎 Вставлено путей: {}", paths.len())
     };
-    unsafe { g_strfreev(uris) };
-    first
+    Some((formatted, status))
+}
+
+fn remote_paste_path(local_path: &Path, ts: u64, idx: usize) -> String {
+    let raw = local_path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    let safe = crate::file_drop::sanitize_remote_basename(raw);
+    if idx == 0 {
+        format!("/tmp/akhterm_paste_{ts}_{safe}")
+    } else {
+        format!("/tmp/akhterm_paste_{ts}_{idx}_{safe}")
+    }
+}
+
+fn format_remote_uri_status(ssh_host: &str, remote_paths: &[String], total_bytes: usize) -> String {
+    let kb = (total_bytes / 1024).max(1);
+    if remote_paths.len() == 1 {
+        format!("📎 Файл ({kb} КБ) загружен по SSH на {ssh_host}:{}", remote_paths[0])
+    } else {
+        format!("📎 Файлы ({}, {kb} КБ) загружены по SSH на {ssh_host}", remote_paths.len())
+    }
+}
+
+fn upload_clipboard_uri_files<F>(
+    ssh_host: &str,
+    paths: &[PathBuf],
+    ts: u64,
+    mut uploader: F,
+) -> Option<(String, String)>
+where
+    F: FnMut(&str, &str, &[u8]) -> bool,
+{
+    let mut remote_paths = Vec::new();
+    let mut total_bytes = 0usize;
+    for path in paths.iter().filter(|p| p.is_file()) {
+        let bytes = fs::read(path).ok()?;
+        let remote = remote_paste_path(path, ts, remote_paths.len());
+        if !uploader(ssh_host, &remote, &bytes) {
+            return None;
+        }
+        total_bytes += bytes.len();
+        remote_paths.push(remote);
+    }
+    if remote_paths.is_empty() {
+        return None;
+    }
+    let status = format_remote_uri_status(ssh_host, &remote_paths, total_bytes);
+    Some((crate::file_drop::format_shell_paths(&remote_paths), status))
+}
+
+fn try_paste_clipboard_uris<F>(
+    clipboard: *mut GtkClipboard,
+    targets: ClipboardTargets,
+    ssh_host: &str,
+    ts: u64,
+    uploader: F,
+) -> Option<(String, String)>
+where
+    F: FnMut(&str, &str, &[u8]) -> bool,
+{
+    if !clipboard_allows_uri_paste(clipboard, targets) {
+        return None;
+    }
+    let paths = crate::file_drop::decode_uri_list(&clipboard_uris(clipboard));
+    if paths.is_empty() {
+        return None;
+    }
+    if ssh_host.is_empty() {
+        format_local_uri_paste(&paths)
+    } else {
+        upload_clipboard_uri_files(ssh_host, &paths, ts, uploader)
+    }
 }
 
 fn first_clipboard_line(raw: &str) -> Option<&str> {
@@ -640,10 +762,16 @@ fn first_clipboard_line(raw: &str) -> Option<&str> {
 fn clipboard_uri_or_text(
     clipboard: *mut GtkClipboard,
     targets: ClipboardTargets,
+    uri_paste_ok: bool,
+    force_image: bool,
 ) -> Option<(String, bool)> {
-    if targets.has_uri {
-        if let Some(uri) = clipboard_first_uri(clipboard) {
-            return Some((uri, true));
+    if uri_paste_ok {
+        let uris = clipboard_uris(clipboard);
+        if uris.len() == 1 || (force_image && !uris.is_empty()) {
+            return uris.into_iter().next().map(|u| (u, true));
+        }
+        if uris.len() > 1 {
+            return None;
         }
     }
     let text = targets
@@ -651,7 +779,7 @@ fn clipboard_uri_or_text(
         .then(|| take_glib_string(unsafe { gtk_clipboard_wait_for_text(clipboard) }))
         .flatten()
         .filter(|s| !s.trim().is_empty())?;
-    let is_uri = first_clipboard_line(&text).is_some_and(|l| l.starts_with("file://"));
+    let is_uri = is_file_uri_text_only(&text);
     Some((text, is_uri))
 }
 
@@ -707,11 +835,12 @@ fn save_or_upload_image(
 fn save_clipboard_file_payload(
     clipboard: *mut GtkClipboard,
     targets: ClipboardTargets,
+    uri_paste_ok: bool,
     ssh_host: &str,
     force_image: bool,
     ts: u64,
 ) -> Option<(String, String)> {
-    let (raw, from_uri) = clipboard_uri_or_text(clipboard, targets)?;
+    let (raw, from_uri) = clipboard_uri_or_text(clipboard, targets, uri_paste_ok, force_image)?;
     if ssh_host.is_empty() && !force_image && !from_uri {
         return None;
     }
@@ -720,23 +849,43 @@ fn save_clipboard_file_payload(
     save_or_upload_image(ssh_host, &bytes, &ext, "Файл", ts)
 }
 
+fn current_paste_ts() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+fn try_paste_direct_png(
+    clipboard: *mut GtkClipboard,
+    targets: ClipboardTargets,
+    uri_paste_ok: bool,
+    ssh_host: &str,
+    force_image: bool,
+    ts: u64,
+) -> Option<(String, String)> {
+    let allow = targets.has_image && (force_image || !targets.has_text || uri_paste_ok);
+    let bytes = allow.then(|| clipboard_png_bytes(clipboard)).flatten()?;
+    save_or_upload_image(ssh_host, &bytes, "png", "Скриншот", ts)
+}
+
 pub fn try_paste_clipboard_image(ssh_host: &str, force_image: bool) -> Option<(String, String)> {
     let clipboard = unsafe { gtk_clipboard_get(GDK_SELECTION_CLIPBOARD) };
     if clipboard.is_null() {
         return None;
     }
     let targets = clipboard_targets(clipboard)?;
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-
-    if targets.has_image && (force_image || !targets.has_text || targets.has_uri) {
-        if let Some(bytes) = clipboard_png_bytes(clipboard) {
-            return save_or_upload_image(ssh_host, &bytes, "png", "Скриншот", ts);
+    let ts = current_paste_ts();
+    let uri_paste_ok = clipboard_allows_uri_paste(clipboard, targets);
+    if let Some(png) = try_paste_direct_png(clipboard, targets, uri_paste_ok, ssh_host, force_image, ts) {
+        return Some(png);
+    }
+    if targets.has_uri || targets.has_text {
+        if let Some(saved) = save_clipboard_file_payload(clipboard, targets, uri_paste_ok, ssh_host, force_image, ts) {
+            return Some(saved);
         }
     }
-    (targets.has_uri || targets.has_text)
-        .then(|| save_clipboard_file_payload(clipboard, targets, ssh_host, force_image, ts))
+    (!force_image && uri_paste_ok)
+        .then(|| try_paste_clipboard_uris(clipboard, targets, ssh_host, ts, upload_bytes_to_ssh))
         .flatten()
 }
 
@@ -749,6 +898,11 @@ pub(crate) mod tests {
 
     extern "C" {
         fn atexit(cb: extern "C" fn()) -> c_int;
+    }
+
+    struct MockClipPayload {
+        uris: Vec<CString>,
+        text: Option<CString>,
     }
 
     struct BroadwayServer {
@@ -850,6 +1004,7 @@ pub(crate) mod tests {
             g_object_unref(pix);
             pump_gtk_events();
         }
+        assert!(clipboard_has_direct_image());
         let (pasted_img, status) = try_paste_clipboard_image("", false).expect("png saved");
         let saved_path = pasted_img.trim();
         let png_bytes = fs::read(saved_path).unwrap();
@@ -865,6 +1020,117 @@ pub(crate) mod tests {
             }
         }
         let _ = fs::remove_dir(dir);
+    }
+
+    extern "C" fn provide_mock_clip(
+        _clip: *mut GtkClipboard,
+        sel: *mut GtkSelectionData,
+        info: u32,
+        data: *mut c_void,
+    ) {
+        let payload = unsafe { &*data.cast::<MockClipPayload>() };
+        if info == 1 {
+            let mut ptrs: Vec<*const c_char> = payload.uris.iter().map(|s| s.as_ptr()).collect();
+            ptrs.push(ptr::null());
+            unsafe { gtk_selection_data_set_uris(sel, ptrs.as_ptr()) };
+        } else if let Some(txt) = &payload.text {
+            unsafe { gtk_selection_data_set_text(sel, txt.as_ptr(), txt.as_bytes().len() as c_int) };
+        }
+    }
+
+    extern "C" fn drop_mock_clip(_clip: *mut GtkClipboard, data: *mut c_void) {
+        if !data.is_null() {
+            unsafe { drop(Box::from_raw(data.cast::<MockClipPayload>())) };
+        }
+    }
+
+    fn set_mock_uri_clipboard(uris: &[String], text: Option<&str>) {
+        let mut entries = vec![GtkTargetEntry { target: c"text/uri-list".as_ptr(), flags: 0, info: 1 }];
+        if text.is_some() {
+            entries.push(GtkTargetEntry { target: c"UTF8_STRING".as_ptr(), flags: 0, info: 2 });
+        }
+        let payload = Box::into_raw(Box::new(MockClipPayload {
+            uris: uris.iter().map(|u| CString::new(u.as_str()).unwrap()).collect(),
+            text: text.map(|t| CString::new(t).unwrap()),
+        }));
+        unsafe {
+            let clip = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+            let ok = gtk_clipboard_set_with_data(
+                clip,
+                entries.as_ptr(),
+                entries.len() as u32,
+                provide_mock_clip,
+                drop_mock_clip,
+                payload.cast(),
+            );
+            assert_ne!(ok, 0);
+            pump_gtk_events();
+        }
+    }
+
+    fn verify_mock_remote_uri_upload() {
+        let clip = unsafe { gtk_clipboard_get(GDK_SELECTION_CLIPBOARD) };
+        let t = clipboard_targets(clip).unwrap();
+        let mut uploaded: Vec<(String, String, Vec<u8>)> = Vec::new();
+        let (rem_out, rem_msg) = try_paste_clipboard_uris(clip, t, "gpu-box", 77, |h, r, b| {
+            uploaded.push((h.to_owned(), r.to_owned(), b.to_vec()));
+            true
+        })
+        .expect("mock ssh uri upload");
+        assert_eq!(uploaded.len(), 2);
+        assert_eq!(uploaded[0].0, "gpu-box");
+        assert_eq!(uploaded[0].1, "/tmp/akhterm_paste_77_отчёт_1.pdf");
+        assert_eq!(uploaded[0].2, b"%PDF-1.7 sample");
+        assert_eq!(uploaded[1].1, "/tmp/akhterm_paste_77_1_lib.rs");
+        assert!(rem_out.contains("'/tmp/akhterm_paste_77_отчёт_1.pdf' /tmp/akhterm_paste_77_1_lib.rs "));
+        assert!(rem_msg.contains("gpu-box"));
+        assert!(try_paste_clipboard_image("127.0.0.1", false).is_none());
+    }
+
+    fn verify_bmp_uri_and_plain_text_guards(uri_bmp: &str) {
+        set_mock_uri_clipboard(&[uri_bmp.to_owned()], Some(&format!("# KDE\r\n{uri_bmp}\r\n")));
+        let (bmp_saved, _) = try_paste_clipboard_image("", false).expect("bmp uri image saved");
+        assert!(bmp_saved.trim().ends_with(".bmp"));
+        let _ = fs::remove_file(bmp_saved.trim());
+
+        set_mock_uri_clipboard(&[String::from("file:///etc/hosts")], Some("/etc/hosts"));
+        assert!(try_paste_clipboard_image("", false).is_none());
+        assert!(try_paste_clipboard_image("127.0.0.1", false).is_none());
+        crate::context_menu::copy_text_to_clipboard("/etc/hosts");
+        pump_gtk_events();
+        assert!(try_paste_clipboard_image("", false).is_none());
+        assert!(try_paste_clipboard_image("127.0.0.1", false).is_none());
+    }
+
+    fn seed_uri_paste_fixture(dir: &Path) -> (String, Vec<String>, String) {
+        clean_flat_dir(dir);
+        fs::create_dir_all(dir).unwrap();
+        let (pdf, rs_file, bmp) = (dir.join("отчёт 1.pdf"), dir.join("lib.rs"), dir.join("shot.bmp"));
+        fs::write(&pdf, b"%PDF-1.7 sample").unwrap();
+        fs::write(&rs_file, b"pub fn run() {}\n").unwrap();
+        fs::write(&bmp, b"BM\x1e\x00\x00\x00").unwrap();
+        let uri_pdf = format!("file://{}/%D0%BE%D1%82%D1%87%D1%91%D1%82%201.pdf", dir.display());
+        let uri_rs = format!("file://{}/lib.rs", dir.display());
+        let uri_bmp = format!("file://{}/shot.bmp", dir.display());
+        (format!("'{}' {} ", pdf.display(), rs_file.display()), vec![uri_pdf, uri_rs], uri_bmp)
+    }
+
+    fn verify_non_image_uri_paste_and_plain_text_guard() {
+        let dir = std::env::temp_dir().join(format!("akhterm_uri_paste_{}", std::process::id()));
+        let (expected_local, uris, uri_bmp) = seed_uri_paste_fixture(&dir);
+        set_mock_uri_clipboard(&uris, None);
+        assert!(!clipboard_has_direct_image());
+        assert!(try_paste_clipboard_image("", true).is_none());
+        let (local_out, local_msg) = try_paste_clipboard_image("", false).expect("local uri paste");
+        assert_eq!(local_out, expected_local);
+        assert!(local_msg.contains("Вставлено путей: 2"));
+        verify_mock_remote_uri_upload();
+
+        let dolphin_txt = format!("{}\r\n{}\r\n", uris[0], uris[1]);
+        set_mock_uri_clipboard(&uris, Some(&dolphin_txt));
+        assert_eq!(try_paste_clipboard_image("", false).unwrap().0, expected_local);
+        verify_bmp_uri_and_plain_text_guards(&uri_bmp);
+        clean_flat_dir(&dir);
     }
 
     #[test]
@@ -896,22 +1162,26 @@ pub(crate) mod tests {
         clean_flat_dir(&dir);
     }
 
+    fn feed_and_copy_vte_sample(tab1: *mut GtkWidget, sample: &str) {
+        unsafe {
+            vte_terminal_feed(tab1, sample.as_ptr() as *const c_char, sample.len() as isize);
+        }
+        thread::sleep(Duration::from_millis(40));
+        pump_gtk_events();
+        unsafe {
+            vte_terminal_select_all(tab1);
+            vte_terminal_copy_clipboard_format(tab1, 1);
+            pump_gtk_events();
+        }
+    }
+
     #[test]
     fn vte_copy_and_paste_between_tabs_does_not_deadlock() {
         with_headless_gtk(|| {
             let (win, tab1, tab2) = create_two_vte_window();
             let sample = "привет из первой вкладки";
-            unsafe {
-                vte_terminal_feed(tab1, sample.as_ptr() as *const c_char, sample.len() as isize);
-            }
-            thread::sleep(Duration::from_millis(40));
-            pump_gtk_events();
-            unsafe {
-                vte_terminal_select_all(tab1);
-                vte_terminal_copy_clipboard_format(tab1, 1);
-                pump_gtk_events();
-            }
-
+            feed_and_copy_vte_sample(tab1, sample);
+            assert!(!clipboard_has_direct_image());
             assert!(try_paste_clipboard_image("", false).is_none());
             assert!(try_paste_clipboard_image("", true).is_none());
             assert!(try_paste_clipboard_image("unreachable-ssh-host", false).is_none());
@@ -923,9 +1193,16 @@ pub(crate) mod tests {
             pump_gtk_events();
 
             verify_image_clipboard_paste();
+            verify_non_image_uri_paste_and_plain_text_guard();
             unsafe { gtk_widget_destroy(win) };
             pump_gtk_events();
         });
+    }
+
+    #[test]
+    fn proc_radar_maintains_mi_target() {
+        let (_, _, mi) = crate::mi::compute_file_mi(include_str!("proc_radar.rs"));
+        assert!(mi >= 57.06, "proc_radar.rs MI {mi:.2} < 57.06");
     }
 
     #[test]
@@ -939,10 +1216,8 @@ pub(crate) mod tests {
         );
     }
 
-    #[test]
-    fn resolves_relative_links_against_session_cwd_and_checks_existence() {
-        let root = std::env::temp_dir().join(format!("akhterm_rel_link_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+    fn seed_relative_link_fixture(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let _ = fs::remove_dir_all(root);
         let cyr_dir = root.join("учёба").join("курс");
         let sub_dir = root.join("crates").join("cli");
         fs::create_dir_all(&cyr_dir).unwrap();
@@ -951,27 +1226,20 @@ pub(crate) mod tests {
         let rs_file = root.join("crates").join("lib.rs");
         fs::write(&py_file, b"print(1)\n").unwrap();
         fs::write(&rs_file, b"pub fn ok() {}\n").unwrap();
+        (sub_dir, py_file, rs_file)
+    }
 
-        let root_s = root.to_string_lossy();
-        let sub_s = sub_dir.to_string_lossy();
-        assert_eq!(
-            resolve_link_target("./учёба/курс/модуль.py:42:5", Some(&root_s)).as_deref(),
-            py_file.to_str()
-        );
-        assert_eq!(
-            resolve_link_target("../lib.rs:10", Some(&sub_s)).as_deref(),
-            rs_file.to_str()
-        );
+    #[test]
+    fn resolves_relative_links_against_session_cwd_and_checks_existence() {
+        let root = std::env::temp_dir().join(format!("akhterm_rel_link_{}", std::process::id()));
+        let (sub_dir, py_file, rs_file) = seed_relative_link_fixture(&root);
+        let (root_s, sub_s) = (root.to_string_lossy(), sub_dir.to_string_lossy());
+        assert_eq!(resolve_link_target("./учёба/курс/модуль.py:42:5", Some(&root_s)).as_deref(), py_file.to_str());
+        assert_eq!(resolve_link_target("../lib.rs:10", Some(&sub_s)).as_deref(), rs_file.to_str());
         assert_eq!(resolve_link_target("учёба/нет_файла.py:3", Some(&root_s)), None);
         assert_eq!(resolve_link_target("crates/lib.rs:10", None), None);
-        assert_eq!(
-            resolve_link_target("localhost:8080/health", None).as_deref(),
-            Some("http://localhost:8080/health")
-        );
-        assert_eq!(
-            resolve_link_target(&format!("{}:99:2", rs_file.display()), None).as_deref(),
-            rs_file.to_str()
-        );
+        assert_eq!(resolve_link_target("localhost:8080/health", None).as_deref(), Some("http://localhost:8080/health"));
+        assert_eq!(resolve_link_target(&format!("{}:99:2", rs_file.display()), None).as_deref(), rs_file.to_str());
         let _ = fs::remove_dir_all(&root);
     }
 
