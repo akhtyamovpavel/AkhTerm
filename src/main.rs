@@ -1,6 +1,7 @@
 mod config;
 mod ffi;
 mod mi;
+mod paste_route;
 mod paths;
 mod proc_radar;
 mod session;
@@ -24,6 +25,7 @@ use std::time::Instant;
 use config::WorkspaceConfig;
 use ffi::*;
 use mi::{analyze_project_mi, ProjectMiReport};
+use paste_route::{choose_paste_route, PasteRoute};
 use paths::{expand_home, home_dir};
 use proc_radar::{
     inspect_proc_tree, load_ssh_hosts, query_ssh_servers, save_ssh_hosts,
@@ -974,13 +976,16 @@ impl Drop for PasteGuard {
     }
 }
 
-fn active_paste_context() -> Option<(usize, String)> {
+fn active_paste_context() -> Option<(usize, String, String)> {
     APP.with(|cell| {
-        let state = cell.borrow();
-        let app = state.as_ref()?;
-        let s = app.sessions.iter().find(|s| s.id == app.active_id)?;
+        let mut state = cell.try_borrow_mut().ok()?;
+        let app = state.as_mut()?;
+        let s = app.sessions.iter_mut().find(|s| s.id == app.active_id)?;
+        if s.remote().is_none() {
+            sync_session_proc(s, None);
+        }
         let host = s.remote().map_or(&s.proc_info.ssh_host, |r| &r.host).clone();
-        Some((s.id, host))
+        Some((s.id, host, s.proc_info.agent.clone()))
     })
 }
 
@@ -1005,12 +1010,15 @@ fn finish_paste(vte: *mut GtkWidget, footer: *mut GtkWidget, image: Option<(Stri
     unsafe { gtk_widget_grab_focus(vte) };
 }
 
-fn paste_smart(force_image: bool) -> bool {
+fn paste_routed(plain_ctrl_v: bool, force_image: bool) -> bool {
     if PASTE_BUSY.with(|busy| busy.replace(true)) {
         return !force_image;
     }
     let _guard = PasteGuard;
-    let Some((sid, host)) = active_paste_context() else { return false };
+    let Some((sid, host, agent)) = active_paste_context() else { return false };
+    if choose_paste_route(plain_ctrl_v, &host, &agent) == PasteRoute::PassThroughToPty {
+        return false;
+    }
     let image = try_paste_clipboard_image(&host, force_image);
     if image.is_none() && force_image {
         return false;
@@ -1018,6 +1026,14 @@ fn paste_smart(force_image: bool) -> bool {
     let Some((vte, footer)) = session_paste_widgets(sid) else { return false };
     finish_paste(vte, footer, image);
     true
+}
+
+fn paste_smart(force_image: bool) -> bool {
+    paste_routed(false, force_image)
+}
+
+fn paste_plain_ctrl_v() -> bool {
+    paste_routed(true, true)
 }
 
 fn copy_active_selection() {
@@ -1100,11 +1116,11 @@ extern "C" fn on_window_key_press(
                 set_zoom(1.0);
                 return 1;
             }
-            // Plain Ctrl + V (keycode 55): if clipboard holds a screenshot/image, upload & paste its path!
+            // Plain Ctrl + V (keycode 55): pass through to local multimodal TUI agents, else paste image path!
             if (state & GDK_SHIFT_MASK) == 0
                 && (keyval == b'v' as u32 || keyval == b'V' as u32 || keycode == 55)
             {
-                if paste_smart( true ) {
+                if paste_plain_ctrl_v() {
                     return 1;
                 }
             }
