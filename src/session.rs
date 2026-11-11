@@ -11,7 +11,7 @@ use crate::proc_radar::{foreground_cwd, open_external_link, resolve_link_target,
 use crate::sidebar::SidebarRow;
 use crate::split_pane::TabPanes;
 use crate::tab_strip::TabView;
-use crate::tabs::{RemoteConnection, Tab};
+use crate::tabs::{RemoteConnection, Tab, TabMeta};
 use crate::telemetry::SessionTelemetry;
 use crate::theme::{apply_vte_colors, current_theme_mode};
 
@@ -52,7 +52,7 @@ pub struct TermSession {
     pub profile_cwd: String,
     pub title: String,
     pub osc_title: String,
-    pub custom_title: bool,
+    pub pinned_title: Option<String>,
     pub cwd: String,
     pub category: SessionCategory,
     pub vte: *mut GtkWidget,
@@ -206,6 +206,29 @@ impl TermSession {
         }
         self.tab.clone()
     }
+
+    pub fn snapshot_meta(&mut self) -> TabMeta {
+        let splits = if self.category == SessionCategory::Project && self.remote().is_none() {
+            self.panes.snapshot_splits(self.scroll_wrap)
+        } else {
+            None
+        };
+        TabMeta {
+            pinned_title: self.pinned_title.clone(),
+            splits,
+        }
+    }
+
+    pub fn set_pinned_title(&mut self, raw: Option<&str>) {
+        self.pinned_title = sanitize_pinned_title(raw);
+        refresh_smart_title(self);
+    }
+}
+
+pub fn sanitize_pinned_title(raw: Option<&str>) -> Option<String> {
+    let clean = raw?.replace('\0', "");
+    let trimmed = clean.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 fn apply_tmux_vte_title(s: &mut TermSession, vte: *mut GtkWidget, rest: &str) {
@@ -549,10 +572,11 @@ fn refresh_remote_session_title(s: &mut TermSession) {
 }
 
 pub fn refresh_smart_title(s: &mut TermSession) {
-    if s.custom_title {
+    update_detected_agent(s);
+    if let Some(ref pinned) = s.pinned_title {
+        s.title.clone_from(pinned);
         return;
     }
-    update_detected_agent(s);
     match s.effective_category() {
         SessionCategory::Remote => refresh_remote_session_title(s),
         SessionCategory::Project => {
@@ -569,7 +593,9 @@ pub fn refresh_smart_title(s: &mut TermSession) {
                 &s.osc_title,
             );
         }
-        SessionCategory::Daemon => {}
+        SessionCategory::Daemon => {
+            s.title.clone_from(&s.base_title);
+        }
     }
 }
 
@@ -578,7 +604,7 @@ mod tests {
     use super::*;
 
     fn empty_panes() -> TabPanes {
-        TabPanes { root: ptr::null_mut(), extra: Vec::new(), last_focus: ptr::null_mut() }
+        TabPanes::empty_for_test()
     }
 
     fn sample_local_session(base_title: &str, dir: &str) -> TermSession {
@@ -587,7 +613,7 @@ mod tests {
         let tab = Tab::Local { profile: "work".to_owned(), cwd: dir.to_owned() };
         TermSession {
             id: 1, base_title: base_title.to_owned(), profile_cwd: dir.to_owned(),
-            title: base_title.to_owned(), osc_title: String::new(), custom_title: false,
+            title: base_title.to_owned(), osc_title: String::new(), pinned_title: None,
             cwd: dir.to_owned(), category: cat, vte: ptr::null_mut(), scroll_wrap: ptr::null_mut(),
             panes: empty_panes(), sidebar_row: SidebarRow::empty_for_test(cat),
             top_tab: TabView::empty_for_test(cat), child_pid: 0, state: WorkState::Idle,

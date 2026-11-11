@@ -11,6 +11,7 @@ use crate::git_wt::{detect_git_head, GitHeadInfo};
 use crate::mi_watch::resolve_project_root;
 use crate::paths::{home_dir, shorten_home};
 use crate::session::{SessionCategory, TermSession, WorkState};
+use crate::tab_order::BoxReorder;
 use crate::telemetry::{
     format_turn_duration, format_working_sidebar_status, ContextAlert,
 };
@@ -20,6 +21,7 @@ use crate::{connect_click, connect_entry_changed};
 
 type WidgetHandler = extern "C" fn(*mut GtkWidget, *mut c_void);
 
+#[derive(Clone, Copy)]
 pub struct Sidebar {
     panel: *mut GtkWidget,
     groups: [Group; 3],
@@ -79,6 +81,27 @@ impl Sidebar {
 
     pub fn panel_widget(&self) -> *mut GtkWidget {
         self.panel
+    }
+
+    pub fn build_reorder_ops(&self, sessions: &[TermSession]) -> Vec<BoxReorder> {
+        let mut counts = [0; 3];
+        let mut ops = Vec::with_capacity(sessions.len());
+        for s in sessions {
+            let g = s.sidebar_row.group.get();
+            let pos = counts[g];
+            counts[g] += 1;
+            ops.push(BoxReorder {
+                container: self.groups[g].list,
+                child: s.sidebar_row.widget,
+                position: pos,
+            });
+        }
+        ops
+    }
+
+    #[cfg(test)]
+    pub fn group_list_widget(&self, category: SessionCategory) -> *mut GtkWidget {
+        self.groups[group_index(category)].list
     }
 
     pub fn append_tab(
@@ -247,6 +270,7 @@ impl SidebarUpdate {
     }
 }
 
+#[derive(Clone, Copy)]
 struct Group {
     widget: *mut GtkWidget,
     list: *mut GtkWidget,
@@ -423,6 +447,11 @@ impl SidebarRow {
             group: Cell::new(group_index(category)),
             icon_cat: Cell::new(category),
         }
+    }
+
+    #[cfg(test)]
+    pub fn row_widget(&self) -> *mut GtkWidget {
+        self.widget
     }
 }
 
@@ -660,6 +689,9 @@ mod tests {
     use std::time::Instant;
 
     extern "C" fn noop_handler(_w: *mut GtkWidget, _d: *mut c_void) {}
+    extern "C" fn noop_event(_w: *mut GtkWidget, _e: *const GdkEvent, _d: *mut c_void) -> c_int {
+        0
+    }
 
     #[repr(C)]
     struct GList {
@@ -725,7 +757,14 @@ mod tests {
     ) -> TermSession {
         let now = Instant::now();
         let sidebar_row = sidebar.append_tab(category, sid, noop_handler);
-        let top_tab = strip.append(sid, category, noop_handler, noop_handler);
+        let handlers = crate::tab_strip::TabHandlers {
+            on_select: noop_handler,
+            on_close: noop_handler,
+            on_press: noop_event,
+            on_motion: noop_event,
+            on_release: noop_event,
+        };
+        let top_tab = strip.append(sid, category, handlers);
         let mut proc_info = ProcInfo::default();
         if let Tab::Remote(ref r) = tab {
             proc_info.ssh_host.clone_from(&r.host);
@@ -736,12 +775,12 @@ mod tests {
             profile_cwd: cwd.to_owned(),
             title: title.to_owned(),
             osc_title: String::new(),
-            custom_title: false,
+            pinned_title: None,
             cwd: cwd.to_owned(),
             category,
             vte: ptr::null_mut(),
             scroll_wrap: ptr::null_mut(),
-            panes: TabPanes { root: ptr::null_mut(), extra: Vec::new(), last_focus: ptr::null_mut() },
+            panes: TabPanes::empty_for_test(),
             sidebar_row,
             top_tab,
             child_pid: 1234,

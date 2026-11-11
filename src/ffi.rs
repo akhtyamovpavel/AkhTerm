@@ -52,7 +52,13 @@ pub const GTK_STYLE_PROVIDER_PRIORITY_APPLICATION: c_uint = 600;
 pub const G_SPAWN_SEARCH_PATH: c_int = 4;
 pub const VTE_FORMAT_TEXT: c_int = 1;
 
+pub const GDK_MOTION_NOTIFY: c_int = 3;
 pub const GDK_BUTTON_PRESS: c_int = 4;
+pub const GDK_2BUTTON_PRESS: c_int = 5;
+pub const GDK_BUTTON_RELEASE: c_int = 7;
+pub const GDK_BUTTON1_MOTION_MASK: c_int = 1 << 5;
+pub const GDK_BUTTON_PRESS_MASK: c_int = 1 << 8;
+pub const GDK_BUTTON_RELEASE_MASK: c_int = 1 << 9;
 pub const GDK_CONTROL_MASK: c_uint = 1 << 2;
 pub const GDK_SHIFT_MASK: c_uint = 1 << 0;
 pub const GDK_MOD1_MASK: c_uint = 1 << 3; // Alt
@@ -122,6 +128,8 @@ extern "C" {
     pub fn gdk_atom_intern_static_string(atom_name: *const c_char) -> GdkAtom;
     pub fn gdk_event_get_event_type(event: *const GdkEvent) -> c_int;
     pub fn gdk_event_get_button(event: *const GdkEvent, button: *mut c_uint) -> c_int;
+    pub fn gdk_event_get_coords(event: *const GdkEvent, x_win: *mut f64, y_win: *mut f64) -> c_int;
+    pub fn gdk_event_get_root_coords(event: *const GdkEvent, x_root: *mut f64, y_root: *mut f64) -> c_int;
     pub fn gdk_event_get_keyval(event: *const GdkEvent, keyval: *mut c_uint) -> c_int;
     pub fn gdk_event_get_keycode(event: *const GdkEvent, keycode: *mut u16) -> c_int;
     pub fn gdk_event_get_state(event: *const GdkEvent, state: *mut c_uint) -> c_int;
@@ -236,6 +244,7 @@ extern "C" {
     pub fn gtk_label_set_max_width_chars(label: *mut GtkLabel, count: c_int);
 
     pub fn gtk_popover_new(relative_to: *mut GtkWidget) -> *mut GtkWidget;
+    pub fn gtk_popover_set_relative_to(popover: *mut GtkPopover, relative_to: *mut GtkWidget);
     pub fn gtk_popover_popup(popover: *mut GtkPopover);
     pub fn gtk_popover_popdown(popover: *mut GtkPopover);
 
@@ -243,6 +252,7 @@ extern "C" {
     pub fn gtk_container_remove(container: *mut GtkContainer, widget: *mut GtkWidget);
     pub fn gtk_container_set_focus_hadjustment(container: *mut GtkContainer, adjustment: *mut GtkAdjustment);
     pub fn gtk_adjustment_clamp_page(adjustment: *mut GtkAdjustment, lower: f64, upper: f64);
+    pub fn gtk_widget_add_events(widget: *mut GtkWidget, events: c_int);
     pub fn gtk_widget_show_all(widget: *mut GtkWidget);
     pub fn gtk_widget_get_visible(widget: *mut GtkWidget) -> c_int;
     pub fn gtk_widget_set_visible(widget: *mut GtkWidget, visible: c_int);

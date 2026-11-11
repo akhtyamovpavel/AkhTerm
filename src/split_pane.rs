@@ -1,16 +1,120 @@
 //! Split terminal panes inside a single local tab using GTK3 `GtkPaned`.
 
 use std::ffi::{c_int, CString};
+use std::path::Path;
 use std::ptr;
 
 use crate::ffi::*;
 use crate::proc_radar::foreground_cwd;
+use crate::tabs::{SplitOrientation, SplitTree};
 
 pub struct ExtraPane {
     pub scroll: *mut GtkWidget,
     pub vte: *mut GtkWidget,
     pub child_pid: i32,
     pub cwd: String,
+}
+
+pub struct SpawnedPane {
+    pub scroll: *mut GtkWidget,
+    pub vte: *mut GtkWidget,
+    pub child_pid: i32,
+    pub cwd: String,
+}
+
+#[derive(Clone)]
+enum LayoutNode {
+    Leaf(*mut GtkWidget),
+    Split {
+        orient: SplitOrientation,
+        first: Box<LayoutNode>,
+        second: Box<LayoutNode>,
+    },
+}
+
+impl LayoutNode {
+    fn replace_leaf(&mut self, target: *mut GtkWidget, added: *mut GtkWidget, orient: SplitOrientation) -> bool {
+        match self {
+            Self::Leaf(cur) if *cur == target => {
+                *self = Self::Split {
+                    orient,
+                    first: Box::new(Self::Leaf(target)),
+                    second: Box::new(Self::Leaf(added)),
+                };
+                true
+            }
+            Self::Leaf(_) => false,
+            Self::Split { first, second, .. } => {
+                first.replace_leaf(target, added, orient) || second.replace_leaf(target, added, orient)
+            }
+        }
+    }
+
+    fn remove_leaf(&self, closing: *mut GtkWidget) -> (Option<Self>, bool) {
+        match self {
+            Self::Leaf(cur) if *cur == closing => (None, true),
+            Self::Leaf(_) => (Some(self.clone()), false),
+            Self::Split { orient, first, second } => {
+                let (f_next, f_hit) = first.remove_leaf(closing);
+                if f_hit {
+                    let node = f_next.map_or_else(
+                        || (**second).clone(),
+                        |nf| Self::Split { orient: *orient, first: Box::new(nf), second: second.clone() },
+                    );
+                    return (Some(node), true);
+                }
+                let (s_next, s_hit) = second.remove_leaf(closing);
+                if s_hit {
+                    let node = s_next.map_or_else(
+                        || (**first).clone(),
+                        |ns| Self::Split { orient: *orient, first: first.clone(), second: Box::new(ns) },
+                    );
+                    return (Some(node), true);
+                }
+                (Some(self.clone()), false)
+            }
+        }
+    }
+
+    fn from_tree(
+        tree: &SplitTree,
+        primary: *mut GtkWidget,
+        scrolls: &mut impl Iterator<Item = *mut GtkWidget>,
+    ) -> Option<Self> {
+        match tree {
+            SplitTree::Primary => Some(Self::Leaf(primary)),
+            SplitTree::Pane(_) => Some(Self::Leaf(scrolls.next()?)),
+            SplitTree::Split { orientation, first, second } => Some(Self::Split {
+                orient: *orientation,
+                first: Box::new(Self::from_tree(first, primary, scrolls)?),
+                second: Box::new(Self::from_tree(second, primary, scrolls)?),
+            }),
+        }
+    }
+
+    fn to_split_tree(&self, primary_scroll: *mut GtkWidget, extra: &[ExtraPane]) -> SplitTree {
+        match self {
+            Self::Leaf(w) if *w == primary_scroll => SplitTree::Primary,
+            Self::Leaf(w) => {
+                let cwd = extra.iter().find(|p| p.scroll == *w).map_or_else(String::new, |p| p.cwd.clone());
+                SplitTree::Pane(cwd)
+            }
+            Self::Split { orient, first, second } => SplitTree::split(
+                *orient,
+                first.to_split_tree(primary_scroll, extra),
+                second.to_split_tree(primary_scroll, extra),
+            ),
+        }
+    }
+}
+
+pub fn resolve_pane_cwd(saved: &str, fallback: &str) -> String {
+    let p = Path::new(saved);
+    if p.is_absolute() && p.is_dir() {
+        saved.to_owned()
+    } else {
+        fallback.to_owned()
+    }
 }
 
 pub struct SplitOp {
@@ -34,6 +138,58 @@ pub fn finish_split(op: Option<SplitOp>, new_scroll: *mut GtkWidget, new_vte: *m
         }
     } else if !new_scroll.is_null() {
         unsafe { gtk_widget_destroy(new_scroll) };
+    }
+}
+
+pub struct RestoreSplitsOp {
+    root: *mut GtkWidget,
+    primary_scroll: *mut GtkWidget,
+    tree: SplitTree,
+    scrolls: Vec<*mut GtkWidget>,
+}
+
+impl RestoreSplitsOp {
+    pub fn apply(self) {
+        unsafe {
+            g_object_ref(self.primary_scroll);
+            gtk_container_remove(self.root, self.primary_scroll);
+            let mut iter = self.scrolls.into_iter();
+            let top = build_gtk_split_tree(&self.tree, self.primary_scroll, &mut iter);
+            gtk_box_pack_start(self.root, top, 1, 1, 0);
+            g_object_unref(self.primary_scroll);
+            gtk_widget_show_all(self.root);
+        }
+    }
+}
+
+pub fn finish_restore_splits(op: Option<RestoreSplitsOp>, scrolls: &[*mut GtkWidget]) {
+    if let Some(restore_op) = op {
+        restore_op.apply();
+    } else {
+        for &s in scrolls.iter().filter(|w| !w.is_null()) {
+            unsafe { gtk_widget_destroy(s) };
+        }
+    }
+}
+
+fn build_gtk_split_tree(
+    tree: &SplitTree,
+    primary_scroll: *mut GtkWidget,
+    scrolls: &mut impl Iterator<Item = *mut GtkWidget>,
+) -> *mut GtkWidget {
+    match tree {
+        SplitTree::Primary => primary_scroll,
+        SplitTree::Pane(_) => scrolls.next().unwrap_or(primary_scroll),
+        SplitTree::Split { orientation, first, second } => {
+            let c1 = build_gtk_split_tree(first, primary_scroll, scrolls);
+            let c2 = build_gtk_split_tree(second, primary_scroll, scrolls);
+            let paned = new_styled_paned(orientation.to_gtk(), 0);
+            unsafe {
+                gtk_paned_pack1(paned, c1, 1, 1);
+                gtk_paned_pack2(paned, c2, 1, 1);
+            }
+            paned
+        }
     }
 }
 
@@ -75,6 +231,7 @@ pub struct TabPanes {
     pub root: *mut GtkWidget,
     pub extra: Vec<ExtraPane>,
     pub last_focus: *mut GtkWidget,
+    layout: LayoutNode,
 }
 
 pub fn wrap_vte_scroll(vte: *mut GtkWidget) -> *mut GtkWidget {
@@ -185,7 +342,22 @@ impl TabPanes {
             gtk_box_pack_start(vbox, primary_scroll, 1, 1, 0);
             vbox
         };
-        Self { root, extra: Vec::new(), last_focus: primary_vte }
+        Self {
+            root,
+            extra: Vec::new(),
+            last_focus: primary_vte,
+            layout: LayoutNode::Leaf(primary_scroll),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn empty_for_test() -> Self {
+        Self {
+            root: ptr::null_mut(),
+            extra: Vec::new(),
+            last_focus: ptr::null_mut(),
+            layout: LayoutNode::Leaf(ptr::null_mut()),
+        }
     }
 
     pub fn has_splits(&self) -> bool {
@@ -245,6 +417,48 @@ impl TabPanes {
         }
     }
 
+    pub fn snapshot_splits(&mut self, primary_scroll: *mut GtkWidget) -> Option<SplitTree> {
+        if self.extra.is_empty() {
+            return None;
+        }
+        for pane in &mut self.extra {
+            if let Some(live) = foreground_cwd(pane.child_pid) {
+                pane.cwd = live;
+            }
+        }
+        let tree = self.layout.to_split_tree(primary_scroll, &self.extra);
+        tree.is_valid().then_some(tree)
+    }
+
+    pub fn prepare_restore_splits(
+        &mut self,
+        primary_scroll: *mut GtkWidget,
+        primary_vte: *mut GtkWidget,
+        tree: SplitTree,
+        spawned: Vec<SpawnedPane>,
+    ) -> Option<RestoreSplitsOp> {
+        if !self.extra.is_empty() || !tree.is_valid() || spawned.is_empty() {
+            return None;
+        }
+        let scrolls: Vec<*mut GtkWidget> = spawned.iter().map(|p| p.scroll).collect();
+        let mut iter = scrolls.iter().copied();
+        let next_layout = LayoutNode::from_tree(&tree, primary_scroll, &mut iter)?;
+        if iter.next().is_some() {
+            return None;
+        }
+        self.layout = next_layout;
+        self.last_focus = primary_vte;
+        for p in spawned {
+            self.extra.push(ExtraPane {
+                scroll: p.scroll,
+                vte: p.vte,
+                child_pid: p.child_pid,
+                cwd: p.cwd,
+            });
+        }
+        Some(RestoreSplitsOp { root: self.root, primary_scroll, tree, scrolls })
+    }
+
     #[cfg(test)]
     pub fn set_font_scale(&self, primary_vte: *mut GtkWidget, scale: f64) {
         unsafe {
@@ -277,6 +491,7 @@ impl TabPanes {
         orient: c_int,
     ) -> SplitOp {
         let target = self.target_scroll(primary_scroll, primary_vte);
+        self.layout.replace_leaf(target, new_scroll, SplitOrientation::from_gtk(orient));
         self.last_focus = new_vte;
         self.extra.push(ExtraPane { scroll: new_scroll, vte: new_vte, child_pid: new_pid, cwd });
         SplitOp { target, added: new_scroll, root: self.root, orient }
@@ -297,6 +512,12 @@ impl TabPanes {
             .apply();
     }
 
+    fn collapse_layout_leaf(&mut self, closing_scroll: *mut GtkWidget) {
+        if let (Some(next), true) = self.layout.remove_leaf(closing_scroll) {
+            self.layout = next;
+        }
+    }
+
     fn promote_first_extra(
         &mut self,
         scroll: &mut *mut GtkWidget,
@@ -305,6 +526,7 @@ impl TabPanes {
         cwd: &mut String,
     ) -> CloseOp {
         let (closing_scroll, kill_pid) = (*scroll, *pid);
+        self.collapse_layout_leaf(closing_scroll);
         let next = self.extra.remove(0);
         (*scroll, *vte, *pid, *cwd) = (next.scroll, next.vte, next.child_pid, next.cwd);
         self.last_focus = *vte;
@@ -321,6 +543,7 @@ impl TabPanes {
 
     fn remove_extra_at(&mut self, idx: usize, primary_vte: *mut GtkWidget, kill_proc: bool) -> CloseOp {
         let removed = self.extra.remove(idx);
+        self.collapse_layout_leaf(removed.scroll);
         let kill_pid = if kill_proc { removed.child_pid } else { 0 };
         let next_focus = self.extra.last().map_or(primary_vte, |p| p.vte);
         self.last_focus = next_focus;
@@ -379,6 +602,7 @@ impl TabPanes {
 mod tests {
     use super::*;
     use crate::proc_radar::tests::{pump_gtk_events, with_headless_gtk};
+    use crate::tabs::{Tab, TabMeta, TabsState};
 
     fn make_window_with_pane() -> (*mut GtkWidget, *mut GtkWidget, *mut GtkWidget, TabPanes) {
         unsafe {
@@ -432,7 +656,7 @@ mod tests {
         let (_, _, split_mi) = crate::mi::compute_file_mi(include_str!("split_pane.rs"));
         assert!(split_mi >= 58.0, "split_pane.rs MI {split_mi:.2} < 58.0");
         let (_, _, main_mi) = crate::mi::compute_file_mi(include_str!("main.rs"));
-        assert!(main_mi >= 54.78, "main.rs MI {main_mi:.2} < 54.78");
+        assert!(main_mi >= 54.87, "main.rs MI {main_mi:.2} < 54.87");
         let (_, _, session_mi) = crate::mi::compute_file_mi(include_str!("session.rs"));
         assert!(session_mi >= 55.69, "session.rs MI {session_mi:.2} < 55.69");
         let (_, _, radar_mi) = crate::mi::compute_file_mi(include_str!("proc_radar.rs"));
@@ -459,5 +683,75 @@ mod tests {
             unsafe { gtk_widget_destroy(win) };
             pump_gtk_events();
         });
+    }
+
+    fn spawn_real_shells_for_tree(tree: &SplitTree, fallback: &str) -> Vec<SpawnedPane> {
+        let mut cwds = Vec::new();
+        tree.secondary_cwds(&mut cwds);
+        cwds.into_iter()
+            .map(|raw| {
+                let cwd = resolve_pane_cwd(&raw, fallback);
+                let (vte, child_pid) = crate::session::create_vte_widget(&cwd, &["/bin/sh"]);
+                let scroll = wrap_vte_scroll(vte);
+                SpawnedPane { scroll, vte, child_pid, cwd }
+            })
+            .collect()
+    }
+
+    fn record_nested_real_splits(dir_right: &str, dir_bottom: &str) -> SplitTree {
+        let (win, scroll1, vte1, mut panes) = make_window_with_pane();
+        let (vte2, pid2) = crate::session::create_vte_widget(dir_right, &["/bin/sh"]);
+        panes.split(scroll1, vte1, vte2, pid2, String::new(), GTK_ORIENTATION_HORIZONTAL);
+        unsafe { gtk_widget_grab_focus(vte2) };
+        pump_gtk_events();
+        let (vte3, pid3) = crate::session::create_vte_widget(dir_bottom, &["/bin/sh"]);
+        panes.split(scroll1, vte1, vte3, pid3, String::new(), GTK_ORIENTATION_VERTICAL);
+        pump_gtk_events();
+        let snap = panes.snapshot_splits(scroll1).expect("live split tree");
+        panes.stop_all_extra();
+        unsafe { gtk_widget_destroy(win) };
+        pump_gtk_events();
+        snap
+    }
+
+    fn verify_restored_real_splits(restored: SplitTree, s_main: &str, s_right: &str, s_bot: &str) {
+        let (win2, mut r_scroll, mut r_vte, mut panes2) = make_window_with_pane();
+        let spawned = spawn_real_shells_for_tree(&restored, s_main);
+        let op = panes2.prepare_restore_splits(r_scroll, r_vte, restored.clone(), spawned);
+        finish_restore_splits(op, &[]);
+        pump_gtk_events();
+
+        assert_eq!(panes2.snapshot_splits(r_scroll), Some(restored));
+        assert_eq!(foreground_cwd(panes2.extra[0].child_pid).as_deref(), Some(s_right));
+        assert_eq!(foreground_cwd(panes2.extra[1].child_pid).as_deref(), Some(s_bot));
+        let (mut r_pid, mut r_cwd) = (0, s_main.to_owned());
+        assert!(panes2.close_active(&mut r_scroll, &mut r_vte, &mut r_pid, &mut r_cwd).is_some());
+        panes2.stop_all_extra();
+        unsafe { gtk_widget_destroy(win2) };
+        pump_gtk_events();
+    }
+
+    #[test]
+    fn snapshots_and_restores_nested_split_tree_in_headless_gtk() {
+        let base = std::env::temp_dir().join(format!("akhterm_split_cwd_{}", std::process::id()));
+        let (d_main, d_right, d_bot) = (base.join("main"), base.join("правая"), base.join("нижняя"));
+        for d in [&d_main, &d_right, &d_bot] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let (s_main, s_right, s_bot) =
+            (d_main.to_str().unwrap(), d_right.to_str().unwrap(), d_bot.to_str().unwrap());
+        assert_eq!(resolve_pane_cwd("/nonexistent/akhterm_missing_xyz", s_main), s_main);
+
+        with_headless_gtk(|| {
+            let snap = record_nested_real_splits(s_right, s_bot);
+            let meta = vec![TabMeta { pinned_title: None, splits: Some(snap) }];
+            let state = TabsState::with_meta(0, vec![Tab::Local { profile: "shell".into(), cwd: s_main.into() }], meta);
+            let restored = TabsState::decode(&state.encode()).unwrap().splits_at(0).unwrap().clone();
+            verify_restored_real_splits(restored, s_main, s_right, s_bot);
+        });
+
+        for d in [&d_main, &d_right, &d_bot, &base] {
+            let _ = std::fs::remove_dir(d);
+        }
     }
 }
