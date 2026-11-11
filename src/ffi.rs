@@ -131,6 +131,7 @@ extern "C" {
     pub fn gtk_window_is_maximized(window: *mut GtkWindow) -> c_int;
     pub fn gtk_window_fullscreen(window: *mut GtkWindow);
     pub fn gtk_window_unfullscreen(window: *mut GtkWindow);
+    pub fn gtk_window_get_focus(window: *mut GtkWindow) -> *mut GtkWidget;
 
     pub fn gtk_header_bar_new() -> *mut GtkWidget;
     pub fn gtk_header_bar_set_custom_title(bar: *mut GtkHeaderBar, title: *mut GtkWidget);
@@ -159,6 +160,7 @@ extern "C" {
     pub fn gtk_scrolled_window_new(hadj: *mut c_void, vadj: *mut c_void) -> *mut GtkWidget;
     pub fn gtk_scrolled_window_set_policy(sw: *mut GtkWidget, hpol: c_int, vpol: c_int);
     pub fn gtk_scrolled_window_get_hadjustment(sw: *mut GtkWidget) -> *mut GtkAdjustment;
+    pub fn gtk_scrolled_window_get_vadjustment(sw: *mut GtkWidget) -> *mut GtkAdjustment;
     pub fn gtk_scrolled_window_set_min_content_width(sw: *mut GtkWidget, width: c_int);
     pub fn gtk_scrolled_window_set_min_content_height(sw: *mut GtkWidget, height: c_int);
     pub fn gtk_scrolled_window_set_max_content_height(sw: *mut GtkWidget, height: c_int);
@@ -168,6 +170,7 @@ extern "C" {
     pub fn gtk_entry_new() -> *mut GtkWidget;
     pub fn gtk_search_entry_new() -> *mut GtkWidget;
     pub fn gtk_entry_set_placeholder_text(entry: *mut GtkWidget, text: *const c_char);
+    pub fn gtk_entry_set_text(entry: *mut GtkWidget, text: *const c_char);
     pub fn gtk_entry_get_text(entry: *mut GtkWidget) -> *const c_char;
 
     pub fn gtk_stack_new() -> *mut GtkWidget;
@@ -204,11 +207,13 @@ extern "C" {
     pub fn gtk_widget_set_sensitive(widget: *mut GtkWidget, sensitive: c_int);
     pub fn gtk_widget_set_no_show_all(widget: *mut GtkWidget, no_show_all: c_int);
     pub fn gtk_widget_destroy(widget: *mut GtkWidget);
+    pub fn gtk_widget_set_can_focus(widget: *mut GtkWidget, can_focus: c_int);
     pub fn gtk_widget_grab_focus(widget: *mut GtkWidget);
     pub fn gtk_widget_set_size_request(widget: *mut GtkWidget, width: c_int, height: c_int);
     pub fn gtk_widget_set_halign(widget: *mut GtkWidget, align: c_int);
     pub fn gtk_widget_set_valign(widget: *mut GtkWidget, align: c_int);
     pub fn gtk_widget_get_allocated_width(widget: *mut GtkWidget) -> c_int;
+    pub fn gtk_widget_get_allocated_height(widget: *mut GtkWidget) -> c_int;
     pub fn gtk_widget_translate_coordinates(
         source: *mut GtkWidget,
         destination: *mut GtkWidget,

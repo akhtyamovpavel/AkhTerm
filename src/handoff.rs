@@ -448,6 +448,10 @@ impl HandoffMenu {
         self.files.get(index).cloned()
     }
 
+    pub fn files(&self) -> &[PathBuf] {
+        &self.files
+    }
+
     pub fn target_at(&self, index: usize) -> Option<usize> {
         self.targets.get(index).copied()
     }
