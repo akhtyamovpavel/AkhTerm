@@ -1,11 +1,12 @@
 //! GTK widgets for the scrollable terminal tab strip.
 
+use std::cell::Cell;
 use std::ffi::{c_void, CStr, CString};
 use std::ptr;
 
 use crate::connect_click;
 use crate::ffi::*;
-use crate::session::SessionCategory;
+use crate::session::{SessionCategory, TermSession};
 use crate::theme::set_agent_accent;
 use crate::ui_text as text;
 
@@ -85,6 +86,7 @@ pub struct TabView {
     icon: *mut GtkWidget,
     label: *mut GtkWidget,
     status: *mut GtkWidget,
+    icon_cat: Cell<SessionCategory>,
 }
 
 impl TabView {
@@ -123,30 +125,94 @@ impl TabView {
                 icon,
                 label,
                 status,
+                icon_cat: Cell::new(category),
             }
         }
     }
 
-    pub fn update(
-        &self,
-        title: &str,
-        agent: &str,
-        active: bool,
-        unread: bool,
-        needs_approval: bool,
-    ) {
-        set_agent_accent(self.icon, agent);
-        set_class(self.widget, "tab-active", active);
-        set_class(self.widget, "tab-approval", needs_approval);
-        set_class(self.widget, "tab-ready", unread && !active && !needs_approval);
-        let vis_now = i32::from(needs_approval);
-        let vis_changed = unsafe { gtk_widget_get_visible(self.status) } != vis_now;
-        unsafe { gtk_widget_set_visible(self.status, vis_now) };
-        sync_tab_title_and_tip(self.label, self.select, title, needs_approval, vis_changed);
+    fn take_icon_change(&self, category: SessionCategory) -> Option<&'static CStr> {
+        (self.icon_cat.get() != category).then(|| {
+            self.icon_cat.set(category);
+            category.icon_name()
+        })
+    }
+
+    pub fn prepare_update(&self, session: &TermSession, active: bool) -> TabUpdate {
+        TabUpdate {
+            widget: self.widget,
+            select: self.select,
+            icon: self.icon,
+            label: self.label,
+            status: self.status,
+            new_icon: self.take_icon_change(session.effective_category()),
+            title: session.title.clone(),
+            agent: session.proc_info.agent.clone(),
+            active,
+            unread: session.unread,
+            needs_approval: session.state.needs_approval(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn update(&self, session: &TermSession, active: bool) {
+        self.prepare_update(session, active).apply();
     }
 
     pub fn destroy(self) {
         unsafe { gtk_widget_destroy(self.widget) };
+    }
+
+    #[cfg(test)]
+    pub fn empty_for_test(category: SessionCategory) -> Self {
+        Self {
+            widget: ptr::null_mut(),
+            select: ptr::null_mut(),
+            icon: ptr::null_mut(),
+            label: ptr::null_mut(),
+            status: ptr::null_mut(),
+            icon_cat: Cell::new(category),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn icon_widget(&self) -> *mut GtkWidget {
+        self.icon
+    }
+}
+
+pub struct TabUpdate {
+    widget: *mut GtkWidget,
+    select: *mut GtkWidget,
+    icon: *mut GtkWidget,
+    label: *mut GtkWidget,
+    status: *mut GtkWidget,
+    new_icon: Option<&'static CStr>,
+    title: String,
+    agent: String,
+    active: bool,
+    unread: bool,
+    needs_approval: bool,
+}
+
+impl TabUpdate {
+    pub fn apply(self) {
+        if let Some(icon_name) = self.new_icon {
+            set_image_icon(self.icon, icon_name);
+        }
+        set_agent_accent(self.icon, &self.agent);
+        set_class(self.widget, "tab-active", self.active);
+        set_class(self.widget, "tab-approval", self.needs_approval);
+        set_class(self.widget, "tab-ready", self.unread && !self.active && !self.needs_approval);
+        let vis_now = i32::from(self.needs_approval);
+        let vis_changed = unsafe { gtk_widget_get_visible(self.status) } != vis_now;
+        unsafe { gtk_widget_set_visible(self.status, vis_now) };
+        sync_tab_title_and_tip(
+            self.label,
+            self.select,
+            &self.title,
+            self.needs_approval,
+            vis_changed,
+        );
     }
 }
 

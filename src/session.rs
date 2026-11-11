@@ -14,7 +14,7 @@ use crate::tab_strip::TabView;
 use crate::tabs::{RemoteConnection, Tab};
 use crate::theme::{apply_vte_colors, current_theme_mode};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionCategory {
     Project,
     Remote,
@@ -79,6 +79,18 @@ impl TermSession {
         }
     }
 
+    pub fn is_dynamic_ssh(&self) -> bool {
+        self.category == SessionCategory::Project && !self.proc_info.ssh_host.is_empty()
+    }
+
+    pub fn effective_category(&self) -> SessionCategory {
+        if self.is_dynamic_ssh() {
+            SessionCategory::Remote
+        } else {
+            self.category
+        }
+    }
+
     pub fn active_vte(&self) -> *mut GtkWidget {
         self.panes.active_vte(self.vte)
     }
@@ -92,7 +104,7 @@ impl TermSession {
     }
 
     pub fn active_local_cwd(&self) -> Option<String> {
-        if self.remote().is_some() {
+        if self.effective_category() == SessionCategory::Remote {
             return None;
         }
         let fallback = if !self.proc_info.cwd.is_empty() && self.active_vte() == self.vte {
@@ -104,17 +116,97 @@ impl TermSession {
         (!cwd.is_empty()).then_some(cwd)
     }
 
+    pub fn apply_proc_snapshot(&mut self, proc_info: ProcInfo) {
+        let prev_host = std::mem::take(&mut self.proc_info.ssh_host);
+        self.proc_info = proc_info;
+        if self.category == SessionCategory::Project && prev_host != self.proc_info.ssh_host {
+            self.osc_title.clear();
+            self.remote_tmux = None;
+            self.tmux_title_from_vte = false;
+        }
+        if self.effective_category() != SessionCategory::Remote
+            && !self.proc_info.cwd.is_empty()
+            && self.active_vte() == self.vte
+        {
+            self.cwd = expand_home(&self.proc_info.cwd);
+        }
+    }
+
+    pub fn apply_vte_title(&mut self, vte: *mut GtkWidget, title_str: &str) {
+        if let Some(rest) = title_str.strip_prefix("AKHTERM_TMUX:") {
+            apply_tmux_vte_title(self, vte, rest);
+            return;
+        }
+        if vte != self.active_vte() {
+            return;
+        }
+        let clean = title_str.trim();
+        self.osc_title = if self.effective_category() == SessionCategory::Remote {
+            let host = self.remote().map_or(self.proc_info.ssh_host.as_str(), |r| r.host.as_str());
+            clean_remote_osc_title(clean, host)
+        } else {
+            clean_local_osc_title(clean)
+        };
+    }
+
     pub fn snapshot_tab(&mut self) -> Tab {
+        let dyn_ssh = self.is_dynamic_ssh();
         if let Tab::Local { cwd, .. } = &mut self.tab {
-            if let Some(current) = foreground_cwd(self.child_pid) {
-                self.cwd.clone_from(&current);
-                *cwd = current;
+            if !dyn_ssh {
+                if let Some(current) = foreground_cwd(self.child_pid) {
+                    self.cwd.clone_from(&current);
+                    *cwd = current;
+                } else if !self.cwd.is_empty() {
+                    cwd.clone_from(&self.cwd);
+                }
             } else if !self.cwd.is_empty() {
                 cwd.clone_from(&self.cwd);
             }
         }
         self.tab.clone()
     }
+}
+
+fn apply_tmux_vte_title(s: &mut TermSession, vte: *mut GtkWidget, rest: &str) {
+    if s.active_vte() != vte {
+        return;
+    }
+    let parts: Vec<&str> = rest.splitn(4, '|').collect();
+    if parts.len() == 4 && !parts[0].is_empty() {
+        if let Tab::Remote(remote) = &mut s.tab {
+            if let Some(target) = &mut remote.tmux_session {
+                *target = parts[0].to_owned();
+            }
+        }
+        s.remote_tmux = Some((
+            parts[0].to_owned(),
+            parts[1].to_owned(),
+            parts[2].to_owned(),
+            parts[3].to_owned(),
+        ));
+        s.tmux_title_from_vte = true;
+    }
+}
+
+fn clean_remote_osc_title(clean: &str, host: &str) -> String {
+    if clean.is_empty() || matches!(clean, "zsh" | "bash" | "sh") || clean == host {
+        return String::new();
+    }
+    let extracted = match clean.split_once(':') {
+        Some((lhs, rhs)) if lhs.contains('@') => rhs.trim(),
+        _ if clean.contains('@') => "",
+        _ => clean,
+    };
+    extracted.chars().take(28).collect()
+}
+
+fn clean_local_osc_title(clean: &str) -> String {
+    let keep = !clean.is_empty()
+        && !clean.contains('@')
+        && !clean.starts_with('~')
+        && !clean.starts_with('/')
+        && !matches!(clean, "zsh" | "bash");
+    if keep { clean.chars().take(28).collect() } else { String::new() }
 }
 
 const URL_PATTERNS: &[&str] = &[
@@ -377,26 +469,45 @@ fn update_detected_agent(s: &mut TermSession) {
     }
 }
 
+fn format_ssh_plain_title(host: &str, agent: &str, osc_title: &str) -> String {
+    let base = if host.is_empty() { "SSH".to_owned() } else { format!("ssh {host}") };
+    let osc = (!osc_title.is_empty() && osc_title != host).then_some(osc_title);
+    match (agent.is_empty(), osc) {
+        (false, Some(osc)) => format!("{base} · {agent} · {osc}"),
+        (false, None) => format!("{base} · {agent}"),
+        (true, Some(osc)) => format!("{base} · {osc}"),
+        (true, None) => base,
+    }
+}
+
+fn refresh_remote_session_title(s: &mut TermSession) {
+    let host = s
+        .remote()
+        .map(|r| r.host.as_str())
+        .filter(|h| !h.is_empty())
+        .unwrap_or(s.proc_info.ssh_host.as_str());
+    if let Some((ref sess, ref win, _, ref path)) = s.remote_tmux {
+        s.title = format_remote_title(host, sess, win, folder_name(path), &s.proc_info.agent);
+    } else if let Some(remote) = s.remote().filter(|r| r.tmux_session.is_some()) {
+        s.title = remote.title();
+    } else {
+        s.title = format_ssh_plain_title(host, &s.proc_info.agent, &s.osc_title);
+    }
+}
+
 pub fn refresh_smart_title(s: &mut TermSession) {
     if s.custom_title {
         return;
     }
     update_detected_agent(s);
-    let current_cwd = if !s.proc_info.cwd.is_empty() {
-        s.proc_info.cwd.as_str()
-    } else {
-        s.cwd.as_str()
-    };
-
-    match s.category {
-        SessionCategory::Remote => {
-            let host = s.remote().map_or("SSH", |remote| remote.host.as_str());
-            if let Some((ref sess, ref win, _, ref path)) = s.remote_tmux {
-                let folder = folder_name(path);
-                s.title = format_remote_title(host, sess, win, folder, &s.proc_info.agent);
-            }
-        }
+    match s.effective_category() {
+        SessionCategory::Remote => refresh_remote_session_title(s),
         SessionCategory::Project => {
+            let current_cwd = if !s.proc_info.cwd.is_empty() {
+                s.proc_info.cwd.as_str()
+            } else {
+                s.cwd.as_str()
+            };
             s.title = format_project_title(
                 &s.base_title,
                 &s.profile_cwd,
@@ -412,6 +523,57 @@ pub fn refresh_smart_title(s: &mut TermSession) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_panes() -> TabPanes {
+        TabPanes { root: ptr::null_mut(), extra: Vec::new(), last_focus: ptr::null_mut() }
+    }
+
+    fn sample_local_session(base_title: &str, dir: &str) -> TermSession {
+        let now = Instant::now();
+        let cat = SessionCategory::Project;
+        let tab = Tab::Local { profile: "work".to_owned(), cwd: dir.to_owned() };
+        TermSession {
+            id: 1, base_title: base_title.to_owned(), profile_cwd: dir.to_owned(),
+            title: base_title.to_owned(), osc_title: String::new(), custom_title: false,
+            cwd: dir.to_owned(), category: cat, vte: ptr::null_mut(), scroll_wrap: ptr::null_mut(),
+            panes: empty_panes(), sidebar_row: SidebarRow::empty_for_test(cat),
+            top_tab: TabView::empty_for_test(cat), child_pid: 0, state: WorkState::Idle,
+            unread: false, last_output: now, work_started: now, last_notified: None,
+            proc_info: ProcInfo::default(), tab, remote_tmux: None, tmux_title_from_vte: false,
+        }
+    }
+
+    fn assert_dynamic_ssh_active(s: &mut TermSession) {
+        s.apply_proc_snapshot(ProcInfo { ssh_host: "ubuntu@prod-01".into(), ..Default::default() });
+        refresh_smart_title(s);
+        assert_eq!(s.effective_category(), SessionCategory::Remote);
+        assert_eq!(s.active_local_cwd(), None);
+        assert_eq!(s.title, "ssh ubuntu@prod-01");
+        s.apply_vte_title(ptr::null_mut(), "ubuntu@prod-01: ~/backend");
+        refresh_smart_title(s);
+        assert_eq!(s.title, "ssh ubuntu@prod-01 · ~/backend");
+    }
+
+    #[test]
+    fn dynamic_ssh_switches_category_and_restores_local_state_on_exit() {
+        let mut s = sample_local_session("Productivity · Новая", "/tmp/proj");
+        assert_eq!(s.effective_category(), SessionCategory::Project);
+        assert_eq!(s.active_local_cwd().as_deref(), Some("/tmp/proj"));
+        assert_dynamic_ssh_active(&mut s);
+
+        s.apply_vte_title(ptr::null_mut(), "AKHTERM_TMUX:main|0|claude|/srv/app");
+        refresh_smart_title(&mut s);
+        assert!(s.tmux_title_from_vte);
+        assert_eq!(s.title, "ubuntu@prod-01 · app · Claude (tmux:main)");
+        assert_eq!(s.snapshot_tab(), Tab::Local { profile: "work".into(), cwd: "/tmp/proj".into() });
+
+        s.apply_proc_snapshot(ProcInfo { cwd: "/tmp/proj".into(), ..Default::default() });
+        refresh_smart_title(&mut s);
+        assert_eq!(s.effective_category(), SessionCategory::Project);
+        assert!(!s.tmux_title_from_vte && s.remote_tmux.is_none() && s.osc_title.is_empty());
+        assert_eq!(s.title, "Productivity · Новая");
+        assert_eq!(s.active_local_cwd().as_deref(), Some("/tmp/proj"));
+    }
 
     #[test]
     fn project_title_tracks_directory_changes_and_restores_profile_name() {

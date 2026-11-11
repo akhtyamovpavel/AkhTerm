@@ -12,6 +12,7 @@ mod proc_radar;
 mod session;
 mod sidebar;
 mod split_pane;
+mod ssh_detect;
 mod tab_strip;
 mod tabs;
 mod theme;
@@ -288,20 +289,25 @@ extern "C" fn on_box_search_changed(entry: *mut GtkWidget, _data: *mut c_void) {
 }
 
 extern "C" fn on_sidebar_search_changed(entry: *mut GtkWidget, _data: *mut c_void) {
-    APP.with(|cell| {
-        if let Some(app) = cell.borrow_mut().as_mut() {
-            app.sidebar_filter = entry_text_lower(entry);
-            if !app.sidebar_filter.is_empty() {
-                app.sidebar.reveal_tmux_results();
-            }
-            filter_sidebar(app);
-        }
+    let q = entry_text_lower(entry);
+    let plan = APP.with(|cell| {
+        let Ok(mut state) = cell.try_borrow_mut() else { return None };
+        let app = state.as_mut()?;
+        app.sidebar_filter = q;
+        let reveal = (!app.sidebar_filter.is_empty()).then(|| app.sidebar.tmux_widget());
+        Some((reveal, prepare_sidebar_filter(app)))
     });
+    if let Some((reveal, sidebar_plan)) = plan {
+        if let Some(exp) = reveal {
+            unsafe { gtk_expander_set_expanded(exp, 1) };
+        }
+        sidebar_plan.apply();
+    }
 }
 
-fn filter_sidebar(app: &AppState) {
+fn prepare_sidebar_filter(app: &AppState) -> sidebar::SidebarUpdate {
     let tmux_rows = app.tmux_jump_btns.iter().map(|(_, _, key, button, _)| (key.as_str(), *button));
-    app.sidebar.filter(&app.sidebar_filter, &app.sessions, tmux_rows);
+    app.sidebar.prepare_filter(&app.sidebar_filter, &app.sessions, tmux_rows)
 }
 
 extern "C" fn on_window_destroy(_w: *mut GtkWidget, _data: *mut c_void) {
@@ -320,15 +326,19 @@ extern "C" fn on_vte_focus_in(
     user_data: *mut c_void,
 ) -> c_int {
     let sid = user_data as usize;
-    APP.with(|cell| {
-        let Ok(mut state) = cell.try_borrow_mut() else { return };
-        if let Some(app) = state.as_mut() {
-            if let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid && s.has_vte(vte)) {
-                s.panes.record_focus(vte);
-                sync_session_proc(s, None);
-            }
-        }
+    let updated = APP.with(|cell| {
+        let Ok(mut state) = cell.try_borrow_mut() else { return false };
+        let Some(app) = state.as_mut() else { return false };
+        let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid && s.has_vte(vte)) else {
+            return false;
+        };
+        s.panes.record_focus(vte);
+        sync_session_proc(s, None);
+        true
     });
+    if updated {
+        refresh_ui();
+    }
     0
 }
 
@@ -339,7 +349,7 @@ fn lookup_vte_link_cwd(vte: *mut GtkWidget) -> LinkCwd {
         let Some(s) = app.sessions.iter().find(|s| s.has_vte(vte)) else {
             return LinkCwd::Unmanaged;
         };
-        if s.remote().is_some() && s.vte == vte {
+        if s.remote().is_some() || (s.is_dynamic_ssh() && vte == s.active_vte()) {
             return LinkCwd::Remote;
         }
         s.panes
@@ -384,7 +394,7 @@ extern "C" fn on_reap_split_pane(data: *mut c_void) -> c_int {
             &mut s.child_pid,
             &mut s.cwd,
         )?;
-        s.proc_info = inspect_proc_tree(s.active_pid());
+        sync_session_proc(s, None);
         Some((s.id == active_id, op))
     });
     if let Some((is_active, op)) = reap {
@@ -415,41 +425,6 @@ extern "C" fn on_vte_child_exited(vte: *mut GtkWidget, _status: c_int, user_data
     }
 }
 
-fn apply_vte_window_title(s: &mut TermSession, vte: *mut GtkWidget, title_str: &str) {
-    if let Some(rest) = title_str.strip_prefix("AKHTERM_TMUX:") {
-        if s.vte != vte {
-            return;
-        }
-        let parts: Vec<&str> = rest.splitn(4, '|').collect();
-        if parts.len() == 4 && !parts[0].is_empty() {
-            if let Tab::Remote(remote) = &mut s.tab {
-                if let Some(target) = &mut remote.tmux_session {
-                    *target = parts[0].to_string();
-                }
-            }
-            s.remote_tmux = Some((
-                parts[0].to_string(),
-                parts[1].to_string(),
-                parts[2].to_string(),
-                parts[3].to_string(),
-            ));
-            s.tmux_title_from_vte = true;
-        }
-        return;
-    }
-    if vte != s.active_vte() {
-        return;
-    }
-    let clean = title_str.trim();
-    let keep = !clean.is_empty()
-        && !clean.contains('@')
-        && !clean.starts_with('~')
-        && !clean.starts_with('/')
-        && clean != "zsh"
-        && clean != "bash";
-    s.osc_title = if keep { clean.chars().take(28).collect() } else { String::new() };
-}
-
 extern "C" fn on_vte_title_changed(vte: *mut GtkWidget, user_data: *mut c_void) {
     if vte.is_null() {
         return;
@@ -468,8 +443,9 @@ extern "C" fn on_vte_title_changed(vte: *mut GtkWidget, user_data: *mut c_void) 
         let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid && s.has_vte(vte)) else {
             return false;
         };
-        apply_vte_window_title(s, vte, &title_str);
         sync_session_proc(s, None);
+        s.apply_vte_title(vte, &title_str);
+        refresh_smart_title(s);
         true
     });
     if updated {
@@ -823,28 +799,47 @@ fn collect_local_cwds(app: &AppState) -> Vec<String> {
     cwds
 }
 
-fn update_mi_widgets(
-    app: &AppState,
-    cur_mi: Option<&ProjectMiReport>,
-    self_mi: Option<&ProjectMiReport>,
-) {
-    for cls in ["btn-mi-a", "btn-mi-b", "btn-mi-c"] {
-        remove_class(app.mi_btn, cls);
-    }
-    unsafe { gtk_widget_set_sensitive(app.mi_refactor_btn, i32::from(cur_mi.is_some())) };
-    let Some(rep) = cur_mi else {
-        unsafe {
-            gtk_button_set_label(app.mi_btn, text::MAINTAINABILITY.as_ptr());
-            gtk_label_set_text(app.mi_pop_label, text::MI_EMPTY.as_ptr());
+struct MiUiPlan {
+    widgets: [*mut GtkWidget; 3],
+    grade_cls: Option<&'static str>,
+    texts: Option<(String, String)>,
+}
+
+impl MiUiPlan {
+    fn from_state(
+        app: &AppState,
+        cur_mi: Option<&ProjectMiReport>,
+        self_mi: Option<&ProjectMiReport>,
+    ) -> Self {
+        Self {
+            widgets: [app.mi_btn, app.mi_pop_label, app.mi_refactor_btn],
+            grade_cls: cur_mi.map(|rep| mi_grade_class(rep.grade)),
+            texts: cur_mi.map(|rep| {
+                (format_mi_button_label(rep), format_mi_popover_markup(rep, self_mi))
+            }),
         }
-        return;
-    };
-    add_class(app.mi_btn, mi_grade_class(rep.grade));
-    if let Ok(c) = CString::new(format_mi_button_label(rep)) {
-        unsafe { gtk_button_set_label(app.mi_btn, c.as_ptr()) };
     }
-    if let Ok(c) = CString::new(format_mi_popover_markup(rep, self_mi)) {
-        unsafe { gtk_label_set_markup(app.mi_pop_label, c.as_ptr()) };
+
+    fn apply(self) {
+        let [btn, pop_label, refactor_btn] = self.widgets;
+        for cls in ["btn-mi-a", "btn-mi-b", "btn-mi-c"] {
+            remove_class(btn, cls);
+        }
+        unsafe { gtk_widget_set_sensitive(refactor_btn, i32::from(self.grade_cls.is_some())) };
+        let Some((cls, (lbl, markup))) = self.grade_cls.zip(self.texts) else {
+            unsafe {
+                gtk_button_set_label(btn, text::MAINTAINABILITY.as_ptr());
+                gtk_label_set_text(pop_label, text::MI_EMPTY.as_ptr());
+            }
+            return;
+        };
+        add_class(btn, cls);
+        if let Ok(c) = CString::new(lbl) {
+            unsafe { gtk_button_set_label(btn, c.as_ptr()) };
+        }
+        if let Ok(c) = CString::new(markup) {
+            unsafe { gtk_label_set_markup(pop_label, c.as_ptr()) };
+        }
     }
 }
 
@@ -882,67 +877,60 @@ extern "C" fn on_mi_refactor_clicked(_btn: *mut GtkWidget, _data: *mut c_void) {
     }
 }
 
-pub fn refresh_ui() {
-    APP.with(|cell| {
-        let Some(app) = cell.borrow().as_ref().map(|a| a as *const AppState) else {
-            return;
-        };
-        let app = unsafe { &*app };
+struct UiRefreshPlan {
+    rows: Vec<sidebar::RowUpdate>,
+    tabs: Vec<tab_strip::TabUpdate>,
+    sidebar: sidebar::SidebarUpdate,
+    btns: [*mut GtkWidget; 3],
+    flags: (bool, bool),
+    mi: MiUiPlan,
+    footer: (*mut GtkWidget, String),
+}
+
+fn prepare_session_views(
+    app: &AppState,
+    mi_map: &std::collections::HashMap<String, ProjectMiReport>,
+    home: &str,
+) -> (Vec<sidebar::RowUpdate>, Vec<tab_strip::TabUpdate>, Option<String>, bool, [usize; 3]) {
+    let mut counts = [0usize; 3];
+    let mut active_cwd = None;
+    let mut can_reconnect = false;
+    let mut rows = Vec::with_capacity(app.sessions.len());
+    let mut tabs = Vec::with_capacity(app.sessions.len());
+    for (idx, s) in app.sessions.iter().enumerate() {
+        let is_act = s.id == app.active_id;
+        let local_dir = s.active_local_cwd();
+        if is_act {
+            can_reconnect = s.remote().is_some();
+            active_cwd = local_dir.clone();
+        }
+        counts[0] += usize::from(s.state == WorkState::Working);
+        counts[1] += usize::from(s.unread);
+        counts[2] += usize::from(!s.proc_info.ssh_host.is_empty());
+        let mi_badge = local_dir
+            .as_deref()
+            .and_then(|d| lookup_mi(mi_map, d, home).or_else(|| lookup_mi(mi_map, &s.cwd, home)))
+            .map(|r| (r.avg_mi, r.grade));
+        rows.push(s.sidebar_row.prepare_update(idx, s, mi_badge, is_act));
+        tabs.push(s.top_tab.prepare_update(s, is_act));
+    }
+    (rows, tabs, active_cwd, can_reconnect, counts)
+}
+
+impl UiRefreshPlan {
+    fn build(app: &AppState) -> Self {
         let home = home_dir();
         let local_cwds = collect_local_cwds(app);
-        app.mi_scheduler
-            .sync_targets(&app.config.mi_directories(), &local_cwds, &home);
+        app.mi_scheduler.sync_targets(&app.config.mi_directories(), &local_cwds, &home);
         let mi_map = app.mi_scheduler.snapshot();
-
-        let mut working = 0usize;
-        let mut ready = 0usize;
-        let mut ssh_count = 0usize;
-        let mut active_cwd = None;
-        let mut can_reconnect = false;
-
-        for (idx, s) in app.sessions.iter().enumerate() {
-            let is_act = s.id == app.active_id;
-            let local_dir = s.active_local_cwd();
-            if is_act {
-                can_reconnect = s.remote().is_some();
-                active_cwd = local_dir.clone();
-            }
-            if s.state == WorkState::Working {
-                working += 1;
-            }
-            if s.unread {
-                ready += 1;
-            }
-            if !s.proc_info.ssh_host.is_empty() {
-                ssh_count += 1;
-            }
-
-            let mi_badge = local_dir
-                .as_deref()
-                .and_then(|dir| {
-                    lookup_mi(&mi_map, dir, &home).or_else(|| lookup_mi(&mi_map, &s.cwd, &home))
-                })
-                .map(|r| (r.avg_mi, r.grade));
-
-            s.sidebar_row.update(idx, s, mi_badge, is_act);
-            s.top_tab.update(&s.title, &s.proc_info.agent, is_act, s.unread, s.state.needs_approval());
-        }
-        filter_sidebar(app);
-        let can_split = !app.sessions.is_empty() && !can_reconnect;
-        unsafe {
-            gtk_widget_set_sensitive(app.reconnect_btn, i32::from(can_reconnect));
-            gtk_widget_set_sensitive(app.split_vert_btn, i32::from(can_split));
-            gtk_widget_set_sensitive(app.split_horiz_btn, i32::from(can_split));
-        }
-
+        let (rows, tabs, active_cwd, can_rec, [working, ready, ssh_count]) =
+            prepare_session_views(app, &mi_map, &home);
         let (cur_mi, self_mi) = resolve_active_mi(
             &mi_map,
             active_cwd.as_deref(),
             app.config.mi_root.as_deref(),
             &home,
         );
-        update_mi_widgets(app, cur_mi, self_mi);
-
         let footer = format!(
             "Вкладки: {}    В работе: {}    Готово: {}    SSH: {}",
             app.sessions.len(),
@@ -950,8 +938,44 @@ pub fn refresh_ui() {
             ready,
             ssh_count
         );
-        set_label_text(app.footer_status, &footer);
+        Self {
+            rows,
+            tabs,
+            sidebar: prepare_sidebar_filter(app),
+            btns: [app.reconnect_btn, app.split_vert_btn, app.split_horiz_btn],
+            flags: (can_rec, !app.sessions.is_empty() && !can_rec),
+            mi: MiUiPlan::from_state(app, cur_mi, self_mi),
+            footer: (app.footer_status, footer),
+        }
+    }
+
+    fn apply(self) {
+        for row in self.rows {
+            row.apply();
+        }
+        for tab in self.tabs {
+            tab.apply();
+        }
+        self.sidebar.apply();
+        let [reconnect_btn, split_vert_btn, split_horiz_btn] = self.btns;
+        unsafe {
+            gtk_widget_set_sensitive(reconnect_btn, i32::from(self.flags.0));
+            gtk_widget_set_sensitive(split_vert_btn, i32::from(self.flags.1));
+            gtk_widget_set_sensitive(split_horiz_btn, i32::from(self.flags.1));
+        }
+        self.mi.apply();
+        set_label_text(self.footer.0, &self.footer.1);
+    }
+}
+
+pub fn refresh_ui() {
+    let plan = APP.with(|cell| {
+        let Ok(borrow) = cell.try_borrow() else { return None };
+        borrow.as_ref().map(UiRefreshPlan::build)
     });
+    if let Some(plan) = plan {
+        plan.apply();
+    }
 }
 
 extern "C" fn on_radar_tick(_data: *mut c_void) -> c_int {
@@ -981,10 +1005,7 @@ extern "C" fn on_radar_tick(_data: *mut c_void) -> c_int {
 }
 
 fn sync_session_proc(s: &mut TermSession, telemetry: Option<&BoxTelemetry>) {
-    s.proc_info = inspect_proc_tree(s.active_pid());
-    if s.remote().is_none() && !s.proc_info.cwd.is_empty() && s.active_vte() == s.vte {
-        s.cwd = expand_home(&s.proc_info.cwd);
-    }
+    s.apply_proc_snapshot(inspect_proc_tree(s.active_pid()));
     if let Some(box_snap) = telemetry {
         update_remote_proc_info(s, box_snap);
     } else if let Tab::Remote(remote) = &s.tab {
@@ -1099,7 +1120,7 @@ fn close_active_pane_or_tab() {
         let op = s
             .panes
             .prepare_close_active(&mut s.scroll_wrap, &mut s.vte, &mut s.child_pid, &mut s.cwd)?;
-        s.proc_info = inspect_proc_tree(s.active_pid());
+        sync_session_proc(s, None);
         Some(op)
     });
     if let Some(op) = close_op {
