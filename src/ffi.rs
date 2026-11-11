@@ -19,6 +19,9 @@ pub type GtkCssProvider = c_void;
 pub type GtkSettings = c_void;
 pub type GtkHeaderBar = c_void;
 pub type GtkClipboard = c_void;
+pub type GtkSelectionData = c_void;
+pub type GtkTargetList = c_void;
+pub type GdkDragContext = c_void;
 pub type GdkScreen = c_void;
 pub type GdkEvent = c_void;
 pub type GdkPixbuf = c_void;
@@ -53,6 +56,17 @@ pub const GDK_BUTTON_PRESS: c_int = 4;
 pub const GDK_CONTROL_MASK: c_uint = 1 << 2;
 pub const GDK_SHIFT_MASK: c_uint = 1 << 0;
 pub const GDK_MOD1_MASK: c_uint = 1 << 3; // Alt
+pub const GTK_DEST_DEFAULT_ALL: c_uint = 0x07;
+pub const DEST_DEFAULT_ALL: c_uint = GTK_DEST_DEFAULT_ALL;
+pub const GDK_ACTION_COPY: c_uint = 1 << 1;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GtkTargetEntry {
+    pub target: *const c_char,
+    pub flags: c_uint,
+    pub info: c_uint,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -105,6 +119,7 @@ extern "C" {
 
     // GDK3
     pub fn gdk_screen_get_default() -> *mut GdkScreen;
+    pub fn gdk_atom_intern_static_string(atom_name: *const c_char) -> GdkAtom;
     pub fn gdk_event_get_event_type(event: *const GdkEvent) -> c_int;
     pub fn gdk_event_get_button(event: *const GdkEvent, button: *mut c_uint) -> c_int;
     pub fn gdk_event_get_keyval(event: *const GdkEvent, keyval: *mut c_uint) -> c_int;
@@ -276,6 +291,12 @@ extern "C" {
         writable: c_int,
     ) -> c_int;
     pub fn gtk_targets_include_uri(targets: *const GdkAtom, n_targets: c_int) -> c_int;
+    pub fn gtk_drag_dest_set(w: *mut GtkWidget, f: c_uint, t: *const GtkTargetEntry, n: c_int, a: c_uint);
+    pub fn gtk_drag_dest_add_uri_targets(widget: *mut GtkWidget);
+    pub fn gtk_drag_dest_get_target_list(widget: *mut GtkWidget) -> *mut GtkTargetList;
+    pub fn gtk_target_list_find(list: *mut GtkTargetList, target: GdkAtom, info: *mut c_uint) -> c_int;
+    pub fn gtk_selection_data_get_uris(selection_data: *const GtkSelectionData) -> *mut *mut c_char;
+    pub fn gtk_drag_finish(ctx: *mut GdkDragContext, success: c_int, del: c_int, time: c_uint);
     pub fn gdk_pixbuf_new(
         colorspace: c_int,
         has_alpha: c_int,
@@ -413,7 +434,41 @@ pub fn set_label_text(widget: *mut GtkWidget, text: &str) {
 
 pub fn set_tooltip(widget: *mut GtkWidget, text: &str) {
     if let Ok(text) = CString::new(text) {
-        unsafe { gtk_widget_set_tooltip_text(widget, text.as_ptr()) };
+        unsafe {
+            gtk_widget_set_tooltip_text(widget, text.as_ptr());
+        }
+    }
+}
+
+pub fn enable_uri_drag_dest(widget: *mut GtkWidget) {
+    if !widget.is_null() {
+        unsafe {
+            gtk_drag_dest_set(widget, DEST_DEFAULT_ALL, std::ptr::null(), 0, GDK_ACTION_COPY);
+            gtk_drag_dest_add_uri_targets(widget);
+        }
+    }
+}
+
+pub fn finish_drag(context: *mut GdkDragContext, ok: bool, time: c_uint) {
+    if !context.is_null() {
+        unsafe {
+            gtk_drag_finish(context, i32::from(ok), 0, time);
+        }
+    }
+}
+
+pub fn widget_accepts_uri_drop(widget: *mut GtkWidget) -> bool {
+    if widget.is_null() {
+        return false;
+    }
+    unsafe {
+        let list = gtk_drag_dest_get_target_list(widget);
+        if list.is_null() {
+            return false;
+        }
+        let atom = gdk_atom_intern_static_string(c"text/uri-list".as_ptr());
+        let mut info: c_uint = 0;
+        gtk_target_list_find(list, atom, &mut info) != 0
     }
 }
 

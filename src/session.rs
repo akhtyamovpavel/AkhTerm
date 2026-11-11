@@ -103,6 +103,13 @@ impl TermSession {
         self.vte == vte || self.panes.contains_vte(vte)
     }
 
+    pub fn pid_for_vte(&self, vte: *mut GtkWidget) -> Option<i32> {
+        if self.vte == vte {
+            return Some(self.child_pid);
+        }
+        self.panes.extra.iter().find(|p| p.vte == vte).map(|p| p.child_pid)
+    }
+
     pub fn active_local_cwd(&self) -> Option<String> {
         if self.effective_category() == SessionCategory::Remote {
             return None;
@@ -356,6 +363,7 @@ pub fn create_vte_widget(cwd: &str, argv_strs: &[&str]) -> (*mut GtkWidget, i32)
         let vte = vte_terminal_new();
         apply_vte_style(vte);
         register_vte_url_matches(vte);
+        crate::file_drop::setup_vte_file_drop(vte);
         let pid = spawn_vte_command(vte, cwd, argv_strs);
         let ctx = Box::into_raw(Box::new(VteLinkCtx {
             pid,
