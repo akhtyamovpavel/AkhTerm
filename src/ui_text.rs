@@ -31,6 +31,11 @@ pub const APPROVAL_TAB_TIP: &CStr = c"Ждёт апрува (Ctrl+Shift+U — п
 pub const NOTIFY_APPROVAL_TITLE: &CStr = c"AkhTerm · Ждёт апрува";
 pub const NOTIFY_READY_TITLE: &CStr = c"AkhTerm · Готово";
 pub const TMUX_MAIN: &CStr = c"tmux:main";
+pub const AGENTS_WORKTREE_HEADER: &CStr = c"НОВЫЙ GIT WORKTREE · ОТДЕЛЬНАЯ ВКЛАДКА";
+pub const AGENT_WORKTREE_TIP: &CStr =
+    c"Создать изолированный Git worktree и запустить агента в новой вкладке";
+pub const WORKTREE_LOCAL_ONLY: &CStr =
+    c"⚠ Git worktree доступен только для локальной вкладки репозитория";
 
 pub const AGENT_ACTIONS: [(&CStr, &str); 5] = [
     (c"agy · Antigravity CLI", "agy\n"),

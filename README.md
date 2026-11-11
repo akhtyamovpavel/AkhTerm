@@ -43,7 +43,7 @@ sudo apt install dpkg-dev
 
 `Ctrl+Shift+W` closes the active tab, and `Ctrl+Shift+U` jumps to the next tab waiting for approval («Ждёт апрува») or with unread output («Готово»). The `×` button closes its own tab, and `Alt+1` through `Alt+9` select tabs by position. The interface labels are in Russian.
 
-In a shell tab, open «Агенты» and choose **Claude Code** to run `claude` in that shell. Install the [Claude Code CLI](https://code.claude.com/docs/en/quickstart) on the machine where the shell runs. When an agent pauses on a confirmation prompt or finishes a long run while the window is unfocused, AkhTerm highlights the tab and sends a desktop notification if `notify-send` is installed.
+In a shell tab, open «Агенты» and choose **Claude Code** to run `claude` in that shell, or pick one of the compact `⎇` actions in the same menu to create a sibling Git worktree (`<repo>-wt-<agent>-<stamp>` on branch `wt/<agent>-<stamp>`) and launch the agent in a new tab. Local tabs inside a Git repository display their active branch (with `[wt]` for linked worktrees) in the sidebar and match branch names in sidebar search. Install the [Claude Code CLI](https://code.claude.com/docs/en/quickstart) on the machine where the shell runs. When an agent pauses on a confirmation prompt or finishes a long run while the window is unfocused, AkhTerm highlights the tab and sends a desktop notification if `notify-send` is installed.
 
 ## Local configuration
 
