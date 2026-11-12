@@ -5,6 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::ffi::*;
+use crate::pane_registry::{PaneId, PaneRegistry};
 use crate::session::{SessionCategory, TermSession, WorkState};
 use crate::ui_text as text;
 
@@ -37,6 +38,22 @@ pub struct TabAttention {
     pub id: usize,
     pub state: WorkState,
     pub unread: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaneAttention {
+    pub session_id: usize,
+    pub pane_id: PaneId,
+    pub vte: *mut GtkWidget,
+    pub state: WorkState,
+    pub unread: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaneAttentionTarget {
+    pub session_id: usize,
+    pub pane_id: PaneId,
+    pub vte: *mut GtkWidget,
 }
 
 pub fn read_vte_visible_text(vte: *mut GtkWidget) -> String {
@@ -75,24 +92,60 @@ fn line_needs_approval(line: &str) -> bool {
     LOWER_PROMPTS.iter().any(|pat| lower.contains(pat))
 }
 
-pub fn classify_terminal_text(text: &str) -> WorkState {
-    let needs = text
+fn is_approval_option_line(line: &str) -> bool {
+    let low = line.to_lowercase();
+    let numbered = low.starts_with("1.") || low.starts_with("2.") || low.starts_with("❯");
+    numbered && low.contains("yes, allow")
+}
+
+fn truncate_snippet(line: &str, max_chars: usize) -> String {
+    if line.chars().count() <= max_chars {
+        return line.to_owned();
+    }
+    let head: String = line.chars().take(max_chars.saturating_sub(1)).collect();
+    format!("{head}…")
+}
+
+pub fn extract_approval_snippet(text: &str) -> Option<String> {
+    let recent: Vec<&str> = text
         .lines()
         .rev()
         .map(clean_terminal_line)
         .filter(|line| !line.is_empty())
         .take(RECENT_PROMPT_LINES)
-        .any(line_needs_approval);
-    if needs {
+        .collect();
+    let best = recent
+        .iter()
+        .copied()
+        .find(|line| line_needs_approval(line) && !is_approval_option_line(line))
+        .or_else(|| recent.into_iter().find(|line| line_needs_approval(line)));
+    best.map(|line| truncate_snippet(line, 140))
+}
+
+pub fn classify_terminal_text(text: &str) -> WorkState {
+    if extract_approval_snippet(text).is_some() {
         WorkState::NeedsApproval
     } else {
         WorkState::Ready
     }
 }
 
+pub fn classify_terminal_text_with_snippet(text: &str) -> (WorkState, Option<String>) {
+    match extract_approval_snippet(text) {
+        Some(snippet) => (WorkState::NeedsApproval, Some(snippet)),
+        None => (WorkState::Ready, None),
+    }
+}
+
 pub fn classify_vte_state(vte: *mut GtkWidget) -> WorkState {
     let visible = read_vte_visible_text(vte);
     classify_terminal_text(&visible)
+}
+
+#[allow(dead_code)]
+pub fn classify_vte_state_with_snippet(vte: *mut GtkWidget) -> (WorkState, Option<String>) {
+    let visible = read_vte_visible_text(vte);
+    classify_terminal_text_with_snippet(&visible)
 }
 
 pub fn is_jump_attention_shortcut(keyval: c_uint, keycode: u16) -> bool {
@@ -138,6 +191,114 @@ pub fn find_next_session_attention(sessions: &[TermSession], active_id: usize) -
         .map(|s| TabAttention { id: s.id, state: s.state, unread: s.unread })
         .collect();
     next_attention_tab(&items, active_id)
+}
+
+#[allow(dead_code)]
+fn is_same_pane(p: &PaneAttention, active_session_id: usize, active_vte: *mut GtkWidget) -> bool {
+    if p.session_id != active_session_id {
+        return false;
+    }
+    active_vte.is_null() || p.vte == active_vte
+}
+
+#[allow(dead_code)]
+fn is_approval_pane(pane: &PaneAttention) -> bool {
+    pane.state == WorkState::NeedsApproval
+}
+
+#[allow(dead_code)]
+fn is_ready_or_unread_pane(pane: &PaneAttention) -> bool {
+    pane.unread || pane.state == WorkState::Ready
+}
+
+#[allow(dead_code)]
+fn pane_start_index(
+    panes: &[PaneAttention],
+    active_session_id: usize,
+    active_vte: *mut GtkWidget,
+) -> usize {
+    let exact = panes
+        .iter()
+        .position(|p| p.session_id == active_session_id && !active_vte.is_null() && p.vte == active_vte);
+    let idx = exact.or_else(|| panes.iter().position(|p| p.session_id == active_session_id));
+    idx.map_or(0, |i| (i + 1) % panes.len())
+}
+
+#[allow(dead_code)]
+fn find_cyclic_pane_match(
+    panes: &[PaneAttention],
+    start: usize,
+    active_session_id: usize,
+    active_vte: *mut GtkWidget,
+    pred: fn(&PaneAttention) -> bool,
+) -> Option<PaneAttentionTarget> {
+    let len = panes.len();
+    (0..len)
+        .map(|off| &panes[(start + off) % len])
+        .find(|p| !is_same_pane(p, active_session_id, active_vte) && pred(p))
+        .map(|p| PaneAttentionTarget { session_id: p.session_id, pane_id: p.pane_id, vte: p.vte })
+}
+
+#[allow(dead_code)]
+pub fn next_pane_attention(
+    panes: &[PaneAttention],
+    active_session_id: usize,
+    active_vte: *mut GtkWidget,
+) -> Option<PaneAttentionTarget> {
+    if panes.is_empty() {
+        return None;
+    }
+    let start = pane_start_index(panes, active_session_id, active_vte);
+    find_cyclic_pane_match(panes, start, active_session_id, active_vte, is_approval_pane)
+        .or_else(|| find_cyclic_pane_match(panes, start, active_session_id, active_vte, is_ready_or_unread_pane))
+}
+
+#[allow(dead_code)]
+pub fn collect_session_pane_attentions(
+    sessions: &[(&TermSession, Option<&PaneRegistry>)],
+) -> Vec<PaneAttention> {
+    let mut out = Vec::new();
+    for &(s, maybe_reg) in sessions {
+        append_session_panes(s, maybe_reg, &mut out);
+    }
+    out
+}
+
+#[allow(dead_code)]
+fn append_session_panes(
+    s: &TermSession,
+    maybe_reg: Option<&PaneRegistry>,
+    out: &mut Vec<PaneAttention>,
+) {
+    if let Some(reg) = maybe_reg.filter(|r| !r.is_empty()) {
+        for p in reg.panes() {
+            out.push(PaneAttention {
+                session_id: s.id,
+                pane_id: p.id,
+                vte: p.vte,
+                state: p.state,
+                unread: p.unread,
+            });
+        }
+        return;
+    }
+    out.push(PaneAttention {
+        session_id: s.id,
+        pane_id: PaneId::new(s.id as u64),
+        vte: s.active_vte(),
+        state: s.state,
+        unread: s.unread,
+    });
+}
+
+#[allow(dead_code)]
+pub fn find_next_pane_attention(
+    sessions: &[(&TermSession, Option<&PaneRegistry>)],
+    active_id: usize,
+    active_vte: *mut GtkWidget,
+) -> Option<PaneAttentionTarget> {
+    let panes = collect_session_pane_attentions(sessions);
+    next_pane_attention(&panes, active_id, active_vte)
 }
 
 pub fn should_notify_background(
@@ -196,11 +357,12 @@ fn apply_settled_state(session: &mut TermSession, classified: WorkState, active_
     }
 }
 
-fn maybe_notify_settled(
-    session: &mut TermSession,
-    now: Instant,
+pub fn maybe_notify_background_event(
     classified: WorkState,
     work_span: Duration,
+    title: &str,
+    last_notified: &mut Option<Instant>,
+    now: Instant,
     win: *mut GtkWidget,
     window_active: bool,
 ) {
@@ -210,10 +372,29 @@ fn maybe_notify_settled(
     if !win.is_null() {
         unsafe { gtk_window_set_urgency_hint(win, 1) };
     }
-    if can_notify_session(session.last_notified, now) {
-        session.last_notified = Some(now);
-        spawn_desktop_notification(classified.needs_approval(), &session.title);
+    if can_notify_session(*last_notified, now) {
+        *last_notified = Some(now);
+        spawn_desktop_notification(classified.needs_approval(), title);
     }
+}
+
+fn maybe_notify_settled(
+    session: &mut TermSession,
+    now: Instant,
+    classified: WorkState,
+    work_span: Duration,
+    win: *mut GtkWidget,
+    window_active: bool,
+) {
+    maybe_notify_background_event(
+        classified,
+        work_span,
+        &session.title,
+        &mut session.last_notified,
+        now,
+        win,
+        window_active,
+    );
 }
 
 fn record_settled_turn(session: &mut TermSession, work_span: Duration) {
@@ -328,6 +509,37 @@ mod tests {
         assert_eq!(next_attention_tab(&idle, 1), None);
         let single = [TabAttention { id: 7, state: WorkState::NeedsApproval, unread: true }];
         assert_eq!(next_attention_tab(&single, 7), None);
+    }
+
+    #[test]
+    fn extracts_clean_approval_snippet_from_claude_box_and_cli() {
+        let box_prompt = "╭────────────────────────────╮\n│ Do you want to proceed?    │\n│ ❯ 1. Yes                   │\n│   2. Yes, allow all edits  │\n╰────────────────────────────╯";
+        assert_eq!(extract_approval_snippet(box_prompt).as_deref(), Some("Do you want to proceed?"));
+        let bash_prompt = "Allow Bash(cargo test --offline)?";
+        assert_eq!(
+            classify_terminal_text_with_snippet(bash_prompt),
+            (WorkState::NeedsApproval, Some(bash_prompt.to_owned()))
+        );
+        assert_eq!(classify_terminal_text_with_snippet("all done$"), (WorkState::Ready, None));
+    }
+
+    #[test]
+    fn cycles_pane_attention_within_tab_and_across_tabs_prioritizing_approval() {
+        let (v1, v2, v3) = (1usize as *mut GtkWidget, 2usize as *mut GtkWidget, 3usize as *mut GtkWidget);
+        let panes = [
+            PaneAttention { session_id: 1, pane_id: PaneId::new(1), vte: v1, state: WorkState::Working, unread: false },
+            PaneAttention { session_id: 1, pane_id: PaneId::new(2), vte: v2, state: WorkState::Ready, unread: true },
+            PaneAttention { session_id: 2, pane_id: PaneId::new(3), vte: v3, state: WorkState::NeedsApproval, unread: true },
+        ];
+        let hit1 = next_pane_attention(&panes, 1, v1).expect("jumps to approval pane first");
+        assert_eq!((hit1.session_id, hit1.pane_id, hit1.vte), (2, PaneId::new(3), v3));
+        let panes_same_tab_approval = [
+            PaneAttention { session_id: 1, pane_id: PaneId::new(1), vte: v1, state: WorkState::Working, unread: false },
+            PaneAttention { session_id: 1, pane_id: PaneId::new(2), vte: v2, state: WorkState::NeedsApproval, unread: true },
+        ];
+        let hit2 = next_pane_attention(&panes_same_tab_approval, 1, v1).expect("jumps to split pane 2");
+        assert_eq!((hit2.session_id, hit2.pane_id, hit2.vte), (1, PaneId::new(2), v2));
+        assert_eq!(next_pane_attention(&panes_same_tab_approval, 1, v2), None);
     }
 
     #[test]

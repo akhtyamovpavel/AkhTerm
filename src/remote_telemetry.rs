@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::pane_registry::PaneRecord;
 use crate::proc_radar::{detect_local_agent, shell_quote};
 use crate::session::{SessionCategory, TermSession};
 use crate::tabs::{is_ssh_host, Tab};
@@ -107,6 +108,55 @@ impl RemoteSessionTarget {
             agent_hint: extract_live_agent_hint(s),
         })
     }
+
+    pub fn from_pane(
+        probe_id: usize,
+        pane: &PaneRecord,
+        remote_host: Option<&str>,
+        cfg_tmux: Option<&str>,
+    ) -> Option<Self> {
+        let (host, tmux_session) = resolve_pane_host_and_tmux(pane, remote_host, cfg_tmux)?;
+        is_ssh_host(&host).then(|| Self {
+            sid: probe_id,
+            host,
+            tmux_session,
+            pane_cwd_hint: pane.remote_tmux.as_ref().map_or("", |t| t.3.trim()).to_owned(),
+            agent_hint: pane_agent_hint(pane),
+        })
+    }
+}
+
+fn pane_live_tmux(pane: &PaneRecord) -> Option<String> {
+    pane.remote_tmux
+        .as_ref()
+        .map(|t| t.0.trim().to_owned())
+        .filter(|name| !name.is_empty())
+}
+
+fn resolve_pane_host_and_tmux(
+    pane: &PaneRecord,
+    remote_host: Option<&str>,
+    cfg_tmux: Option<&str>,
+) -> Option<(String, Option<String>)> {
+    let live_tmux = pane_live_tmux(pane);
+    if let Some(host) = remote_host.filter(|_| pane.child_pid > 0 || !pane.proc_info.ssh_host.is_empty()) {
+        let fallback_tmux = cfg_tmux.map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned);
+        return Some((host.to_owned(), live_tmux.or(fallback_tmux)));
+    }
+    (!pane.proc_info.ssh_host.is_empty()).then(|| (pane.proc_info.ssh_host.clone(), live_tmux))
+}
+
+fn pane_agent_hint(pane: &PaneRecord) -> String {
+    if !pane.proc_info.agent.is_empty() {
+        return classify_agent_hint(&pane.proc_info.agent).unwrap_or(&pane.proc_info.agent).to_owned();
+    }
+    if let Some(tag) = pane.remote_tmux.as_ref().and_then(|t| classify_agent_hint(&t.2)) {
+        return tag.to_owned();
+    }
+    classify_agent_hint(&pane.osc_title)
+        .or_else(|| local_pid_agent_hint(pane.child_pid))
+        .unwrap_or("")
+        .to_owned()
 }
 
 fn resolve_host_and_tmux(s: &TermSession) -> Option<(String, Option<String>)> {
