@@ -8,6 +8,7 @@ use crate::app_state::{self, AppState, APP};
 use crate::ffi::*;
 use crate::git_status::{self, GitRepoStatus};
 use crate::mi::ProjectMiReport;
+use crate::pane_header::{PaneHeader, PaneHeaderState};
 use crate::{git_wt, mi_watch, pane_actions, paths, session, session_ops, sidebar, split_pane};
 use crate::{tab_strip, telemetry, theme, theme_mode::ThemeMode, ui_text as text};
 
@@ -227,6 +228,7 @@ pub fn set_zoom(new_scale: f64) {
     });
     split_pane::apply_zoom_scale(&vtes, clamped, zoom_btn);
     refresh_ui();
+    session_ops::save_tabs();
 }
 
 pub fn adjust_zoom(delta: f64) {
@@ -560,6 +562,7 @@ struct UiRefreshPlan {
     mi: MiUiPlan,
     tokens: (telemetry::TokensMenu, telemetry::TokensViewData),
     footer: Option<(*mut GtkWidget, String)>,
+    pane_headers: Vec<(PaneHeader, PaneHeaderState, bool)>,
 }
 
 impl UiRefreshPlan {
@@ -599,11 +602,12 @@ impl UiRefreshPlan {
         Self {
             rows: views.rows, tabs: views.tabs, sidebar: session_ops::prepare_sidebar_filter(app),
             btns: [app.reconnect_btn, app.split_vert_btn, app.split_horiz_btn],
-            flags: (views.can_reconnect, !app.sessions.is_empty() && !views.can_reconnect),
+            flags: (views.can_reconnect, !app.sessions.is_empty()),
             git: (app.git_menu.button(), views.active_cwd.is_some(), active_git),
             mi: MiUiPlan::from_state(app, cur_mi, self_mi),
             tokens: collect_tokens_view(app, Instant::now()),
             footer: prepare_footer_update(app, working, ready, ssh_count),
+            pane_headers: session_ops::collect_pane_header_updates(app),
         }
     }
 
@@ -615,6 +619,7 @@ impl UiRefreshPlan {
         git_status::update_git_button(self.git.0, self.git.1, self.git.2.as_ref());
         self.mi.apply();
         self.tokens.0.apply(&self.tokens.1);
+        self.pane_headers.into_iter().for_each(|(h, s, v)| h.update(&s, v));
         if let Some((lbl, text)) = self.footer {
             set_label_text(lbl, &text);
         }

@@ -6,8 +6,9 @@ use std::{path::PathBuf, ptr, time::Instant};
 
 use crate::app_state::{self, AppState, APP};
 use crate::ffi::*;
+use crate::pane_header::{PaneHeader, PaneHeaderState};
 use crate::session::{LinkCwd, SessionCategory, TermSession, WorkState};
-use crate::tabs::{Tab, TabStore, TabsState};
+use crate::tabs::{is_ssh_host, RemoteConnection, SplitLeaf, SplitTree, Tab, TabMeta, TabStore, TabsState};
 use crate::{approval, config::WorkspaceConfig, context_menu, pane_actions, paths, platform};
 use crate::{proc_radar, remote_telemetry, session, shortcuts, sidebar, split_pane, ssh_ui};
 use crate::{tab_order, tab_strip, telemetry, topbar};
@@ -617,28 +618,209 @@ pub(crate) fn local_split_context(
     .flatten()
 }
 
+enum SplitTarget {
+    Local { cwd: String, shell: String },
+    Remote(RemoteConnection),
+}
+
+fn resolve_split_target(s: &TermSession, vte: *mut GtkWidget, shell: &str) -> Option<SplitTarget> {
+    if let Some(conn) = s.panes.remote_for_vte(vte, s.scroll_wrap, s.vte).or_else(|| s.remote()) {
+        return Some(SplitTarget::Remote(conn.clone()));
+    }
+    if s.is_dynamic_ssh() && is_ssh_host(&s.proc_info.ssh_host) {
+        return Some(SplitTarget::Remote(RemoteConnection {
+            host: s.proc_info.ssh_host.clone(),
+            tmux_session: s.remote_tmux.as_ref().map(|(sess, ..)| sess.clone()).filter(|t| !t.is_empty()),
+        }));
+    }
+    Some(SplitTarget::Local { cwd: app_state::pane_cwd(s, vte), shell: shell.to_owned() })
+}
+
+fn split_context_any(
+    sid_opt: Option<usize>,
+    target_vte: *mut GtkWidget,
+) -> Option<(usize, *mut GtkWidget, SplitTarget, f64, usize)> {
+    app_state::with_app_mut(|app| {
+        let id = sid_opt.unwrap_or(app.active_id);
+        let shell = app.config.shell.clone();
+        let scale = app.font_scale;
+        let s = app.sessions.iter_mut().find(|s| s.id == id)?;
+        let vte = app_state::pick_session_vte(s, target_vte);
+        let target = resolve_split_target(s, vte, &shell)?;
+        let seq = s.panes.next_remote_seq();
+        Some((s.id, vte, target, scale, seq))
+    })
+    .flatten()
+}
+
+fn spawn_split_terminal(
+    target: &SplitTarget,
+    sid: usize,
+    scale: f64,
+    seq: usize,
+) -> (String, *mut GtkWidget, i32, Option<RemoteConnection>) {
+    match target {
+        SplitTarget::Local { cwd, shell } => {
+            let (vte, pid) = create_terminal(cwd, &[shell.as_str()], sid, scale);
+            (cwd.clone(), vte, pid, None)
+        }
+        SplitTarget::Remote(conn) => {
+            let args = conn.split_argv(seq);
+            let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+            let (vte, pid) = create_terminal(&paths::home_dir(), &argv, sid, scale);
+            (String::new(), vte, pid, Some(conn.clone()))
+        }
+    }
+}
+
+fn commit_split_to_session(
+    sid: usize,
+    pane_vte: *mut GtkWidget,
+    new_scroll: *mut GtkWidget,
+    new_vte: *mut GtkWidget,
+    new_pid: i32,
+    cwd: String,
+    orientation: c_int,
+    remote: Option<RemoteConnection>,
+) -> Option<split_pane::SplitOp> {
+    app_state::with_app_mut(|app| {
+        let s = app.sessions.iter_mut().find(|s| s.id == sid)?;
+        let chosen = if s.has_vte(pane_vte) { pane_vte } else { ptr::null_mut() };
+        let op = s.panes.prepare_split_vte(
+            chosen, s.scroll_wrap, s.vte, new_scroll, new_vte, new_pid, cwd, orientation,
+        );
+        if let Some(conn) = remote {
+            s.panes.record_remote_pane(new_scroll, conn);
+        }
+        Some(op)
+    })
+    .flatten()
+}
+
 pub(crate) fn split_pane_in_session(
     sid_opt: Option<usize>,
     target_vte: *mut GtkWidget,
     orientation: c_int,
 ) {
-    let Some((sid, pane_vte, cwd, shell, scale)) = local_split_context(sid_opt, target_vte)
-    else {
+    let Some((sid, pane_vte, target, scale, seq)) = split_context_any(sid_opt, target_vte) else {
         return;
     };
-    let (new_vte, new_pid) = create_terminal(&cwd, &[shell.as_str()], sid, scale);
+    let (cwd, new_vte, new_pid, remote) = spawn_split_terminal(&target, sid, scale, seq);
     let new_scroll = split_pane::wrap_vte_scroll(new_vte);
-    let split_op = app_state::with_app_mut(|app| {
-        let s = app.sessions.iter_mut().find(|s| s.id == sid && s.remote().is_none())?;
-        let chosen = if s.has_vte(pane_vte) { pane_vte } else { ptr::null_mut() };
-        Some(s.panes.prepare_split_vte(
-            chosen, s.scroll_wrap, s.vte, new_scroll, new_vte, new_pid, cwd, orientation,
-        ))
-    })
-    .flatten();
+    let split_op = commit_split_to_session(
+        sid, pane_vte, new_scroll, new_vte, new_pid, cwd, orientation, remote,
+    );
     split_pane::finish_split(split_op, new_scroll, new_vte);
     topbar::refresh_ui();
     save_tabs();
+}
+
+pub(crate) fn focus_pane_direction(dir: split_pane::FocusDir) -> bool {
+    let moved = app_state::with_app_mut(|app| {
+        let sid = app.active_id;
+        let s = app.sessions.iter_mut().find(|s| s.id == sid)?;
+        s.panes.focus_direction(dir, s.scroll_wrap, s.vte)
+    })
+    .flatten()
+    .is_some();
+    if moved {
+        topbar::refresh_ui();
+    }
+    moved
+}
+
+pub(crate) fn toggle_active_pane_zoom() {
+    let toggled = app_state::with_app_mut(|app| {
+        let sid = app.active_id;
+        let s = app.sessions.iter_mut().find(|s| s.id == sid)?;
+        Some(s.panes.toggle_zoom(s.scroll_wrap, s.vte))
+    })
+    .flatten()
+    .unwrap_or(false);
+    if toggled {
+        topbar::refresh_ui();
+    }
+}
+
+fn pane_agent_label(s: &TermSession, idx: usize, vte: *mut GtkWidget) -> String {
+    if idx == 0 {
+        let agent = s.effective_agent();
+        if !agent.is_empty() {
+            return agent;
+        }
+        if !s.proc_info.fg_cmd.is_empty() {
+            return s.proc_info.fg_cmd.clone();
+        }
+    }
+    s.panes
+        .remote_for_vte(vte, s.scroll_wrap, s.vte)
+        .or_else(|| s.remote())
+        .map(RemoteConnection::title)
+        .unwrap_or_default()
+}
+
+fn pane_vte_and_cwd(s: &TermSession, idx: usize) -> (*mut GtkWidget, &str) {
+    if idx == 0 {
+        (s.vte, s.cwd.as_str())
+    } else {
+        let p = &s.panes.extra[idx - 1];
+        (p.vte, p.cwd.as_str())
+    }
+}
+
+fn pane_ctx_badge(s: &TermSession, idx: usize) -> String {
+    if idx == 0 {
+        s.telemetry.snapshot().compact_context_badge().unwrap_or_default()
+    } else {
+        String::new()
+    }
+}
+
+fn build_pane_header_state(
+    s: &TermSession,
+    idx: usize,
+    is_active_tab: bool,
+    active_vte: *mut GtkWidget,
+    now: Instant,
+) -> PaneHeaderState {
+    let (vte, cwd) = pane_vte_and_cwd(s, idx);
+    let active = is_active_tab && vte == active_vte;
+    let elapsed = (idx == 0 || active)
+        .then(|| s.live_turn_secs(now).or_else(|| s.settled_turn_secs()))
+        .flatten();
+    PaneHeaderState {
+        agent_or_proc: pane_agent_label(s, idx, vte),
+        cwd: cwd.to_owned(),
+        exit_code: None,
+        elapsed_secs: elapsed,
+        ctx_badge: pane_ctx_badge(s, idx),
+        active,
+        zoomed: s.panes.zoomed_vte(s.scroll_wrap, s.vte) == Some(vte),
+    }
+}
+
+fn append_session_headers(
+    s: &TermSession,
+    is_act: bool,
+    now: Instant,
+    out: &mut Vec<(PaneHeader, PaneHeaderState, bool)>,
+) {
+    let visible = s.panes.header_visible();
+    let active_vte = s.active_vte();
+    for (idx, hdr) in s.panes.all_headers().into_iter().enumerate() {
+        if visible || hdr.is_visible() {
+            out.push((hdr, build_pane_header_state(s, idx, is_act, active_vte, now), visible));
+        }
+    }
+}
+
+pub(crate) fn collect_pane_header_updates(app: &AppState) -> Vec<(PaneHeader, PaneHeaderState, bool)> {
+    let now = Instant::now();
+    let mut out = Vec::new();
+    for s in &app.sessions {
+        append_session_headers(s, s.id == app.active_id, now, &mut out);
+    }
+    out
 }
 
 pub(crate) fn split_active_tab(orientation: c_int) {
@@ -1007,7 +1189,7 @@ fn default_tabs(config: &WorkspaceConfig) -> TabsState {
     TabsState::new(0, tabs)
 }
 
-fn spawn_one_secondary_pane(
+fn spawn_local_secondary(
     sid: usize,
     raw_cwd: &str,
     fallback_cwd: &str,
@@ -1017,32 +1199,60 @@ fn spawn_one_secondary_pane(
     let cwd = split_pane::resolve_pane_cwd(raw_cwd, fallback_cwd);
     let (vte, child_pid) = create_terminal(&cwd, &[shell], sid, scale);
     let scroll = split_pane::wrap_vte_scroll(vte);
-    split_pane::SpawnedPane { scroll, vte, child_pid, cwd }
+    split_pane::SpawnedPane { scroll, vte, child_pid, cwd, remote: None }
+}
+
+fn spawn_remote_secondary(
+    sid: usize,
+    conn: RemoteConnection,
+    scale: f64,
+    seq: usize,
+) -> split_pane::SpawnedPane {
+    let args = conn.split_argv(seq);
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (vte, child_pid) = create_terminal(&paths::home_dir(), &argv, sid, scale);
+    let scroll = split_pane::wrap_vte_scroll(vte);
+    split_pane::SpawnedPane { scroll, vte, child_pid, cwd: String::new(), remote: Some(conn) }
+}
+
+fn spawn_one_secondary_pane(
+    sid: usize,
+    leaf: SplitLeaf,
+    fallback_cwd: &str,
+    shell: &str,
+    scale: f64,
+    seq: usize,
+) -> split_pane::SpawnedPane {
+    match leaf {
+        SplitLeaf::Local(raw) => spawn_local_secondary(sid, &raw, fallback_cwd, shell, scale),
+        SplitLeaf::Remote(conn) => spawn_remote_secondary(sid, conn, scale, seq),
+    }
 }
 
 fn spawn_secondary_panes(
     sid: usize,
-    tree: &crate::tabs::SplitTree,
+    tree: &SplitTree,
     fallback_cwd: &str,
     shell: &str,
     scale: f64,
 ) -> (Vec<split_pane::SpawnedPane>, Vec<*mut GtkWidget>) {
-    let mut raw_cwds = Vec::new();
-    tree.secondary_cwds(&mut raw_cwds);
-    let mut spawned = Vec::with_capacity(raw_cwds.len());
-    let mut scrolls = Vec::with_capacity(raw_cwds.len());
-    for raw in raw_cwds {
-        let pane = spawn_one_secondary_pane(sid, &raw, fallback_cwd, shell, scale);
+    let mut leaves = Vec::new();
+    tree.secondary_leaves(&mut leaves);
+    let mut spawned = Vec::with_capacity(leaves.len());
+    let mut scrolls = Vec::with_capacity(leaves.len());
+    for (idx, leaf) in leaves.into_iter().enumerate() {
+        let pane = spawn_one_secondary_pane(sid, leaf, fallback_cwd, shell, scale, idx + 1);
         scrolls.push(pane.scroll);
         spawned.push(pane);
     }
     (spawned, scrolls)
 }
 
-fn restore_session_splits(sid: usize, tree: &crate::tabs::SplitTree) {
+fn restore_session_splits(sid: usize, tree: &SplitTree) {
     let ctx = app_state::with_app(|app| {
-        let s = app.sessions.iter().find(|s| s.id == sid && s.category == SessionCategory::Project)?;
-        s.remote().is_none().then(|| (s.cwd.clone(), app.config.shell.clone(), app.font_scale))
+        let s = app.sessions.iter().find(|s| s.id == sid)?;
+        let allowed = s.category == SessionCategory::Project || s.remote().is_some();
+        allowed.then(|| (s.cwd.clone(), app.config.shell.clone(), app.font_scale))
     })
     .flatten();
     let Some((fallback_cwd, shell, scale)) = ctx else {
@@ -1057,7 +1267,7 @@ fn restore_session_splits(sid: usize, tree: &crate::tabs::SplitTree) {
     split_pane::finish_restore_splits(op, &raw_scrolls);
 }
 
-fn apply_restored_meta(sid: usize, pinned: Option<&str>, splits: Option<&crate::tabs::SplitTree>) {
+fn apply_restored_meta(sid: usize, pinned: Option<&str>, splits: Option<&SplitTree>) {
     if let Some(pinned) = pinned {
         app_state::with_app_mut(|app| {
             if let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid) {
@@ -1070,11 +1280,20 @@ fn apply_restored_meta(sid: usize, pinned: Option<&str>, splits: Option<&crate::
     }
 }
 
+fn apply_restored_font_scale(scale: f64) {
+    let zoom_btn = app_state::with_app_mut(|app| {
+        app.font_scale = scale;
+        app.zoom_btn
+    });
+    split_pane::apply_zoom_scale(&[], scale, zoom_btn);
+}
+
 pub(crate) fn restore_tabs() {
     let (store, saved) = TabStore::load();
     let state = saved.unwrap_or_else(|| {
         APP.with(|cell| default_tabs(&cell.borrow().as_ref().expect("app is initialized").config))
     });
+    apply_restored_font_scale(state.font_scale());
     let mut ids = Vec::with_capacity(state.tabs.len());
     for (idx, tab) in state.tabs.iter().cloned().enumerate() {
         let sid = open_tab(tab);
@@ -1082,10 +1301,18 @@ pub(crate) fn restore_tabs() {
         ids.push(sid);
     }
     select_session(ids.get(state.active).copied().unwrap_or(0));
-    app_state::with_app_mut(|app| {
-        app.tab_store = Some(store);
-    });
+    app_state::with_app_mut(|app| app.tab_store = Some(store));
     save_tabs();
+}
+
+fn snapshot_session_meta(s: &mut TermSession, tab: &Tab) -> TabMeta {
+    let mut meta = s.snapshot_meta();
+    if matches!(tab, Tab::Remote(_)) {
+        meta.splits = s.panes.snapshot_splits_for_tab(s.scroll_wrap, tab);
+    } else if s.is_dynamic_ssh() {
+        meta.splits = None;
+    }
+    meta
 }
 
 fn collect_tabs_snapshot(app: &mut AppState) -> TabsState {
@@ -1093,10 +1320,11 @@ fn collect_tabs_snapshot(app: &mut AppState) -> TabsState {
     let mut tabs = Vec::with_capacity(app.sessions.len());
     let mut meta = Vec::with_capacity(app.sessions.len());
     for s in &mut app.sessions {
-        tabs.push(s.snapshot_tab());
-        meta.push(s.snapshot_meta());
+        let tab = s.snapshot_tab();
+        meta.push(snapshot_session_meta(s, &tab));
+        tabs.push(tab);
     }
-    TabsState::with_meta(active, tabs, meta)
+    TabsState::with_meta(active, tabs, meta).with_font_scale(app.font_scale)
 }
 
 pub(crate) fn save_tabs() {

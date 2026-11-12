@@ -1,12 +1,46 @@
-//! Split terminal panes inside a single local tab using GTK3 `GtkPaned`.
+//! Split terminal panes inside a single local or remote tab using GTK3 `GtkPaned`.
 
-use std::ffi::{c_int, CString};
+use std::cell::Cell;
+use std::ffi::{c_int, c_void, CString};
 use std::path::Path;
 use std::ptr;
 
 use crate::ffi::*;
+use crate::pane_header::PaneHeader;
 use crate::proc_radar::foreground_cwd;
-use crate::tabs::{SplitOrientation, SplitTree};
+use crate::tabs::{
+    clamp_split_ratio, RemoteConnection, SplitOrientation, SplitTree, Tab, DEFAULT_SPLIT_RATIO,
+};
+
+extern "C" {
+    fn gtk_paned_get_position(paned: *mut GtkPaned) -> c_int;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FocusDir {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaneRect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+impl PaneRect {
+    fn cx(self) -> i32 {
+        self.x + self.w / 2
+    }
+
+    fn cy(self) -> i32 {
+        self.y + self.h / 2
+    }
+}
 
 pub struct ExtraPane {
     pub scroll: *mut GtkWidget,
@@ -20,6 +54,7 @@ pub struct SpawnedPane {
     pub vte: *mut GtkWidget,
     pub child_pid: i32,
     pub cwd: String,
+    pub remote: Option<RemoteConnection>,
 }
 
 #[derive(Clone)]
@@ -27,6 +62,7 @@ enum LayoutNode {
     Leaf(*mut GtkWidget),
     Split {
         orient: SplitOrientation,
+        ratio_permille: u16,
         first: Box<LayoutNode>,
         second: Box<LayoutNode>,
     },
@@ -38,6 +74,7 @@ impl LayoutNode {
             Self::Leaf(cur) if *cur == target => {
                 *self = Self::Split {
                     orient,
+                    ratio_permille: DEFAULT_SPLIT_RATIO,
                     first: Box::new(Self::Leaf(target)),
                     second: Box::new(Self::Leaf(added)),
                 };
@@ -54,12 +91,12 @@ impl LayoutNode {
         match self {
             Self::Leaf(cur) if *cur == closing => (None, true),
             Self::Leaf(_) => (Some(self.clone()), false),
-            Self::Split { orient, first, second } => {
+            Self::Split { orient, ratio_permille, first, second } => {
                 let (f_next, f_hit) = first.remove_leaf(closing);
                 if f_hit {
                     let node = f_next.map_or_else(
                         || (**second).clone(),
-                        |nf| Self::Split { orient: *orient, first: Box::new(nf), second: second.clone() },
+                        |nf| Self::Split { orient: *orient, ratio_permille: *ratio_permille, first: Box::new(nf), second: second.clone() },
                     );
                     return (Some(node), true);
                 }
@@ -67,7 +104,7 @@ impl LayoutNode {
                 if s_hit {
                     let node = s_next.map_or_else(
                         || (**first).clone(),
-                        |ns| Self::Split { orient: *orient, first: first.clone(), second: Box::new(ns) },
+                        |ns| Self::Split { orient: *orient, ratio_permille: *ratio_permille, first: first.clone(), second: Box::new(ns) },
                     );
                     return (Some(node), true);
                 }
@@ -83,29 +120,94 @@ impl LayoutNode {
     ) -> Option<Self> {
         match tree {
             SplitTree::Primary => Some(Self::Leaf(primary)),
-            SplitTree::Pane(_) => Some(Self::Leaf(scrolls.next()?)),
-            SplitTree::Split { orientation, first, second } => Some(Self::Split {
+            SplitTree::Pane(_) | SplitTree::RemotePane(_) => Some(Self::Leaf(scrolls.next()?)),
+            SplitTree::Split { orientation, ratio_permille, first, second } => Some(Self::Split {
                 orient: *orientation,
+                ratio_permille: clamp_split_ratio(*ratio_permille),
                 first: Box::new(Self::from_tree(first, primary, scrolls)?),
                 second: Box::new(Self::from_tree(second, primary, scrolls)?),
             }),
         }
     }
 
-    fn to_split_tree(&self, primary_scroll: *mut GtkWidget, extra: &[ExtraPane]) -> SplitTree {
+    fn any_leaf(&self) -> *mut GtkWidget {
+        match self {
+            Self::Leaf(w) => *w,
+            Self::Split { first, .. } => first.any_leaf(),
+        }
+    }
+
+    fn contains_leaf(&self, target: *mut GtkWidget) -> bool {
+        match self {
+            Self::Leaf(w) => *w == target,
+            Self::Split { first, second, .. } => first.contains_leaf(target) || second.contains_leaf(target),
+        }
+    }
+
+    fn edge_leaf(&self, take_second: bool) -> *mut GtkWidget {
+        match self {
+            Self::Leaf(w) => *w,
+            Self::Split { first, second, .. } => {
+                if take_second { second.edge_leaf(true) } else { first.edge_leaf(false) }
+            }
+        }
+    }
+
+    fn neighbor_leaf(&self, target: *mut GtkWidget, dir: FocusDir) -> Option<*mut GtkWidget> {
+        let Self::Split { orient, first, second, .. } = self else {
+            return None;
+        };
+        let in_first = first.contains_leaf(target);
+        let child = if in_first { first } else { second };
+        if let Some(deeper) = child.neighbor_leaf(target, dir) {
+            return Some(deeper);
+        }
+        let matches_axis = matches!(
+            (*orient, dir, in_first),
+            (SplitOrientation::Horizontal, FocusDir::Right, true)
+                | (SplitOrientation::Horizontal, FocusDir::Left, false)
+                | (SplitOrientation::Vertical, FocusDir::Down, true)
+                | (SplitOrientation::Vertical, FocusDir::Up, false)
+        );
+        matches_axis.then(|| if in_first { second.edge_leaf(false) } else { first.edge_leaf(true) })
+    }
+
+    fn to_split_tree(
+        &self,
+        primary_scroll: *mut GtkWidget,
+        extra: &[ExtraPane],
+        remotes: &[(*mut GtkWidget, RemoteConnection)],
+        tab: &Tab,
+    ) -> SplitTree {
         match self {
             Self::Leaf(w) if *w == primary_scroll => SplitTree::Primary,
-            Self::Leaf(w) => {
-                let cwd = extra.iter().find(|p| p.scroll == *w).map_or_else(String::new, |p| p.cwd.clone());
-                SplitTree::Pane(cwd)
-            }
-            Self::Split { orient, first, second } => SplitTree::split(
+            Self::Leaf(w) => leaf_to_split(*w, extra, remotes, tab),
+            Self::Split { orient, ratio_permille, first, second } => SplitTree::split_with_ratio(
                 *orient,
-                first.to_split_tree(primary_scroll, extra),
-                second.to_split_tree(primary_scroll, extra),
+                *ratio_permille,
+                first.to_split_tree(primary_scroll, extra, remotes, tab),
+                second.to_split_tree(primary_scroll, extra, remotes, tab),
             ),
         }
     }
+}
+
+fn leaf_to_split(
+    scroll: *mut GtkWidget,
+    extra: &[ExtraPane],
+    remotes: &[(*mut GtkWidget, RemoteConnection)],
+    tab: &Tab,
+) -> SplitTree {
+    if let Tab::Remote(default_conn) = tab {
+        let conn = remotes
+            .iter()
+            .find(|(s, _)| *s == scroll)
+            .map(|(_, c)| c.clone())
+            .unwrap_or_else(|| default_conn.clone());
+        return SplitTree::RemotePane(conn);
+    }
+    let cwd = extra.iter().find(|p| p.scroll == scroll).map_or_else(String::new, |p| p.cwd.clone());
+    SplitTree::Pane(cwd)
 }
 
 pub fn resolve_pane_cwd(saved: &str, fallback: &str) -> String {
@@ -141,22 +243,107 @@ pub fn finish_split(op: Option<SplitOp>, new_scroll: *mut GtkWidget, new_vte: *m
     }
 }
 
+#[repr(C)]
+struct GtkAllocation {
+    x: c_int,
+    y: c_int,
+    width: c_int,
+    height: c_int,
+}
+
+struct RatioApplyState {
+    orient: c_int,
+    ratio_permille: u16,
+    done: Cell<bool>,
+}
+
+fn paned_span(paned: *mut GtkWidget, orient: c_int) -> c_int {
+    unsafe {
+        if orient == GTK_ORIENTATION_HORIZONTAL {
+            gtk_widget_get_allocated_width(paned)
+        } else {
+            gtk_widget_get_allocated_height(paned)
+        }
+    }
+}
+
+fn ratio_to_pos(span: c_int, ratio_permille: u16) -> c_int {
+    let clamped = i64::from(clamp_split_ratio(ratio_permille));
+    ((i64::from(span) * clamped + 500) / 1000).clamp(1, i64::from(span - 1)) as c_int
+}
+
+fn apply_paned_ratio_if_ready(paned: *mut GtkWidget, orient: c_int, ratio_permille: u16) -> bool {
+    let span = paned_span(paned, orient);
+    if span <= 20 {
+        return false;
+    }
+    unsafe { gtk_paned_set_position(paned as *mut GtkPaned, ratio_to_pos(span, ratio_permille)) };
+    true
+}
+
+extern "C" fn on_paned_size_allocate(
+    paned: *mut GtkWidget,
+    alloc: *const GtkAllocation,
+    data: *mut c_void,
+) {
+    if data.is_null() || alloc.is_null() {
+        return;
+    }
+    let state = unsafe { &*(data as *const RatioApplyState) };
+    if state.done.get() {
+        return;
+    }
+    let rect = unsafe { &*alloc };
+    let span = if state.orient == GTK_ORIENTATION_HORIZONTAL { rect.width } else { rect.height };
+    if span > 20 {
+        unsafe {
+            gtk_paned_set_position(paned as *mut GtkPaned, ratio_to_pos(span, state.ratio_permille));
+        }
+        state.done.set(true);
+    }
+}
+
+extern "C" fn drop_ratio_state(data: *mut c_void, _closure: *mut c_void) {
+    if !data.is_null() {
+        unsafe { drop(Box::from_raw(data as *mut RatioApplyState)) };
+    }
+}
+
+fn connect_ratio_applier(paned: *mut GtkWidget, orient: c_int, ratio_permille: u16) {
+    let ready = apply_paned_ratio_if_ready(paned, orient, ratio_permille);
+    let raw = Box::into_raw(Box::new(RatioApplyState {
+        orient,
+        ratio_permille: clamp_split_ratio(ratio_permille),
+        done: Cell::new(ready),
+    }));
+    unsafe {
+        g_signal_connect_data(
+            paned as *mut c_void,
+            c"size-allocate".as_ptr(),
+            on_paned_size_allocate as *const c_void,
+            raw.cast(),
+            drop_ratio_state as *const c_void,
+            0,
+        );
+    }
+}
+
 pub struct RestoreSplitsOp {
     root: *mut GtkWidget,
-    primary_scroll: *mut GtkWidget,
+    primary_widget: *mut GtkWidget,
     tree: SplitTree,
-    scrolls: Vec<*mut GtkWidget>,
+    pane_widgets: Vec<*mut GtkWidget>,
 }
 
 impl RestoreSplitsOp {
     pub fn apply(self) {
         unsafe {
-            g_object_ref(self.primary_scroll);
-            gtk_container_remove(self.root, self.primary_scroll);
-            let mut iter = self.scrolls.into_iter();
-            let top = build_gtk_split_tree(&self.tree, self.primary_scroll, &mut iter);
+            g_object_ref(self.primary_widget);
+            gtk_container_remove(self.root, self.primary_widget);
+            let mut iter = self.pane_widgets.into_iter();
+            let top = build_gtk_split_tree(&self.tree, self.primary_widget, &mut iter);
             gtk_box_pack_start(self.root, top, 1, 1, 0);
-            g_object_unref(self.primary_scroll);
+            g_object_unref(self.primary_widget);
             gtk_widget_show_all(self.root);
         }
     }
@@ -174,20 +361,21 @@ pub fn finish_restore_splits(op: Option<RestoreSplitsOp>, scrolls: &[*mut GtkWid
 
 fn build_gtk_split_tree(
     tree: &SplitTree,
-    primary_scroll: *mut GtkWidget,
-    scrolls: &mut impl Iterator<Item = *mut GtkWidget>,
+    primary_widget: *mut GtkWidget,
+    pane_widgets: &mut impl Iterator<Item = *mut GtkWidget>,
 ) -> *mut GtkWidget {
     match tree {
-        SplitTree::Primary => primary_scroll,
-        SplitTree::Pane(_) => scrolls.next().unwrap_or(primary_scroll),
-        SplitTree::Split { orientation, first, second } => {
-            let c1 = build_gtk_split_tree(first, primary_scroll, scrolls);
-            let c2 = build_gtk_split_tree(second, primary_scroll, scrolls);
+        SplitTree::Primary => primary_widget,
+        SplitTree::Pane(_) | SplitTree::RemotePane(_) => pane_widgets.next().unwrap_or(primary_widget),
+        SplitTree::Split { orientation, ratio_permille, first, second } => {
+            let c1 = build_gtk_split_tree(first, primary_widget, pane_widgets);
+            let c2 = build_gtk_split_tree(second, primary_widget, pane_widgets);
             let paned = new_styled_paned(orientation.to_gtk(), 0);
             unsafe {
                 gtk_paned_pack1(paned, c1, 1, 1);
                 gtk_paned_pack2(paned, c2, 1, 1);
             }
+            connect_ratio_applier(paned, orientation.to_gtk(), *ratio_permille);
             paned
         }
     }
@@ -227,11 +415,34 @@ impl CloseOp {
     }
 }
 
+struct ZoomState {
+    zoomed_scroll: *mut GtkWidget,
+    tree_root: *mut GtkWidget,
+    parent_paned: *mut GtkWidget,
+    was_first: bool,
+}
+
 pub struct TabPanes {
     pub root: *mut GtkWidget,
     pub extra: Vec<ExtraPane>,
     pub last_focus: *mut GtkWidget,
     layout: LayoutNode,
+    primary_header: PaneHeader,
+    extra_headers: Vec<PaneHeader>,
+    remote_conns: Vec<(*mut GtkWidget, RemoteConnection)>,
+    remote_seq: usize,
+    zoom: Option<ZoomState>,
+}
+
+impl Drop for TabPanes {
+    fn drop(&mut self) {
+        if let Some(zoom) = self.zoom.take() {
+            unsafe {
+                gtk_widget_destroy(zoom.tree_root);
+                g_object_unref(zoom.tree_root);
+            }
+        }
+    }
 }
 
 pub fn wrap_vte_scroll(vte: *mut GtkWidget) -> *mut GtkWidget {
@@ -335,11 +546,110 @@ fn collapse_paned_child(closing_scroll: *mut GtkWidget, root: *mut GtkWidget) {
     }
 }
 
+fn collect_ancestors(mut widget: *mut GtkWidget) -> Vec<*mut GtkWidget> {
+    let mut chain = Vec::new();
+    while !widget.is_null() {
+        chain.push(widget);
+        widget = unsafe { gtk_widget_get_parent(widget) };
+    }
+    chain
+}
+
+fn find_split_paned(w1: *mut GtkWidget, w2: *mut GtkWidget) -> *mut GtkWidget {
+    let c1 = collect_ancestors(w1);
+    let c2 = collect_ancestors(w2);
+    c1.into_iter().find(|a| c2.contains(a)).unwrap_or(ptr::null_mut())
+}
+
+fn read_paned_ratio(paned: *mut GtkWidget, orient: SplitOrientation, fallback: u16) -> u16 {
+    if paned.is_null() {
+        return clamp_split_ratio(fallback);
+    }
+    let span = paned_span(paned, orient.to_gtk());
+    let pos = unsafe { gtk_paned_get_position(paned as *mut GtkPaned) };
+    if span <= 20 || pos <= 0 {
+        return clamp_split_ratio(fallback);
+    }
+    let ratio = ((i64::from(pos) * 1000 + i64::from(span) / 2) / i64::from(span)) as u16;
+    clamp_split_ratio(ratio)
+}
+
+fn find_top_child(mut leaf: *mut GtkWidget, root: *mut GtkWidget) -> *mut GtkWidget {
+    while !leaf.is_null() {
+        let parent = unsafe { gtk_widget_get_parent(leaf) };
+        if parent == root {
+            return leaf;
+        }
+        leaf = parent;
+    }
+    ptr::null_mut()
+}
+
+fn range_gap(a_start: i32, a_end: i32, b_start: i32, b_end: i32) -> i32 {
+    if b_end < a_start {
+        a_start - b_end
+    } else if a_end < b_start {
+        b_start - a_end
+    } else {
+        0
+    }
+}
+
+fn axis_metrics(src: PaneRect, dst: PaneRect, dir: FocusDir) -> Option<(i32, i32, i32)> {
+    match dir {
+        FocusDir::Left if dst.cx() < src.cx() && dst.x < src.x => {
+            Some((src.x - (dst.x + dst.w), range_gap(src.y, src.y + src.h, dst.y, dst.y + dst.h), (dst.cy() - src.cy()).abs()))
+        }
+        FocusDir::Right if dst.cx() > src.cx() && dst.x + dst.w > src.x + src.w => {
+            Some((dst.x - (src.x + src.w), range_gap(src.y, src.y + src.h, dst.y, dst.y + dst.h), (dst.cy() - src.cy()).abs()))
+        }
+        FocusDir::Up if dst.cy() < src.cy() && dst.y < src.y => {
+            Some((src.y - (dst.y + dst.h), range_gap(src.x, src.x + src.w, dst.x, dst.x + dst.w), (dst.cx() - src.cx()).abs()))
+        }
+        FocusDir::Down if dst.cy() > src.cy() && dst.y + dst.h > src.y + src.h => {
+            Some((dst.y - (src.y + src.h), range_gap(src.x, src.x + src.w, dst.x, dst.x + dst.w), (dst.cx() - src.cx()).abs()))
+        }
+        _ => None,
+    }
+}
+
+pub fn pick_neighbor_rect(
+    src: PaneRect,
+    candidates: &[(usize, PaneRect)],
+    dir: FocusDir,
+) -> Option<usize> {
+    candidates
+        .iter()
+        .filter_map(|&(idx, rect)| {
+            let (primary, cross, center) = axis_metrics(src, rect, dir)?;
+            let key = (primary.max(0), cross, center / 16, rect.y, rect.x);
+            Some((key, idx))
+        })
+        .min_by_key(|&(key, _)| key)
+        .map(|(_, idx)| idx)
+}
+
+fn pane_rect_in_root(widget: *mut GtkWidget, root: *mut GtkWidget) -> Option<PaneRect> {
+    if widget.is_null() || root.is_null() {
+        return None;
+    }
+    unsafe {
+        let (mut x, mut y) = (0, 0);
+        if gtk_widget_translate_coordinates(widget, root, 0, 0, &mut x, &mut y) == 0 {
+            return None;
+        }
+        let w = gtk_widget_get_allocated_width(widget);
+        let h = gtk_widget_get_allocated_height(widget);
+        (w > 1 && h > 1).then_some(PaneRect { x, y, w, h })
+    }
+}
+
 impl TabPanes {
     pub fn new(primary_scroll: *mut GtkWidget, primary_vte: *mut GtkWidget) -> Self {
+        let primary_header = PaneHeader::wrap(primary_scroll, primary_vte);
         let root = unsafe {
             let vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-            gtk_box_pack_start(vbox, primary_scroll, 1, 1, 0);
+            gtk_box_pack_start(vbox, primary_header.container, 1, 1, 0);
             vbox
         };
         Self {
@@ -347,6 +657,11 @@ impl TabPanes {
             extra: Vec::new(),
             last_focus: primary_vte,
             layout: LayoutNode::Leaf(primary_scroll),
+            primary_header,
+            extra_headers: Vec::new(),
+            remote_conns: Vec::new(),
+            remote_seq: 0,
+            zoom: None,
         }
     }
 
@@ -357,11 +672,216 @@ impl TabPanes {
             extra: Vec::new(),
             last_focus: ptr::null_mut(),
             layout: LayoutNode::Leaf(ptr::null_mut()),
+            primary_header: PaneHeader::empty_for_test(),
+            extra_headers: Vec::new(),
+            remote_conns: Vec::new(),
+            remote_seq: 0,
+            zoom: None,
         }
     }
 
     pub fn has_splits(&self) -> bool {
         !self.extra.is_empty()
+    }
+
+    pub fn is_zoomed(&self) -> bool {
+        self.zoom.is_some()
+    }
+
+    pub fn header_visible(&self) -> bool {
+        !self.extra.is_empty() || self.zoom.is_some()
+    }
+
+    pub fn zoomed_vte(&self, primary_scroll: *mut GtkWidget, primary_vte: *mut GtkWidget) -> Option<*mut GtkWidget> {
+        let zoom = self.zoom.as_ref()?;
+        if zoom.zoomed_scroll == primary_scroll {
+            return Some(primary_vte);
+        }
+        self.extra.iter().find(|p| p.scroll == zoom.zoomed_scroll).map(|p| p.vte)
+    }
+
+    pub fn all_headers(&self) -> Vec<PaneHeader> {
+        let mut out = Vec::with_capacity(1 + self.extra_headers.len());
+        out.push(self.primary_header);
+        out.extend_from_slice(&self.extra_headers);
+        out
+    }
+
+    pub fn sync_header_visibility(&self) {
+        let visible = self.header_visible();
+        self.primary_header.set_visible(visible);
+        for header in &self.extra_headers {
+            header.set_visible(visible);
+        }
+    }
+
+    pub fn next_remote_seq(&mut self) -> usize {
+        self.remote_seq += 1;
+        self.remote_seq
+    }
+
+    pub fn record_remote_pane(&mut self, scroll: *mut GtkWidget, conn: RemoteConnection) {
+        self.remote_conns.retain(|(s, _)| *s != scroll);
+        self.remote_conns.push((scroll, conn));
+    }
+
+    pub fn remote_for_vte(&self, vte: *mut GtkWidget, primary_scroll: *mut GtkWidget, primary_vte: *mut GtkWidget) -> Option<&RemoteConnection> {
+        let scroll = if vte == primary_vte {
+            primary_scroll
+        } else {
+            self.extra.iter().find(|p| p.vte == vte).map_or(ptr::null_mut(), |p| p.scroll)
+        };
+        self.remote_conns.iter().find(|(s, _)| *s == scroll).map(|(_, c)| c)
+    }
+
+    fn pane_container(&self, scroll: *mut GtkWidget, primary_scroll: *mut GtkWidget) -> *mut GtkWidget {
+        let container = if scroll == primary_scroll {
+            self.primary_header.container
+        } else {
+            self.extra
+                .iter()
+                .position(|p| p.scroll == scroll)
+                .and_then(|idx| self.extra_headers.get(idx))
+                .map_or(scroll, |h| h.container)
+        };
+        if container.is_null() { scroll } else { container }
+    }
+
+    fn sync_node_ratios(&self, node: &mut LayoutNode, primary_scroll: *mut GtkWidget) {
+        let LayoutNode::Split { orient, ratio_permille, first, second } = node else {
+            return;
+        };
+        let w1 = self.pane_container(first.any_leaf(), primary_scroll);
+        let w2 = self.pane_container(second.any_leaf(), primary_scroll);
+        let paned = find_split_paned(w1, w2);
+        *ratio_permille = read_paned_ratio(paned, *orient, *ratio_permille);
+        self.sync_node_ratios(first, primary_scroll);
+        self.sync_node_ratios(second, primary_scroll);
+    }
+
+    fn apply_node_ratios(&self, node: &LayoutNode, primary_scroll: *mut GtkWidget) {
+        let LayoutNode::Split { orient, ratio_permille, first, second } = node else {
+            return;
+        };
+        let w1 = self.pane_container(first.any_leaf(), primary_scroll);
+        let w2 = self.pane_container(second.any_leaf(), primary_scroll);
+        let paned = find_split_paned(w1, w2);
+        if !paned.is_null() {
+            apply_paned_ratio_if_ready(paned, orient.to_gtk(), *ratio_permille);
+        }
+        self.apply_node_ratios(first, primary_scroll);
+        self.apply_node_ratios(second, primary_scroll);
+    }
+
+    pub fn unzoom_in_place(&mut self, primary_scroll: *mut GtkWidget) -> bool {
+        let Some(zoom) = self.zoom.take() else {
+            return false;
+        };
+        let target = self.pane_container(zoom.zoomed_scroll, primary_scroll);
+        unsafe {
+            g_object_ref(target);
+            gtk_container_remove(self.root, target);
+            if zoom.was_first {
+                gtk_paned_pack1(zoom.parent_paned, target, 1, 1);
+            } else {
+                gtk_paned_pack2(zoom.parent_paned, target, 1, 1);
+            }
+            g_object_unref(target);
+            gtk_box_pack_start(self.root, zoom.tree_root, 1, 1, 0);
+            g_object_unref(zoom.tree_root);
+            gtk_widget_show_all(self.root);
+        }
+        self.sync_header_visibility();
+        self.apply_node_ratios(&self.layout, primary_scroll);
+        true
+    }
+
+    pub fn toggle_zoom(&mut self, primary_scroll: *mut GtkWidget, primary_vte: *mut GtkWidget) -> bool {
+        if self.zoom.is_some() {
+            let vte = self.zoomed_vte(primary_scroll, primary_vte).unwrap_or(primary_vte);
+            self.unzoom_in_place(primary_scroll);
+            if !vte.is_null() {
+                unsafe { gtk_widget_grab_focus(vte) };
+            }
+            return true;
+        }
+        if self.extra.is_empty() {
+            return false;
+        }
+        self.zoom_active_in(primary_scroll, primary_vte)
+    }
+
+    fn swap_zoom_widgets(root: *mut GtkWidget, tree_root: *mut GtkWidget, parent: *mut GtkWidget, target: *mut GtkWidget, vte: *mut GtkWidget) {
+        unsafe {
+            g_object_ref(tree_root);
+            g_object_ref(target);
+            gtk_container_remove(parent, target);
+            gtk_container_remove(root, tree_root);
+            gtk_box_pack_start(root, target, 1, 1, 0);
+            g_object_unref(target);
+            gtk_widget_show_all(target);
+            gtk_widget_grab_focus(vte);
+        }
+    }
+
+    fn zoom_active_in(&mut self, primary_scroll: *mut GtkWidget, primary_vte: *mut GtkWidget) -> bool {
+        let target_vte = self.active_vte(primary_vte);
+        let target_scroll = self.extra.iter().find(|p| p.vte == target_vte).map_or(primary_scroll, |p| p.scroll);
+        let target = self.pane_container(target_scroll, primary_scroll);
+        let tree_root = find_top_child(target, self.root);
+        let parent_paned = unsafe { gtk_widget_get_parent(target) };
+        if tree_root.is_null() || parent_paned.is_null() || parent_paned == self.root {
+            return false;
+        }
+        let mut layout_copy = self.layout.clone();
+        self.sync_node_ratios(&mut layout_copy, primary_scroll);
+        self.layout = layout_copy;
+        let was_first = unsafe { gtk_paned_get_child1(parent_paned) == target };
+        Self::swap_zoom_widgets(self.root, tree_root, parent_paned, target, target_vte);
+        self.zoom = Some(ZoomState { zoomed_scroll: target_scroll, tree_root, parent_paned, was_first });
+        self.sync_header_visibility();
+        true
+    }
+
+    pub fn focus_direction(
+        &mut self,
+        dir: FocusDir,
+        primary_scroll: *mut GtkWidget,
+        primary_vte: *mut GtkWidget,
+    ) -> Option<*mut GtkWidget> {
+        if self.extra.is_empty() || self.zoom.is_some() {
+            return None;
+        }
+        let active_vte = self.active_vte(primary_vte);
+        let mut panes = vec![(primary_scroll, primary_vte)];
+        panes.extend(self.extra.iter().map(|p| (p.scroll, p.vte)));
+        let active_idx = panes.iter().position(|&(_, v)| v == active_vte).unwrap_or(0);
+        let active_scroll = panes[active_idx].0;
+        let next_idx = self.pick_rect_neighbor(&panes, active_idx, dir)
+            .or_else(|| {
+                let s = self.layout.neighbor_leaf(active_scroll, dir)?;
+                panes.iter().position(|&(scroll, _)| scroll == s)
+            })?;
+        let next_vte = panes[next_idx].1;
+        self.last_focus = next_vte;
+        unsafe { gtk_widget_grab_focus(next_vte) };
+        Some(next_vte)
+    }
+
+    fn pick_rect_neighbor(
+        &self,
+        panes: &[(*mut GtkWidget, *mut GtkWidget)],
+        active_idx: usize,
+        dir: FocusDir,
+    ) -> Option<usize> {
+        let src_rect = pane_rect_in_root(panes[active_idx].0, self.root)?;
+        let cands: Vec<(usize, PaneRect)> = panes
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| i != active_idx)
+            .filter_map(|(i, &(scroll, _))| Some((i, pane_rect_in_root(scroll, self.root)?)))
+            .collect();
+        pick_neighbor_rect(src_rect, &cands, dir)
     }
 
     pub fn contains_vte(&self, vte: *mut GtkWidget) -> bool {
@@ -429,16 +949,31 @@ impl TabPanes {
     }
 
     pub fn snapshot_splits(&mut self, primary_scroll: *mut GtkWidget) -> Option<SplitTree> {
+        self.snapshot_splits_for_tab(primary_scroll, &Tab::local("shell"))
+    }
+
+    pub fn snapshot_splits_for_tab(
+        &mut self,
+        primary_scroll: *mut GtkWidget,
+        tab: &Tab,
+    ) -> Option<SplitTree> {
         if self.extra.is_empty() {
             return None;
         }
-        for pane in &mut self.extra {
-            if let Some(live) = foreground_cwd(pane.child_pid) {
-                pane.cwd = live;
+        if !self.is_zoomed() {
+            let mut layout_copy = self.layout.clone();
+            self.sync_node_ratios(&mut layout_copy, primary_scroll);
+            self.layout = layout_copy;
+        }
+        if matches!(tab, Tab::Local { .. }) {
+            for pane in &mut self.extra {
+                if let Some(live) = foreground_cwd(pane.child_pid) {
+                    pane.cwd = live;
+                }
             }
         }
-        let tree = self.layout.to_split_tree(primary_scroll, &self.extra);
-        tree.is_valid().then_some(tree)
+        let tree = self.layout.to_split_tree(primary_scroll, &self.extra, &self.remote_conns, tab);
+        tree.is_valid_for(tab).then_some(tree)
     }
 
     pub fn prepare_restore_splits(
@@ -459,15 +994,24 @@ impl TabPanes {
         }
         self.layout = next_layout;
         self.last_focus = primary_vte;
+        let pane_widgets = self.push_restored_panes(spawned);
+        self.sync_header_visibility();
+        let primary_widget = self.primary_header.container;
+        Some(RestoreSplitsOp { root: self.root, primary_widget, tree, pane_widgets })
+    }
+
+    fn push_restored_panes(&mut self, spawned: Vec<SpawnedPane>) -> Vec<*mut GtkWidget> {
+        let mut pane_widgets = Vec::with_capacity(spawned.len());
         for p in spawned {
-            self.extra.push(ExtraPane {
-                scroll: p.scroll,
-                vte: p.vte,
-                child_pid: p.child_pid,
-                cwd: p.cwd,
-            });
+            let hdr = PaneHeader::wrap(p.scroll, p.vte);
+            pane_widgets.push(hdr.container);
+            self.extra_headers.push(hdr);
+            if let Some(conn) = p.remote {
+                self.remote_conns.push((p.scroll, conn));
+            }
+            self.extra.push(ExtraPane { scroll: p.scroll, vte: p.vte, child_pid: p.child_pid, cwd: p.cwd });
         }
-        Some(RestoreSplitsOp { root: self.root, primary_scroll, tree, scrolls })
+        pane_widgets
     }
 
     #[cfg(test)]
@@ -497,12 +1041,18 @@ impl TabPanes {
         cwd: String,
         orient: c_int,
     ) -> SplitOp {
+        self.unzoom_in_place(primary_scroll);
         let chosen = if target_vte.is_null() { self.active_vte(primary_vte) } else { target_vte };
-        let target = self.extra.iter().find(|p| p.vte == chosen).map_or(primary_scroll, |p| p.scroll);
-        self.layout.replace_leaf(target, new_scroll, SplitOrientation::from_gtk(orient));
+        let target_scroll = self.extra.iter().find(|p| p.vte == chosen).map_or(primary_scroll, |p| p.scroll);
+        let target = self.pane_container(target_scroll, primary_scroll);
+        let added_header = PaneHeader::wrap(new_scroll, new_vte);
+        let added = added_header.container;
+        self.layout.replace_leaf(target_scroll, new_scroll, SplitOrientation::from_gtk(orient));
         self.last_focus = new_vte;
         self.extra.push(ExtraPane { scroll: new_scroll, vte: new_vte, child_pid: new_pid, cwd });
-        SplitOp { target, added: new_scroll, root: self.root, orient }
+        self.extra_headers.push(added_header);
+        self.sync_header_visibility();
+        SplitOp { target, added, root: self.root, orient }
     }
 
     pub fn prepare_split(
@@ -555,12 +1105,19 @@ impl TabPanes {
         pid: &mut i32,
         cwd: &mut String,
     ) -> CloseOp {
+        self.unzoom_in_place(*scroll);
         let (closing_scroll, kill_pid) = (*scroll, *pid);
+        let closing_widget = self.primary_header.container;
         self.collapse_layout_leaf(closing_scroll);
+        self.remote_conns.retain(|(s, _)| *s != closing_scroll);
         let next = self.extra.remove(0);
+        if !self.extra_headers.is_empty() {
+            self.primary_header = self.extra_headers.remove(0);
+        }
         (*scroll, *vte, *pid, *cwd) = (next.scroll, next.vte, next.child_pid, next.cwd);
         self.last_focus = *vte;
-        CloseOp { closing_scroll, root: self.root, kill_pid, next_focus: *vte }
+        self.sync_header_visibility();
+        CloseOp { closing_scroll: closing_widget, root: self.root, kill_pid, next_focus: *vte }
     }
 
     fn pick_close_index(&self) -> usize {
@@ -571,13 +1128,21 @@ impl TabPanes {
             .unwrap_or(self.extra.len() - 1)
     }
 
-    fn remove_extra_at(&mut self, idx: usize, primary_vte: *mut GtkWidget, kill_proc: bool) -> CloseOp {
+    fn remove_extra_at(&mut self, idx: usize, primary_scroll: *mut GtkWidget, primary_vte: *mut GtkWidget, kill_proc: bool) -> CloseOp {
+        self.unzoom_in_place(primary_scroll);
         let removed = self.extra.remove(idx);
+        let closing_widget = if idx < self.extra_headers.len() {
+            self.extra_headers.remove(idx).container
+        } else {
+            removed.scroll
+        };
         self.collapse_layout_leaf(removed.scroll);
+        self.remote_conns.retain(|(s, _)| *s != removed.scroll);
         let kill_pid = if kill_proc { removed.child_pid } else { 0 };
         let next_focus = self.extra.last().map_or(primary_vte, |p| p.vte);
         self.last_focus = next_focus;
-        CloseOp { closing_scroll: removed.scroll, root: self.root, kill_pid, next_focus }
+        self.sync_header_visibility();
+        CloseOp { closing_scroll: closing_widget, root: self.root, kill_pid, next_focus }
     }
 
     pub fn prepare_close_active(
@@ -594,7 +1159,7 @@ impl TabPanes {
             return Some(self.promote_first_extra(scroll, vte, pid, cwd));
         }
         let idx = self.pick_close_index();
-        Some(self.remove_extra_at(idx, *vte, true))
+        Some(self.remove_extra_at(idx, *scroll, *vte, true))
     }
 
     #[cfg(test)]
@@ -623,7 +1188,7 @@ impl TabPanes {
             return Some(self.promote_first_extra(scroll, vte, pid, cwd));
         }
         let idx = self.extra.iter().position(|p| p.vte == target_vte)?;
-        Some(self.remove_extra_at(idx, *vte, true))
+        Some(self.remove_extra_at(idx, *scroll, *vte, true))
     }
 
     pub fn prepare_close_exited(
@@ -642,7 +1207,7 @@ impl TabPanes {
             return Some(self.promote_first_extra(scroll, vte, pid, cwd));
         }
         let idx = self.extra.iter().position(|p| p.vte == exited)?;
-        Some(self.remove_extra_at(idx, *vte, false))
+        Some(self.remove_extra_at(idx, *scroll, *vte, false))
     }
 }
 
@@ -702,7 +1267,7 @@ mod tests {
     #[test]
     fn split_pane_mi_meets_grade_b_target() {
         let (_, _, split_mi) = crate::mi::compute_file_mi(include_str!("split_pane.rs"));
-        assert!(split_mi >= 58.0, "split_pane.rs MI {split_mi:.2} < 58.0");
+        assert!(split_mi >= 58.25, "split_pane.rs MI {split_mi:.2} < 58.25");
         let (_, _, main_mi) = crate::mi::compute_file_mi(include_str!("main.rs"));
         assert!(main_mi >= 54.87, "main.rs MI {main_mi:.2} < 54.87");
         let (_, _, session_mi) = crate::mi::compute_file_mi(include_str!("session.rs"));
@@ -741,7 +1306,7 @@ mod tests {
                 let cwd = resolve_pane_cwd(&raw, fallback);
                 let (vte, child_pid) = crate::session::create_vte_widget(&cwd, &["/bin/sh"]);
                 let scroll = wrap_vte_scroll(vte);
-                SpawnedPane { scroll, vte, child_pid, cwd }
+                SpawnedPane { scroll, vte, child_pid, cwd, remote: None }
             })
             .collect()
     }
@@ -801,5 +1366,67 @@ mod tests {
         for d in [&d_main, &d_right, &d_bot, &base] {
             let _ = std::fs::remove_dir(d);
         }
+    }
+
+    #[test]
+    fn directional_rect_picker_selects_closest_neighbor() {
+        let grid = [
+            (0, PaneRect { x: 0, y: 0, w: 400, h: 600 }),
+            (1, PaneRect { x: 406, y: 0, w: 394, h: 297 }),
+            (2, PaneRect { x: 406, y: 303, w: 394, h: 297 }),
+        ];
+        assert_eq!(pick_neighbor_rect(grid[0].1, &grid[1..], FocusDir::Right), Some(1));
+        assert_eq!(pick_neighbor_rect(grid[1].1, &grid[..1], FocusDir::Left), Some(0));
+        assert_eq!(pick_neighbor_rect(grid[1].1, &grid[2..], FocusDir::Down), Some(2));
+        assert_eq!(pick_neighbor_rect(grid[2].1, &grid[1..2], FocusDir::Up), Some(1));
+    }
+
+    fn verify_dir_focus_cycle(panes: &mut TabPanes, scroll1: *mut GtkWidget, vte1: *mut GtkWidget, vte2: *mut GtkWidget, vte3: *mut GtkWidget) {
+        unsafe { gtk_widget_grab_focus(vte1) };
+        pump_gtk_events();
+        assert_eq!(panes.focus_direction(FocusDir::Right, scroll1, vte1), Some(vte2));
+        pump_gtk_events();
+        assert_eq!(panes.focus_direction(FocusDir::Down, scroll1, vte1), Some(vte3));
+        pump_gtk_events();
+        assert_eq!(panes.focus_direction(FocusDir::Up, scroll1, vte1), Some(vte2));
+        pump_gtk_events();
+        assert_eq!(panes.focus_direction(FocusDir::Left, scroll1, vte1), Some(vte1));
+        pump_gtk_events();
+    }
+
+    fn verify_zoom_toggle_round_trip(panes: &mut TabPanes, scroll1: *mut GtkWidget, vte1: *mut GtkWidget) {
+        assert!(panes.toggle_zoom(scroll1, vte1));
+        pump_gtk_events();
+        assert!(panes.is_zoomed());
+        assert_eq!(panes.zoomed_vte(scroll1, vte1), Some(vte1));
+        assert!(panes.all_headers()[0].is_visible(), "zoomed pane keeps header visible");
+        assert!(panes.toggle_zoom(scroll1, vte1));
+        pump_gtk_events();
+        assert!(!panes.is_zoomed());
+        assert_eq!(panes.extra.len(), 2);
+    }
+
+    #[test]
+    fn headless_gtk_supports_directional_nav_zoom_and_header_visibility() {
+        with_headless_gtk(|| {
+            let (win, mut scroll1, mut vte1, mut panes) = make_window_with_pane();
+            let (mut pid1, mut cwd1) = (0, "/tmp/one".to_owned());
+            assert!(!panes.all_headers()[0].is_visible(), "1 pane header must be hidden");
+            let vte2 = unsafe { vte_terminal_new() };
+            panes.split(scroll1, vte1, vte2, 0, "/tmp/two".into(), GTK_ORIENTATION_HORIZONTAL);
+            pump_gtk_events();
+            assert!(panes.all_headers().iter().all(|h| h.is_visible()), "2+ panes show headers");
+            let vte3 = unsafe { vte_terminal_new() };
+            panes.split(scroll1, vte2, vte3, 0, "/tmp/three".into(), GTK_ORIENTATION_VERTICAL);
+            pump_gtk_events();
+            verify_dir_focus_cycle(&mut panes, scroll1, vte1, vte2, vte3);
+            verify_zoom_toggle_round_trip(&mut panes, scroll1, vte1);
+            assert!(panes.close_active(&mut scroll1, &mut vte1, &mut pid1, &mut cwd1).is_some());
+            assert!(panes.close_active(&mut scroll1, &mut vte1, &mut pid1, &mut cwd1).is_some());
+            pump_gtk_events();
+            assert!(!panes.all_headers()[0].is_visible(), "back to 1 pane hides header");
+            unsafe { gtk_widget_destroy(win) };
+            pump_gtk_events();
+        });
     }
 }

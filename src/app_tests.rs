@@ -390,11 +390,69 @@ fn check_module_mi_gates(name: &str, score: f64, failures: &mut Vec<String>) {
     ];
     let wave0: &[(&str, f64)] = &[
         ("app_state.rs", 60.0), ("app_tests.rs", 60.0), ("i18n.rs", 60.0),
-        ("pane_actions.rs", 60.0), ("pane_registry.rs", 60.0), ("session_ops.rs", 60.0),
-        ("shortcuts.rs", 60.0), ("ssh_ui.rs", 60.0), ("topbar.rs", 60.0),
+        ("pane_actions.rs", 60.0), ("pane_header.rs", 60.0), ("pane_registry.rs", 60.0),
+        ("session_ops.rs", 60.0), ("shortcuts.rs", 60.0), ("ssh_ui.rs", 60.0),
+        ("topbar.rs", 60.0),
     ];
     check_min_targets(name, score, core_and_v04, failures);
     check_min_targets(name, score, wave0, failures);
+}
+
+fn assert_remote_split_buttons_enabled() {
+    let sensitive = APP.with(|c| {
+        let app = c.borrow();
+        let a = app.as_ref().unwrap();
+        unsafe { gtk_widget_get_sensitive(a.split_vert_btn) != 0 && gtk_widget_get_sensitive(a.split_horiz_btn) != 0 }
+    });
+    assert!(sensitive, "split buttons must be enabled on remote tabs");
+}
+
+fn assert_remote_pane_count_and_headers(sid: usize) {
+    let (count, visible) = APP.with(|c| {
+        let borrow = c.borrow();
+        let app = borrow.as_ref().unwrap();
+        let s = app.sessions.iter().find(|s| s.id == sid).unwrap();
+        (s.panes.extra.len(), s.panes.all_headers().iter().all(|h| h.is_visible()))
+    });
+    assert_eq!(count, 1);
+    assert!(visible, "2+ remote panes must show 22px PaneHeaders");
+}
+
+fn assert_zoom_toggle_for_active(expected: bool) {
+    session_ops::toggle_active_pane_zoom();
+    pump_gtk_events();
+    let zoomed = APP.with(|c| c.borrow().as_ref().unwrap().sessions[0].panes.is_zoomed());
+    assert_eq!(zoomed, expected);
+}
+
+fn assert_remote_session_split_and_zoom(sid: usize) {
+    session_ops::split_pane_in_session(Some(sid), ptr::null_mut(), GTK_ORIENTATION_HORIZONTAL);
+    pump_gtk_events();
+    assert_remote_pane_count_and_headers(sid);
+    assert!(session_ops::focus_pane_direction(crate::split_pane::FocusDir::Left));
+    assert_zoom_toggle_for_active(true);
+    assert_zoom_toggle_for_active(false);
+}
+
+fn verify_remote_splits_zoom_and_tabs_v2_flow() {
+    let state_path = temp_test_path("akhterm_v2_app_flow");
+    let (win, _) = install_test_window();
+    APP.with(|c| c.borrow_mut().as_mut().unwrap().tab_store = Some(TabStore::new_for_test(state_path.clone())));
+    let sid = session_ops::add_remote_session("gpu01", Some("dev"));
+    pump_gtk_events();
+    assert_remote_split_buttons_enabled();
+    assert_remote_session_split_and_zoom(sid);
+    topbar::set_zoom(1.4);
+    let saved = TabsState::decode(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    assert!((saved.font_scale() - 1.4).abs() < 0.002);
+    assert!(saved.splits_at(0).is_some(), "remote tmux split persists in tabs-v2");
+    cleanup_test_window(win, &[sid]);
+    let _ = std::fs::remove_file(&state_path);
+}
+
+#[test]
+fn headless_broadway_remote_splits_nav_zoom_headers_and_v2_state() {
+    with_headless_gtk(verify_remote_splits_zoom_and_tabs_v2_flow);
 }
 
 #[test]
