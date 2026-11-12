@@ -100,8 +100,54 @@ fn emit_vte_link_directive(bin: &str, dirs: &[String]) {
     }
 }
 
+fn git_short_sha() -> String {
+    let Ok(out) = Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+    else {
+        return "release".to_owned();
+    };
+    if !out.status.success() {
+        return "release".to_owned();
+    }
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if sha.is_empty() {
+        "release".to_owned()
+    } else {
+        sha
+    }
+}
+
+fn emit_git_rerun_hints() {
+    let head = Path::new(".git/HEAD");
+    if !head.exists() {
+        return;
+    }
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    if let Ok(content) = std::fs::read_to_string(head) {
+        if let Some(rel) = content.trim().strip_prefix("ref: ") {
+            let ref_path = Path::new(".git").join(rel.trim());
+            if ref_path.exists() {
+                println!("cargo:rerun-if-changed={}", ref_path.display());
+            }
+        }
+    }
+}
+
+fn resolve_build_target() -> String {
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if !arch.is_empty() && !os.is_empty() {
+        return format!("{arch}-{os}");
+    }
+    env::var("TARGET").unwrap_or_else(|_| "unknown".to_owned())
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    emit_git_rerun_hints();
+    println!("cargo:rustc-env=AKHTERM_GIT_SHA={}", git_short_sha());
+    println!("cargo:rustc-env=AKHTERM_BUILD_TARGET={}", resolve_build_target());
     for var in ["PKG_CONFIG", "PKG_CONFIG_PATH", "PKG_CONFIG_LIBDIR", "PKG_CONFIG_SYSROOT_DIR"] {
         println!("cargo:rerun-if-env-changed={var}");
     }

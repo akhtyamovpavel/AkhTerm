@@ -753,3 +753,193 @@ menu separator {
     min-height: 1px;
     margin: 4px 6px;
 }
+
+.pane-header-bar {
+    background-image: none;
+    background-color: @sidebar_bg;
+    border-bottom: 1px solid @border;
+    color: @muted;
+    font-size: 12px;
+    min-height: 22px;
+    padding: 2px 8px;
+}
+
+.pane-header-bar.pane-header-focused {
+    background-color: @surface;
+    color: @text;
+}
+
+.pane-header-bar button {
+    background-image: none;
+    background-color: transparent;
+    border-color: transparent;
+    border-radius: 4px;
+    color: @muted;
+    min-height: 18px;
+    min-width: 18px;
+    padding: 0 4px;
+}
+
+.pane-header-bar button:hover {
+    background-color: @hover;
+    border-color: @border;
+    color: @text_strong;
+}
+
+.swarm-card {
+    background-image: none;
+    background-color: @surface;
+    border: 1px solid @border;
+    border-radius: 8px;
+    color: @text;
+    padding: 10px 12px;
+}
+
+.swarm-card:hover {
+    border-color: @border_strong;
+}
+
+.swarm-card.swarm-card-attention {
+    background-color: @approval_bg;
+    border-color: @approval_border;
+}
+
+.dispatch-dialog,
+.settings-dialog,
+.about-dialog {
+    background-image: none;
+    background-color: @canvas;
+    color: @text;
+    font-family: "Geist", sans-serif;
+    font-size: 14px;
+}
+
+.dialog-card,
+.settings-card,
+.about-card,
+.dispatch-card {
+    background-image: none;
+    background-color: @surface;
+    border: 1px solid @border;
+    border-radius: 8px;
+    padding: 12px 14px;
+}
+
+.dialog-title,
+.settings-title,
+.about-title,
+.dispatch-title {
+    color: @text_strong;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.dialog-subtitle,
+.settings-subtitle,
+.about-subtitle,
+.settings-row-hint,
+.about-key,
+.dispatch-muted {
+    color: @muted;
+    font-size: 12px;
+}
+
+.settings-row-title,
+.about-value {
+    color: @text;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.about-version-badge {
+    background-image: none;
+    background-color: @gpu_bg;
+    border: 1px solid @badge_agent_border;
+    border-radius: 6px;
+    color: @gpu_fg;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 2px 8px;
+}
+
+button.settings-preset-btn {
+    background-image: none;
+    background-color: @control_bg;
+    border: 1px solid @border;
+    border-radius: 5px;
+    color: @text_secondary;
+    font-size: 12px;
+    padding: 3px 8px;
+}
+
+button.settings-preset-btn:hover {
+    background-color: @hover;
+    border-color: @border_strong;
+    color: @text_strong;
+}
+
+.settings-dialog switch {
+    background-image: none;
+    background-color: @control_bg;
+    border: 1px solid @border_strong;
+    border-radius: 99px;
+    color: @muted;
+    min-height: 22px;
+    min-width: 44px;
+}
+
+.settings-dialog switch:checked {
+    background-color: @selected;
+    border-color: @caret;
+}
+
+.settings-dialog switch slider {
+    background-image: none;
+    background-color: @text_secondary;
+    border: 1px solid @border;
+    border-radius: 99px;
+    margin: 2px;
+    min-height: 18px;
+    min-width: 18px;
+}
+
+.settings-dialog switch:checked slider {
+    background-color: @caret;
+    border-color: @caret;
+}
+
+.settings-dialog spinbutton,
+.dispatch-dialog spinbutton {
+    background-image: none;
+    background-color: @input_bg;
+    border: 1px solid @border;
+    border-radius: 6px;
+    color: @text;
+}
+
+.settings-dialog spinbutton entry,
+.dispatch-dialog spinbutton entry {
+    background-color: transparent;
+    border: none;
+}
+
+.settings-dialog spinbutton button,
+.dispatch-dialog spinbutton button {
+    background-image: none;
+    background-color: @control_bg;
+    border: none;
+    border-left: 1px solid @border;
+    border-radius: 0;
+    color: @text_secondary;
+    padding: 2px 8px;
+}
+
+.settings-dialog combobox button.combo,
+.dispatch-dialog combobox button.combo {
+    background-image: none;
+    background-color: @input_bg;
+    border: 1px solid @border;
+    border-radius: 6px;
+    color: @text;
+    padding: 4px 10px;
+}

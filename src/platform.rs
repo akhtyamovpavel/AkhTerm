@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::ptr;
 use std::sync::Once;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::ffi::*;
 use crate::session::SessionCategory;
@@ -410,6 +412,109 @@ pub fn is_clipboard_image_ext(ext: &str) -> bool {
     )
 }
 
+fn push_uri_byte(out: &mut String, byte: u8) {
+    let keep = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/');
+    if keep {
+        out.push(char::from(byte));
+    } else {
+        out.push_str(&format!("%{byte:02X}"));
+    }
+}
+
+pub fn encode_file_uri(path: &Path) -> Option<String> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let bytes = path.as_os_str().as_encoded_bytes();
+    let mut out = String::from("file://");
+    for &b in bytes {
+        push_uri_byte(&mut out, b);
+    }
+    Some(out)
+}
+
+fn show_items_args(arg_uris: &str) -> [&str; 10] {
+    [
+        "call",
+        "--session",
+        "--dest",
+        "org.freedesktop.FileManager1",
+        "--object-path",
+        "/org/freedesktop/FileManager1",
+        "--method",
+        "org.freedesktop.FileManager1.ShowItems",
+        arg_uris,
+        "",
+    ]
+}
+
+pub fn build_show_items_command(file_uri: &str, path_env: Option<&OsStr>) -> Option<Command> {
+    let gdbus = find_in_path("gdbus", path_env)?;
+    let arg_uris = format!("['{file_uri}']");
+    let mut cmd = Command::new(gdbus);
+    cmd.args(show_items_args(&arg_uris));
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    Some(cmd)
+}
+
+fn poll_child_exit(child: &mut std::process::Child, deadline: Instant) -> bool {
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            _ => return false,
+        }
+    }
+}
+
+pub fn run_command_with_timeout(cmd: &mut Command, timeout: Duration) -> bool {
+    let Ok(mut child) = cmd.spawn() else {
+        return false;
+    };
+    if poll_child_exit(&mut child, Instant::now() + timeout) {
+        return true;
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    false
+}
+
+pub fn try_show_file_in_manager(path: &Path, path_env: Option<&OsStr>) -> bool {
+    let Some(uri) = encode_file_uri(path) else {
+        return false;
+    };
+    let Some(mut cmd) = build_show_items_command(&uri, path_env) else {
+        return false;
+    };
+    run_command_with_timeout(&mut cmd, Duration::from_millis(500))
+}
+
+fn resolve_abs_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn open_parent_dir(path: &Path) -> bool {
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .is_some_and(|parent| spawn_desktop_opener(&parent.to_string_lossy()))
+}
+
+#[allow(dead_code)]
+pub fn open_containing_folder(path: &Path) -> bool {
+    if path.is_dir() {
+        return spawn_desktop_opener(&path.to_string_lossy());
+    }
+    if !path.is_file() {
+        return false;
+    }
+    let abs = resolve_abs_path(path);
+    let path_env = std::env::var_os("PATH");
+    try_show_file_in_manager(&abs, path_env.as_deref()) || open_parent_dir(&abs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,6 +630,32 @@ mod tests {
         let exp = ["--app-name=AkhTerm", "--icon=org.akhterm.AkhTerm", "--", "AkhTerm · Готово", "Проект ЦУ"];
         assert_eq!(args, exp.map(OsStr::new));
         assert!(is_clipboard_image_ext("bmp") && is_clipboard_image_ext("WEBP") && !is_clipboard_image_ext("txt"));
+    }
+
+    #[test]
+    fn encodes_file_uri_for_cyrillic_and_relative_paths() {
+        assert_eq!(encode_file_uri(Path::new("relative/file.rs")), None);
+        let cyr_path = Path::new("/tmp/проект ЦУ/отчёт'1.txt");
+        let uri = encode_file_uri(cyr_path).expect("abs uri");
+        assert!(uri.starts_with("file:///tmp/"));
+        assert!(!uri.contains(' ') && !uri.contains('\''));
+        assert_eq!(crate::file_drop::decode_file_uri(&uri).expect("roundtrip"), cyr_path);
+    }
+
+    #[test]
+    fn builds_gdbus_show_items_command_in_mock_path() {
+        let dir = std::env::temp_dir().join(format!("akhterm_gdbus_{}", std::process::id()));
+        clean_test_dir(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let gdbus = write_mock_exec(&dir, "gdbus");
+        let path_os = OsString::from(dir.as_os_str());
+        let uri = "file:///tmp/demo.txt";
+        let cmd = build_show_items_command(uri, Some(&path_os)).expect("gdbus cmd");
+        assert_eq!(cmd.get_program(), gdbus.as_os_str());
+        let args: Vec<&str> = cmd.get_args().filter_map(|a| a.to_str()).collect();
+        assert_eq!(args[7..], ["org.freedesktop.FileManager1.ShowItems", "['file:///tmp/demo.txt']", ""]);
+        assert!(build_show_items_command(uri, Some(OsStr::new(""))).is_none());
+        clean_test_dir(&dir);
     }
 
     fn verify_broadway_identity_and_classes() {
