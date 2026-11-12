@@ -92,13 +92,14 @@ fn main() -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
-fn init_app_hooks() {
+fn init_app_hooks() -> Option<std::fs::File> {
     platform::init_process_identity();
-    let _ui_font = ui_font::load().inspect_err(|e| eprintln!("AkhTerm: {e}"));
+    let ui_font = ui_font::load().inspect_err(|e| eprintln!("AkhTerm: {e}")).ok();
     register_link_cwd_lookup(session_ops::lookup_vte_link_cwd);
     install_file_drop_hooks();
     register_vte_menu_hook(pane_actions::open_vte_context_menu);
     pane_header::register_pane_close_hook(pane_actions::close_pane_by_vte);
+    ui_font
 }
 
 fn init_gtk_theme(initial_theme: theme_mode::ThemeMode) {
@@ -317,7 +318,7 @@ fn finish_startup(win: *mut GtkWidget) {
 }
 
 fn run_app() {
-    init_app_hooks();
+    let _ui_font = init_app_hooks();
     let config = WorkspaceConfig::load();
     i18n::set_locale(config.locale);
     pty_tap::set_osc52_enabled(config.osc52_enabled);

@@ -1024,10 +1024,7 @@ extern "C" fn drop_boxed<F>(data: *mut c_void, _closure: *mut c_void) {
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    use std::process::{Child, Command, Stdio};
     use std::rc::Rc;
-
-    const CHILD_ENV: &str = "AKHTERM_SWARM_GTK_CHILD";
 
     fn sample_cards() -> Vec<SwarmCardSpec> {
         vec![
@@ -1099,17 +1096,12 @@ mod tests {
 
     #[test]
     fn headless_broadway_swarm_dashboard_cards_approve_and_broadcast() {
-        if std::env::var_os(CHILD_ENV).is_some() {
-            run_broadway_swarm_child();
-            return;
-        }
-        let exe = std::env::current_exe().unwrap();
-        let out = Command::new(exe)
-            .env(CHILD_ENV, "1")
-            .args(["--exact", "swarm_view::tests::headless_broadway_swarm_dashboard_cards_approve_and_broadcast", "--nocapture"])
-            .output()
-            .expect("spawn child test");
-        assert!(out.status.success(), "child failed: {}", String::from_utf8_lossy(&out.stderr));
+        crate::proc_radar::tests::with_headless_gtk(|| {
+            let calls = Rc::new(RefCell::new(RecordedCalls::default()));
+            let cb = build_recording_callbacks(&calls);
+            verify_dashboard_interactions(&cb, &calls);
+            verify_popover_and_button(&cb);
+        });
     }
 
     #[derive(Default)]
@@ -1118,35 +1110,6 @@ mod tests {
         approved: Vec<(usize, Vec<u8>)>,
         broadcasts: Vec<(Vec<usize>, String)>,
         closed: usize,
-    }
-
-    fn run_broadway_swarm_child() {
-        let mut broadway = spawn_broadway(":19");
-        init_gtk_for_broadway();
-        let calls = Rc::new(RefCell::new(RecordedCalls::default()));
-        let cb = build_recording_callbacks(&calls);
-        verify_dashboard_interactions(&cb, &calls);
-        verify_popover_and_button(&cb);
-        let _ = broadway.kill();
-        let _ = broadway.wait();
-    }
-
-    fn spawn_broadway(display: &str) -> Child {
-        unsafe { std::env::set_var("GDK_BACKEND", "broadway") };
-        unsafe { std::env::set_var("BROADWAY_DISPLAY", display) };
-        let child = Command::new("broadwayd")
-            .arg(display)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("broadwayd must be installed");
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        child
-    }
-
-    fn init_gtk_for_broadway() {
-        let ok = unsafe { gtk_init_check(ptr::null_mut(), ptr::null_mut()) };
-        assert_ne!(ok, 0, "gtk_init_check on Broadway :19 failed");
     }
 
     fn build_recording_callbacks(calls: &Rc<RefCell<RecordedCalls>>) -> SwarmCallbacks {
