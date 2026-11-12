@@ -96,11 +96,17 @@ fn assemble_test_app_state(
     let swarm_pop = crate::swarm_view::SwarmPopover::new(btn, swarm_cb.clone(), crate::i18n::UiLocale::Ru);
     let swarm_view = crate::swarm_view::SwarmView::new(swarm_cb, crate::i18n::UiLocale::Ru);
     swarm_view.mount_in_stack(stack.cast());
+    let split_v = unsafe { gtk_button_new() };
+    let split_h = unsafe { gtk_button_new() };
+    unsafe {
+        gtk_box_pack_start(vbox, split_v, 0, 0, 0);
+        gtk_box_pack_start(vbox, split_h, 0, 0, 0);
+    }
     AppState {
         config: WorkspaceConfig::load(), win, is_fullscreen: false, sidebar, sidebar_visible: true,
         theme_mode: theme_mode::ThemeMode::Dark, theme_btn: btn, box_btn: btn, servers_btn: btn,
         handoff_btn: btn, agents_btn: btn, prefs_btn: btn, swarm_btn: btn, font_scale: 1.0, zoom_btn: btn,
-        reconnect_btn: btn, split_vert_btn: btn, split_horiz_btn: btn, next_id: 1, active_id: 1,
+        reconnect_btn: btn, split_vert_btn: split_v, split_horiz_btn: split_h, next_id: 1, active_id: 1,
         sessions: Vec::new(), tab_store: None, stack, tab_strip, mi_btn: btn,
         mi_pop: ptr::null_mut(), mi_pop_label: lbl, mi_refactor_btn: btn, tokens_menu,
         agents_pop: ptr::null_mut(), box_pop: ptr::null_mut(), box_gpu_label: lbl,
@@ -442,7 +448,32 @@ fn assert_remote_session_split_and_zoom(sid: usize) {
     assert_zoom_toggle_for_active(false);
 }
 
+fn install_mock_ssh_dir() -> (std::path::PathBuf, Option<std::ffi::OsString>) {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp_test_path("akhterm_mock_ssh_bin");
+    std::fs::create_dir_all(&dir).unwrap();
+    let ssh_bin = dir.join("ssh");
+    std::fs::write(&ssh_bin, "#!/bin/sh\nexec sleep 5\n").unwrap();
+    std::fs::set_permissions(&ssh_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let prev = std::env::var_os("PATH");
+    let joined = match &prev {
+        Some(p) => format!("{}:{}", dir.display(), p.to_string_lossy()),
+        None => dir.display().to_string(),
+    };
+    unsafe { std::env::set_var("PATH", joined) };
+    (dir, prev)
+}
+
+fn restore_mock_ssh_dir(dir: &Path, prev: Option<std::ffi::OsString>) {
+    match prev {
+        Some(v) => unsafe { std::env::set_var("PATH", v) },
+        None => unsafe { std::env::remove_var("PATH") },
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 fn verify_remote_splits_zoom_and_tabs_v2_flow() {
+    let (ssh_dir, prev_path) = install_mock_ssh_dir();
     let state_path = temp_test_path("akhterm_v2_app_flow");
     let (win, _) = install_test_window();
     APP.with(|c| c.borrow_mut().as_mut().unwrap().tab_store = Some(TabStore::new_for_test(state_path.clone())));
@@ -456,6 +487,7 @@ fn verify_remote_splits_zoom_and_tabs_v2_flow() {
     assert!(saved.splits_at(0).is_some(), "remote tmux split persists in tabs-v2");
     cleanup_test_window(win, &[sid]);
     let _ = std::fs::remove_file(&state_path);
+    restore_mock_ssh_dir(&ssh_dir, prev_path);
 }
 
 #[test]

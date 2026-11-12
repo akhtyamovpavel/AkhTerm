@@ -287,21 +287,25 @@ pub fn format_status_badge(exit_code: Option<i32>, elapsed_secs: Option<u64>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::c_char;
     use crate::ffi::{
-        gtk_container_add, gtk_events_pending, gtk_init_check, gtk_main_iteration_do,
-        gtk_scrolled_window_new, gtk_widget_destroy, gtk_widget_get_allocated_height,
-        gtk_window_new, gtk_window_set_default_size, GtkContainer, GtkWindow, GTK_WINDOW_TOPLEVEL,
+        gtk_container_add, gtk_scrolled_window_new, gtk_widget_destroy, gtk_window_new,
+        gtk_window_set_default_size, GtkContainer, GtkWindow, GTK_WINDOW_TOPLEVEL,
     };
     use std::sync::atomic::{AtomicI32, Ordering};
+
+    extern "C" {
+        fn gtk_widget_get_preferred_height(
+            widget: *mut GtkWidget,
+            minimum_height: *mut c_int,
+            natural_height: *mut c_int,
+        );
+    }
 
     static CLOSED_TAG: AtomicI32 = AtomicI32::new(0);
 
     fn flush_gtk() {
-        unsafe {
-            while gtk_events_pending() != 0 {
-                gtk_main_iteration_do(0);
-            }
+        for _ in 0..5 {
+            crate::proc_radar::tests::pump_gtk_events();
         }
     }
 
@@ -346,7 +350,9 @@ mod tests {
         header.update(&sample_zoomed_state(), true);
         flush_gtk();
         assert!(header.is_visible());
-        assert!(unsafe { gtk_widget_get_allocated_height(header.bar) } >= PANE_HEADER_HEIGHT_PX);
+        let (mut min_h, mut nat_h) = (0, 0);
+        unsafe { gtk_widget_get_preferred_height(header.bar, &mut min_h, &mut nat_h) };
+        assert!(min_h >= PANE_HEADER_HEIGHT_PX && nat_h >= PANE_HEADER_HEIGHT_PX);
         assert!(header.agent_text().contains("ssh gpu"));
         header.set_visible(false);
         flush_gtk();
@@ -355,23 +361,20 @@ mod tests {
 
     #[test]
     fn gtk_pane_header_toggles_22px_visibility_and_respects_no_show_all() {
-        let mut argc = 0;
-        let mut argv: [*mut c_char; 1] = [ptr::null_mut()];
-        if unsafe { gtk_init_check(&mut argc, &mut argv.as_mut_ptr()) } == 0 {
-            return;
-        }
-        register_pane_close_hook(hook_record);
-        unsafe {
-            let win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-            gtk_window_set_default_size(win as *mut GtkWindow, 480, 320);
-            let scroll = gtk_scrolled_window_new(ptr::null_mut(), ptr::null_mut());
-            let header = PaneHeader::wrap(scroll, 0x1234usize as *mut GtkWidget);
-            gtk_container_add(win as *mut GtkContainer, header.container);
-            gtk_widget_show_all(win);
-            flush_gtk();
-            verify_header_toggles(&header);
-            gtk_widget_destroy(win);
-        }
+        crate::proc_radar::tests::with_headless_gtk(|| {
+            register_pane_close_hook(hook_record);
+            unsafe {
+                let win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+                gtk_window_set_default_size(win as *mut GtkWindow, 480, 320);
+                let scroll = gtk_scrolled_window_new(ptr::null_mut(), ptr::null_mut());
+                let header = PaneHeader::wrap(scroll, 0x1234usize as *mut GtkWidget);
+                gtk_container_add(win as *mut GtkContainer, header.container);
+                gtk_widget_show_all(win);
+                flush_gtk();
+                verify_header_toggles(&header);
+                gtk_widget_destroy(win);
+            }
+        });
     }
 
     #[test]
