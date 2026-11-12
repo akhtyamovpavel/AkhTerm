@@ -77,6 +77,7 @@ pub struct TermSession {
     pub remote_tmux: Option<(String, String, String, String)>,
     pub tmux_title_from_vte: bool,
     pub telemetry: SessionTelemetry,
+    pub pane_registry: crate::pane_registry::PaneRegistry,
 }
 
 impl TermSession {
@@ -150,6 +151,10 @@ impl TermSession {
     }
 
     pub fn apply_vte_title(&mut self, vte: *mut GtkWidget, title_str: &str) {
+        let host = self.remote().map_or(self.proc_info.ssh_host.as_str(), |r| r.host.as_str()).to_owned();
+        if let Some(pane) = self.pane_registry.by_vte_mut(vte) {
+            crate::pane_radar::apply_pane_vte_title(pane, title_str, &host);
+        }
         if let Some(rest) = title_str.strip_prefix("AKHTERM_TMUX:") {
             apply_tmux_vte_title(self, vte, rest);
             return;
@@ -159,8 +164,7 @@ impl TermSession {
         }
         let clean = title_str.trim();
         self.osc_title = if self.effective_category() == SessionCategory::Remote {
-            let host = self.remote().map_or(self.proc_info.ssh_host.as_str(), |r| r.host.as_str());
-            clean_remote_osc_title(clean, host)
+            clean_remote_osc_title(clean, &host)
         } else {
             clean_local_osc_title(clean)
         };
@@ -466,6 +470,9 @@ pub fn parse_osc7_directory_uri(uri: &str) -> Option<String> {
 }
 
 fn update_session_osc7_cwd(s: &mut TermSession, vte: *mut GtkWidget, dir: &str) {
+    if let Some(pane) = s.pane_registry.by_vte_mut(vte) {
+        pane.cwd = dir.to_owned();
+    }
     if let Some(pane) = s.panes.extra.iter_mut().find(|p| p.vte == vte) {
         pane.cwd = dir.to_owned();
     }
@@ -542,6 +549,29 @@ fn maybe_notify_osc133(
     }
 }
 
+fn apply_osc133_to_pane(
+    s: &mut TermSession,
+    target_vte: *mut GtkWidget,
+    done: &crate::pty_tap::Osc133Completion,
+    is_focused: bool,
+) {
+    let Some(pane) = s.pane_registry.by_vte_mut(target_vte) else {
+        return;
+    };
+    if let Some(code) = done.exit_code {
+        pane.record_exit(code);
+    } else {
+        pane.last_exit_code = None;
+    }
+    if done.elapsed_secs >= 1 {
+        pane.last_turn_secs = Some(done.elapsed_secs);
+    }
+    if !is_focused && s.category != SessionCategory::Daemon {
+        pane.state = WorkState::Ready;
+        pane.unread = true;
+    }
+}
+
 fn apply_osc133_to_session(done: &crate::pty_tap::Osc133Completion) -> bool {
     let target_vte = done.vte_addr as *mut GtkWidget;
     let now = Instant::now();
@@ -551,6 +581,7 @@ fn apply_osc133_to_session(done: &crate::pty_tap::Osc133Completion) -> bool {
         let win = app.win;
         let s = app.sessions.iter_mut().find(|s| s.has_vte(target_vte))?;
         let is_focused = win_active && s.id == active_id && s.active_vte() == target_vte;
+        apply_osc133_to_pane(s, target_vte, done, is_focused);
         if done.elapsed_secs >= 1 {
             s.last_turn_secs = Some(done.elapsed_secs);
         }
@@ -815,6 +846,7 @@ mod tests {
             unread: false, last_output: now, work_started: now, work_started_at: None,
             last_turn_secs: None, last_notified: None, proc_info: ProcInfo::default(), tab,
             remote_tmux: None, tmux_title_from_vte: false, telemetry: SessionTelemetry::default(),
+            pane_registry: crate::pane_registry::PaneRegistry::default(),
         }
     }
 
@@ -1146,6 +1178,7 @@ mod tests {
             remote_tmux: None,
             tmux_title_from_vte: false,
             telemetry: SessionTelemetry::default(),
+            pane_registry: crate::pane_registry::PaneRegistry::default(),
         }
     }
 

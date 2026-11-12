@@ -1,7 +1,6 @@
 //! Canonical per-pane registry, state model, and priority aggregation.
 
-#![allow(dead_code)]
-
+#[cfg(test)]
 use std::ptr;
 use std::time::Instant;
 
@@ -18,16 +17,16 @@ impl PaneId {
         Self(raw)
     }
 
+    #[cfg(test)]
     pub const fn raw(self) -> u64 {
         self.0
     }
 }
 
-#[allow(dead_code)]
 pub struct PaneRecord {
     pub id: PaneId,
     pub vte: *mut GtkWidget,
-    pub scroll: *mut GtkWidget,
+    #[cfg(test)]
     pub header_box: *mut GtkWidget,
     pub child_pid: i32,
     pub cwd: String,
@@ -55,10 +54,11 @@ impl PaneRecord {
         cwd: String,
     ) -> Self {
         let now = Instant::now();
+        let _ = scroll;
         Self {
             id,
             vte,
-            scroll,
+            #[cfg(test)]
             header_box: ptr::null_mut(),
             child_pid,
             cwd,
@@ -78,6 +78,7 @@ impl PaneRecord {
         }
     }
 
+    #[cfg(test)]
     pub fn with_header(mut self, header_box: *mut GtkWidget) -> Self {
         self.header_box = header_box;
         self
@@ -174,14 +175,12 @@ pub fn aggregate_pane_state(panes: &[PaneRecord]) -> WorkState {
     aggregate_work_states(panes.iter().map(|pane| &pane.state))
 }
 
-#[allow(dead_code)]
 #[derive(Default)]
 pub struct PaneRegistry {
     next_id: u64,
     panes: Vec<PaneRecord>,
 }
 
-#[allow(dead_code)]
 impl PaneRegistry {
     pub fn allocate_id(&mut self) -> PaneId {
         self.next_id += 1;
@@ -200,6 +199,7 @@ impl PaneRegistry {
         id
     }
 
+    #[cfg(test)]
     pub fn insert(&mut self, record: PaneRecord) {
         if record.id.raw() > self.next_id {
             self.next_id = record.id.raw();
@@ -212,11 +212,13 @@ impl PaneRegistry {
         Some(self.panes.remove(idx))
     }
 
+    #[cfg(test)]
     pub fn remove_by_id(&mut self, id: PaneId) -> Option<PaneRecord> {
         let idx = self.panes.iter().position(|pane| pane.id == id)?;
         Some(self.panes.remove(idx))
     }
 
+    #[cfg(test)]
     pub fn get(&self, id: PaneId) -> Option<&PaneRecord> {
         self.panes.iter().find(|pane| pane.id == id)
     }
@@ -261,6 +263,7 @@ impl PaneRegistry {
         self.panes.iter().filter(|p| p.is_active_agent()).count()
     }
 
+    #[cfg(test)]
     pub fn live_turn_secs(&self, now: Instant) -> Option<u64> {
         self.panes.iter().filter_map(|p| p.live_turn_secs(now)).max()
     }
@@ -279,6 +282,7 @@ impl PaneRegistry {
         }
     }
 
+    #[cfg(test)]
     pub fn first_attention_pane(&self) -> Option<&PaneRecord> {
         let approval = self.panes.iter().find(|p| p.state == WorkState::NeedsApproval);
         approval.or_else(|| self.panes.iter().find(|p| p.unread || p.state == WorkState::Ready))

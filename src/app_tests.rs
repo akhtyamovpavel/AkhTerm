@@ -92,9 +92,14 @@ fn assemble_test_app_state(
     palette: palette::CommandPalette, search_bar: search_bar::SearchBar,
     pin_pop: tab_order::TabPinPopover,
 ) -> AppState {
+    let swarm_cb = crate::swarm_view::build_app_swarm_callbacks();
+    let swarm_pop = crate::swarm_view::SwarmPopover::new(btn, swarm_cb.clone(), crate::i18n::UiLocale::Ru);
+    let swarm_view = crate::swarm_view::SwarmView::new(swarm_cb, crate::i18n::UiLocale::Ru);
+    swarm_view.mount_in_stack(stack.cast());
     AppState {
         config: WorkspaceConfig::load(), win, is_fullscreen: false, sidebar, sidebar_visible: true,
-        theme_mode: theme_mode::ThemeMode::Dark, theme_btn: btn, font_scale: 1.0, zoom_btn: btn,
+        theme_mode: theme_mode::ThemeMode::Dark, theme_btn: btn, box_btn: btn, servers_btn: btn,
+        handoff_btn: btn, agents_btn: btn, prefs_btn: btn, swarm_btn: btn, font_scale: 1.0, zoom_btn: btn,
         reconnect_btn: btn, split_vert_btn: btn, split_horiz_btn: btn, next_id: 1, active_id: 1,
         sessions: Vec::new(), tab_store: None, stack, tab_strip, mi_btn: btn,
         mi_pop: ptr::null_mut(), mi_pop_label: lbl, mi_refactor_btn: btn, tokens_menu,
@@ -108,7 +113,7 @@ fn assemble_test_app_state(
         git_scheduler: git_status::GitStatusScheduler::default(),
         remote_telemetry: remote_telemetry::RemoteTelemetryScheduler::default(),
         box_state: Arc::new(Mutex::new(proc_radar::BoxTelemetry::default())),
-        palette, search_bar, pin_pop,
+        palette, search_bar, pin_pop, swarm_pop, swarm_view,
     }
 }
 
@@ -456,9 +461,66 @@ fn verify_remote_splits_zoom_and_tabs_v2_flow() {
 #[test]
 fn headless_broadway_remote_splits_nav_zoom_headers_and_v2_state() {
     with_headless_gtk(verify_remote_splits_zoom_and_tabs_v2_flow);
-=======
-    check_min_targets(name, score, wave0_and_1, failures);
->>>>>>> swarm-cockpit/feat/v1-swarm-cockpit
+}
+
+fn assert_live_prefs_and_locale_wiring() {
+    let mut prefs = APP.with(|c| {
+        let app = c.borrow();
+        let a = app.as_ref().unwrap();
+        a.config.to_user_prefs(a.theme_mode)
+    });
+    prefs.locale = crate::i18n::UiLocale::En;
+    prefs.osc52_enabled = false;
+    prefs.notify_secs = 25;
+    topbar::apply_live_preferences(&prefs);
+    assert_eq!(crate::i18n::current_locale(), crate::i18n::UiLocale::En);
+    assert!(!crate::pty_tap::is_osc52_enabled());
+    assert_eq!(crate::pty_tap::notify_threshold_secs(), 25);
+}
+
+fn assert_swarm_palette_and_escape_wiring() {
+    shortcuts::execute_palette_action(crate::palette::PaletteAction::ToggleSwarmDashboard);
+    pump_gtk_events();
+    let stack = APP.with(|c| c.borrow().as_ref().unwrap().stack.cast());
+    assert!(crate::swarm_view::is_swarm_active_in_stack(stack));
+    assert!(shortcuts::route_swarm_escape(0xff1b));
+    pump_gtk_events();
+    assert!(!crate::swarm_view::is_swarm_active_in_stack(stack));
+}
+
+fn assert_pane_attention_jump_across_split(sid: usize) {
+    session_ops::split_pane_in_session(Some(sid), ptr::null_mut(), GTK_ORIENTATION_HORIZONTAL);
+    pump_gtk_events();
+    let pane2_vte = APP.with(|c| {
+        let mut borrow = c.borrow_mut();
+        let s = borrow.as_mut().unwrap().sessions.iter_mut().find(|s| s.id == sid).unwrap();
+        let vte2 = s.panes.extra[0].vte;
+        s.pane_registry.by_vte_mut(vte2).unwrap().state = crate::session::WorkState::NeedsApproval;
+        vte2
+    });
+    shortcuts::jump_next_attention();
+    let focused = APP.with(|c| c.borrow().as_ref().unwrap().sessions[0].active_vte());
+    assert_eq!(focused, pane2_vte);
+}
+
+fn verify_v1_end_to_end_wiring() {
+    let prev_loc = crate::i18n::configured_locale();
+    let prev_osc = crate::pty_tap::is_osc52_enabled();
+    assert!(crate::about::check_version_arg(&["akhterm".into(), "--version".into()])
+        .is_some_and(|s| s.starts_with("akhterm 1.0.0 (")));
+    let (win, _) = install_test_window();
+    let sid = session_ops::add_tab("S1", "", "/tmp", SessionCategory::Project, &["sh"], Tab::local("shell"));
+    assert_live_prefs_and_locale_wiring();
+    assert_swarm_palette_and_escape_wiring();
+    assert_pane_attention_jump_across_split(sid);
+    cleanup_test_window(win, &[sid]);
+    crate::pty_tap::set_osc52_enabled(prev_osc);
+    crate::i18n::set_locale(prev_loc);
+}
+
+#[test]
+fn headless_broadway_v1_e2e_wiring() {
+    crate::i18n::with_locale_lock(|| with_headless_gtk(verify_v1_end_to_end_wiring));
 }
 
 #[test]

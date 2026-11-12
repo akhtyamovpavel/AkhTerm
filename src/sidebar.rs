@@ -404,7 +404,9 @@ impl SidebarRow {
         let ctx_badge = snap.compact_context_badge();
         let eff_mi = (eff_cat != SessionCategory::Remote).then_some(mi).flatten();
         let mi_str = eff_mi.map_or(String::new(), |(score, grade)| format!("MI {score:.1} · {grade}"));
-        let metric = combine_metric_parts(ctx_badge.as_deref(), &mi_str);
+        let agents = crate::pane_radar::format_agents_badge(session.pane_registry.active_agent_count());
+        let extra = combine_metric_parts(agents.as_deref(), &mi_str);
+        let metric = combine_metric_parts(ctx_badge.as_deref(), &extra);
         let mi_tip = format_metric_tooltip(&mi_str, local_project_root(session).as_deref());
         let metric_tip = combine_metric_parts(ctx_badge.as_deref(), &mi_tip);
         let tip = format_row_tooltip(&session.title, &tip_status, &detail, &metric_tip, index);
@@ -817,6 +819,7 @@ mod tests {
             remote_tmux: None,
             tmux_title_from_vte: false,
             telemetry: crate::telemetry::SessionTelemetry::default(),
+            pane_registry: crate::pane_registry::PaneRegistry::default(),
         }
     }
 

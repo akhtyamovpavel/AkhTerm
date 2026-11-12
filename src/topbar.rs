@@ -9,8 +9,9 @@ use crate::ffi::*;
 use crate::git_status::{self, GitRepoStatus};
 use crate::mi::ProjectMiReport;
 use crate::pane_header::{PaneHeader, PaneHeaderState};
-use crate::{git_wt, mi_watch, pane_actions, paths, session, session_ops, sidebar, split_pane};
-use crate::{tab_strip, telemetry, theme, theme_mode::ThemeMode, ui_text as text};
+use crate::{about, config, git_wt, i18n, mi_watch, pane_actions, pane_radar, paths, pty_tap};
+use crate::{session, session_ops, settings_dialog, sidebar, split_pane, swarm_view, tab_strip};
+use crate::{telemetry, theme, theme_mode::ThemeMode, ui_text as text};
 
 pub(crate) struct TopbarWidgets {
     pub(crate) topbar: *mut GtkWidget,
@@ -23,6 +24,9 @@ pub(crate) struct TopbarWidgets {
     pub(crate) split_horiz_btn: *mut GtkWidget,
     pub(crate) settings_btn: *mut GtkWidget,
     pub(crate) handoff_btn: *mut GtkWidget,
+    pub(crate) agents_btn: *mut GtkWidget,
+    pub(crate) prefs_btn: *mut GtkWidget,
+    pub(crate) swarm_btn: *mut GtkWidget,
     pub(crate) git_btn: *mut GtkWidget,
     pub(crate) mi_btn: *mut GtkWidget,
     pub(crate) mi_pop: *mut GtkWidget,
@@ -32,13 +36,27 @@ pub(crate) struct TopbarWidgets {
     pub(crate) agents_pop: *mut GtkWidget,
 }
 
+fn build_version_badge() -> *mut GtkWidget {
+    let badge = CString::new(format!("v{}", env!("CARGO_PKG_VERSION"))).unwrap();
+    unsafe {
+        let btn = gtk_button_new_with_label(badge.as_ptr());
+        add_class(btn, "about-version-badge");
+        gtk_widget_set_tooltip_text(btn, text::i18n_text::about_title().as_ptr());
+        app_state::connect_click(btn, on_about_clicked, ptr::null_mut());
+        btn
+    }
+}
+
 pub(crate) fn build_header_bar(win: *mut GtkWidget) {
     unsafe {
         let header = gtk_header_bar_new();
         add_class(header, "window-header");
+        let title_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
         let brand = gtk_label_new(text::APP_NAME.as_ptr());
         add_class(brand, "brand-label");
-        gtk_header_bar_set_custom_title(header, brand);
+        gtk_box_pack_start(title_box, brand, 0, 0, 0);
+        gtk_box_pack_start(title_box, build_version_badge(), 0, 0, 0);
+        gtk_header_bar_set_custom_title(header, title_box);
         gtk_header_bar_set_show_close_button(header, 1);
         gtk_window_set_titlebar(win, header);
     }
@@ -146,6 +164,14 @@ fn pack_agent_buttons(agents_box: *mut GtkWidget) {
     }
 }
 
+extern "C" fn on_dispatch_from_agents(_btn: *mut GtkWidget, _data: *mut c_void) {
+    let pop = app_state::with_app(|app| app.agents_pop).unwrap_or(ptr::null_mut());
+    if !pop.is_null() {
+        unsafe { gtk_popover_popdown(pop) };
+    }
+    crate::task_dispatch::open_for_app();
+}
+
 fn build_agents_popover(agents_btn: *mut GtkWidget) -> *mut GtkWidget {
     unsafe {
         let agents_pop = gtk_popover_new(agents_btn);
@@ -153,6 +179,10 @@ fn build_agents_popover(agents_btn: *mut GtkWidget) -> *mut GtkWidget {
         add_class(agents_box, "popover-box");
         pack_agent_buttons(agents_box);
         pack_worktree_agent_actions(agents_box);
+        let dispatch = gtk_button_new_with_label(c"Диспетчер задач (Ctrl+Shift+N)…".as_ptr());
+        add_class(dispatch, "btn-mi-a");
+        app_state::connect_click(dispatch, on_dispatch_from_agents, ptr::null_mut());
+        gtk_box_pack_start(agents_box, dispatch, 0, 1, 2);
         gtk_container_add(agents_pop, agents_box);
         gtk_widget_show_all(agents_box);
         connect_popover(agents_btn, agents_pop);
@@ -188,14 +218,22 @@ fn create_topbar_shell(root_vbox: *mut GtkWidget) -> (*mut GtkWidget, tab_strip:
 
 fn pack_right_menus(
     topbar: *mut GtkWidget,
-) -> ([*mut GtkWidget; 6], telemetry::TokensMenu) {
-    let settings_btn = add_end_button(topbar, text::SERVERS, None);
-    let handoff_btn = add_end_button(topbar, text::HANDOFF, Some(text::HANDOFF_TIP));
-    let agents_btn = add_end_button(topbar, text::AGENTS, None);
-    let git_btn = add_end_button(topbar, text::GIT_MENU, Some(text::GIT_MENU_TIP));
-    let mi_btn = add_end_button(topbar, text::MAINTAINABILITY, None);
+) -> ([*mut GtkWidget; 7], telemetry::TokensMenu) {
+    let settings_btn = add_end_button(topbar, text::i18n_text::servers(), None);
+    let prefs_btn = add_end_button(
+        topbar,
+        text::i18n_text::settings_btn(),
+        Some(text::i18n_text::settings_tip()),
+    );
+    app_state::connect_click(prefs_btn, on_settings_clicked, ptr::null_mut());
+    let handoff_btn = add_end_button(topbar, text::i18n_text::handoff(), Some(text::i18n_text::handoff_tip()));
+    let agents_btn = add_end_button(topbar, text::i18n_text::agents(), None);
+    let swarm_btn = add_end_button(topbar, c"Рой ▾", Some(c"Панель роя (Ctrl+Shift+S)"));
+    app_state::connect_click(swarm_btn, on_swarm_open, ptr::null_mut());
+    let git_btn = add_end_button(topbar, text::i18n_text::git_menu(), Some(text::i18n_text::git_menu_tip()));
+    let mi_btn = add_end_button(topbar, text::i18n_text::maintainability(), None);
     let tokens_menu = telemetry::TokensMenu::new(topbar, on_tokens_open);
-    ([settings_btn, handoff_btn, agents_btn, git_btn, mi_btn, ptr::null_mut()], tokens_menu)
+    ([settings_btn, handoff_btn, agents_btn, prefs_btn, swarm_btn, git_btn, mi_btn], tokens_menu)
 }
 
 pub(crate) fn build_topbar_widgets(
@@ -205,28 +243,27 @@ pub(crate) fn build_topbar_widgets(
     let (topbar, tab_strip, box_btn) = create_topbar_shell(root_vbox);
     let [theme_btn, split_horiz_btn, split_vert_btn, reconnect_btn, zoom_btn] =
         pack_left_controls(topbar, initial_theme);
-    let ([settings_btn, handoff_btn, agents_btn, git_btn, mi_btn, _], tokens_menu) =
+    let ([settings_btn, handoff_btn, agents_btn, prefs_btn, swarm_btn, git_btn, mi_btn], tokens_menu) =
         pack_right_menus(topbar);
     let (mi_pop, mi_pop_label, mi_refactor_btn) = build_mi_popover(mi_btn);
     let agents_pop = build_agents_popover(agents_btn);
     TopbarWidgets {
         topbar, tab_strip, box_btn, theme_btn, zoom_btn, reconnect_btn,
-        split_vert_btn, split_horiz_btn, settings_btn, handoff_btn, git_btn,
-        mi_btn, mi_pop, mi_pop_label, mi_refactor_btn, tokens_menu, agents_pop,
+        split_vert_btn, split_horiz_btn, settings_btn, handoff_btn, agents_btn,
+        prefs_btn, swarm_btn, git_btn, mi_btn, mi_pop, mi_pop_label,
+        mi_refactor_btn, tokens_menu, agents_pop,
     }
 }
 
 pub fn set_zoom(new_scale: f64) {
     let clamped = new_scale.clamp(0.5, 3.0);
-    let mut vtes = Vec::new();
-    let zoom_btn = app_state::with_app_mut(|app| {
+    let target = app_state::with_app_mut(|app| {
         app.font_scale = clamped;
-        for s in &app.sessions {
-            s.panes.collect_vtes(s.vte, &mut vtes);
-        }
-        app.zoom_btn
+        (collect_app_vtes(app), app.zoom_btn)
     });
-    split_pane::apply_zoom_scale(&vtes, clamped, zoom_btn);
+    if let Some((vtes, zoom_btn)) = target {
+        split_pane::apply_zoom_scale(&vtes, clamped, Some(zoom_btn));
+    }
     refresh_ui();
     session_ops::save_tabs();
 }
@@ -261,11 +298,7 @@ extern "C" fn on_toggle_sidebar(_btn: *mut GtkWidget, _data: *mut c_void) {
 fn collect_theme_targets(mode: ThemeMode) -> Option<(*mut GtkWidget, Vec<*mut GtkWidget>)> {
     app_state::with_app_mut(|app| {
         app.theme_mode = mode;
-        let mut vtes = Vec::new();
-        for s in &app.sessions {
-            s.panes.collect_vtes(s.vte, &mut vtes);
-        }
-        (app.theme_btn, vtes)
+        (app.theme_btn, collect_app_vtes(app))
     })
 }
 
@@ -427,10 +460,14 @@ fn collect_tokens_view(
     app: &AppState,
     now: Instant,
 ) -> (telemetry::TokensMenu, telemetry::TokensViewData) {
-    (
-        app.tokens_menu,
-        telemetry::build_sessions_tokens_view(&app.sessions, app.active_id, app.theme_mode, now),
-    )
+    let sources: Vec<pane_radar::PaneTokenSource<'_>> = app.sessions.iter().map(|s| {
+        pane_radar::PaneTokenSource {
+            title: &s.title, is_active_tab: s.id == app.active_id,
+            focused_vte: s.active_vte(), session_fallback: s,
+            registry: (!s.pane_registry.is_empty()).then_some(&s.pane_registry),
+        }
+    }).collect();
+    (app.tokens_menu, pane_radar::build_panes_tokens_view(&sources, app.theme_mode, now))
 }
 
 #[cfg(test)]
@@ -473,13 +510,12 @@ fn prepare_footer_update(
         return None;
     }
     app.footer_hold_until.set(None);
-    let footer = format!(
-        "Вкладки: {}    В работе: {}    Готово: {}    SSH: {}",
-        app.sessions.len(),
-        working,
-        ready,
-        ssh_count
-    );
+    let n = app.sessions.len();
+    let footer = if text::locale_is_ru() {
+        format!("Вкладки: {n}    В работе: {working}    Готово: {ready}    SSH: {ssh_count}")
+    } else {
+        format!("Tabs: {n}    Working: {working}    Ready: {ready}    SSH: {ssh_count}")
+    };
     Some((app.footer_status, footer))
 }
 
@@ -563,6 +599,7 @@ struct UiRefreshPlan {
     tokens: (telemetry::TokensMenu, telemetry::TokensViewData),
     footer: Option<(*mut GtkWidget, String)>,
     pane_headers: Vec<(PaneHeader, PaneHeaderState, bool)>,
+    swarm: (*mut GtkWidget, swarm_view::SwarmView, bool, Vec<swarm_view::SwarmCardSpec>, i18n::UiLocale),
 }
 
 impl UiRefreshPlan {
@@ -599,15 +636,19 @@ impl UiRefreshPlan {
         self_mi: Option<&ProjectMiReport>,
     ) -> Self {
         let [working, ready, ssh_count] = views.counts;
+        let now = Instant::now();
+        let swarm_cards = swarm_view::collect_swarm_cards_from_sessions(&app.sessions, now);
+        let swarm_active = swarm_view::is_swarm_active_in_stack(app.stack.cast());
         Self {
             rows: views.rows, tabs: views.tabs, sidebar: session_ops::prepare_sidebar_filter(app),
             btns: [app.reconnect_btn, app.split_vert_btn, app.split_horiz_btn],
             flags: (views.can_reconnect, !app.sessions.is_empty()),
             git: (app.git_menu.button(), views.active_cwd.is_some(), active_git),
             mi: MiUiPlan::from_state(app, cur_mi, self_mi),
-            tokens: collect_tokens_view(app, Instant::now()),
+            tokens: collect_tokens_view(app, now),
             footer: prepare_footer_update(app, working, ready, ssh_count),
-            pane_headers: session_ops::collect_pane_header_updates(app),
+            pane_headers: pane_radar::collect_pane_header_updates(&app.sessions, app.active_id),
+            swarm: (app.swarm_btn, app.swarm_view.clone(), swarm_active, swarm_cards, i18n::current_locale()),
         }
     }
 
@@ -620,9 +661,138 @@ impl UiRefreshPlan {
         self.mi.apply();
         self.tokens.0.apply(&self.tokens.1);
         self.pane_headers.into_iter().for_each(|(h, s, v)| h.update(&s, v));
+        swarm_view::SwarmPopover::sync_topbar_button(self.swarm.0, &self.swarm.3, self.swarm.4);
+        if self.swarm.2 {
+            self.swarm.1.update_cards(&self.swarm.3, self.swarm.4);
+        }
         if let Some((lbl, text)) = self.footer {
             set_label_text(lbl, &text);
         }
+    }
+}
+
+extern "C" fn on_about_clicked(_btn: *mut GtkWidget, _data: *mut c_void) {
+    open_about_for_app();
+}
+
+pub(crate) fn open_about_for_app() {
+    let win = app_state::with_app(|app| app.win).unwrap_or(ptr::null_mut());
+    if !win.is_null() {
+        let dlg = about::open_about_dialog(win);
+        let _ = dlg.window();
+    }
+}
+
+extern "C" fn on_settings_clicked(_btn: *mut GtkWidget, _data: *mut c_void) {
+    open_settings_for_app();
+}
+
+pub(crate) fn open_settings_for_app() {
+    let info = app_state::with_app(|app| (app.win, app.config.to_user_prefs(app.theme_mode)));
+    if let Some((win, prefs)) = info.filter(|(w, _)| !w.is_null()) {
+        let _ = settings_dialog::open_settings_dialog(
+            win, prefs, paths::config_path(), Box::new(apply_live_preferences),
+        );
+    }
+}
+
+fn set_btn_text_and_tip(btn: *mut GtkWidget, label: Option<&CStr>, tip: Option<&CStr>) {
+    if btn.is_null() {
+        return;
+    }
+    unsafe {
+        if let Some(lbl) = label {
+            gtk_button_set_label(btn, lbl.as_ptr());
+        }
+        if let Some(t) = tip {
+            gtk_widget_set_tooltip_text(btn, t.as_ptr());
+        }
+    }
+}
+
+fn swarm_btn_texts() -> (&'static CStr, &'static CStr) {
+    if text::locale_is_ru() {
+        (c"Рой ▾", c"Панель роя (Ctrl+Shift+S)")
+    } else {
+        (c"Swarm ▾", c"Swarm dashboard (Ctrl+Shift+S)")
+    }
+}
+
+fn sync_localized_chrome() {
+    let Some(btns) = app_state::with_app(|app| [
+        app.box_btn, app.servers_btn, app.handoff_btn, app.agents_btn, app.prefs_btn,
+        app.swarm_btn, app.reconnect_btn, app.git_menu.button(), app.tokens_menu.button_widget(),
+    ]) else {
+        return;
+    };
+    let (swarm_lbl, swarm_tip) = swarm_btn_texts();
+    let specs: [(*mut GtkWidget, Option<&CStr>, Option<&CStr>); 9] = [
+        (btns[0], Some(text::i18n_text::profiles()), None),
+        (btns[1], Some(text::i18n_text::servers()), None),
+        (btns[2], Some(text::i18n_text::handoff()), Some(text::i18n_text::handoff_tip())),
+        (btns[3], Some(text::i18n_text::agents()), None),
+        (btns[4], Some(text::i18n_text::settings_btn()), Some(text::i18n_text::settings_tip())),
+        (btns[5], Some(swarm_lbl), Some(swarm_tip)),
+        (btns[6], Some(text::i18n_text::reconnect()), Some(text::i18n_text::reconnect_tip())),
+        (btns[7], None, Some(text::i18n_text::git_menu_tip())),
+        (btns[8], None, Some(text::i18n_text::tokens_tip())),
+    ];
+    specs.into_iter().for_each(|(b, l, t)| set_btn_text_and_tip(b, l, t));
+}
+
+fn collect_app_vtes(app: &AppState) -> Vec<*mut GtkWidget> {
+    let mut vtes = Vec::new();
+    for s in &app.sessions {
+        s.panes.collect_vtes(s.vte, &mut vtes);
+    }
+    vtes
+}
+
+pub(crate) fn apply_live_preferences(prefs: &config::UserPrefs) {
+    i18n::set_locale(prefs.locale);
+    pty_tap::set_osc52_enabled(prefs.osc52_enabled);
+    pty_tap::set_notify_threshold_secs(prefs.notify_secs);
+    let vtes = app_state::with_app_mut(|app| {
+        app.config.apply_user_prefs(prefs);
+        collect_app_vtes(app)
+    })
+    .unwrap_or_default();
+    vtes.into_iter().for_each(|v| session::apply_vte_preferences(v, &prefs.font_desc, prefs.scrollback_lines as isize));
+    sync_localized_chrome();
+    apply_live_theme(prefs.theme, true);
+}
+
+pub(crate) fn toggle_locale_for_app() {
+    let Some(mut prefs) = app_state::with_app(|app| app.config.to_user_prefs(app.theme_mode)) else {
+        return;
+    };
+    prefs.locale = if text::locale_is_ru() { i18n::UiLocale::En } else { i18n::UiLocale::Ru };
+    let _ = config::save_user_preferences(&paths::config_path(), &prefs);
+    apply_live_preferences(&prefs);
+    app_state::set_footer_message(if text::locale_is_ru() { "Язык: Русский" } else { "Language: English" });
+}
+
+extern "C" fn on_swarm_open(_btn: *mut GtkWidget, _data: *mut c_void) {
+    let snap = app_state::with_app(|app| {
+        (app.swarm_pop.clone(), swarm_view::collect_swarm_cards_from_sessions(&app.sessions, Instant::now()))
+    });
+    if let Some((pop, cards)) = snap {
+        pop.update_cards(&cards, i18n::current_locale());
+        pop.popup();
+    }
+}
+
+pub(crate) fn toggle_swarm_view() {
+    let snap = app_state::with_app(|app| {
+        let cards = swarm_view::collect_swarm_cards_from_sessions(&app.sessions, Instant::now());
+        (app.swarm_view.clone(), app.stack, app.active_id, cards)
+    });
+    let Some((view, stack, active_id, cards)) = snap else {
+        return;
+    };
+    view.update_cards(&cards, i18n::current_locale());
+    if !view.toggle_in_stack(stack.cast(), Some(active_id)) {
+        app_state::focus_active_vte();
     }
 }
 

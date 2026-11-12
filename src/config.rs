@@ -278,7 +278,6 @@ impl WorkspaceConfig {
         paths
     }
 
-    #[allow(dead_code)]
     pub fn to_user_prefs(&self, active_theme: ThemeMode) -> UserPrefs {
         UserPrefs {
             theme: self.theme.unwrap_or(active_theme),
@@ -290,7 +289,6 @@ impl WorkspaceConfig {
         }
     }
 
-    #[allow(dead_code)]
     pub fn apply_user_prefs(&mut self, prefs: &UserPrefs) {
         let norm = normalize_prefs(prefs);
         self.theme = Some(norm.theme);

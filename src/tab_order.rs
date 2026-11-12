@@ -435,6 +435,7 @@ mod tests {
             work_started_at: None, last_turn_secs: None, last_notified: None,
             proc_info: ProcInfo::default(), tab, remote_tmux: None, tmux_title_from_vte: false,
             telemetry: crate::telemetry::SessionTelemetry::default(),
+            pane_registry: crate::pane_registry::PaneRegistry::default(),
         }
     }
 

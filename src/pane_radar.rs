@@ -1,24 +1,32 @@
 //! Per-pane process, approval snippet, turn timer, and token telemetry radar.
 
-#![allow(dead_code)]
-
-use std::{collections::{HashMap, HashSet}, path::Path, time::{Duration, Instant}};
+use std::{collections::HashMap, path::Path, time::{Duration, Instant}};
+#[cfg(test)]
+use std::collections::HashSet;
 use crate::approval::{classify_terminal_text_with_snippet, maybe_notify_background_event, read_vte_visible_text, QUIET_SETTLE_DELAY};
 use crate::ffi::GtkWidget;
 use crate::i18n::{current_locale, UiLocale, UiText};
 use crate::pane_registry::{PaneId, PaneRecord, PaneRegistry};
-use crate::paths::{expand_home, shorten_home};
+use crate::paths::expand_home;
+#[cfg(test)]
+use crate::paths::shorten_home;
 use crate::proc_radar::{inspect_proc_tree, ProcInfo};
-use crate::remote_telemetry::{RemoteSessionTarget, RemoteTailer};
+use crate::remote_telemetry::RemoteTailer;
 use crate::session::{detect_agent_name, TermSession, WorkState};
-use crate::tabs::RemoteConnection;
-use crate::telemetry::{build_tokens_view_with_keys, format_turn_duration, run_poll_job_with_remote, ContextAlert, SessionPollJob, SessionTelemetry, TabTokenRow, TelemetrySource, TokenSnapshot, TokensViewData};
+use crate::telemetry::{build_tokens_view_with_keys, run_poll_job_with_remote, SessionPollJob, SessionTelemetry, TabTokenRow, TokensViewData};
+#[cfg(test)]
+use crate::telemetry::{format_turn_duration, ContextAlert, TelemetrySource, TokenSnapshot};
 use crate::theme_mode::ThemeMode;
 
+#[cfg(test)]
 pub const BADGE_APPROVE: UiText = UiText::new(c"Апрув", c"Approve");
+#[cfg(test)]
 pub const BADGE_WORKING: UiText = UiText::new(c"В работе", c"Working");
+#[cfg(test)]
 pub const BADGE_READY: UiText = UiText::new(c"Готово", c"Ready");
+#[cfg(test)]
 pub const BADGE_SHELL: UiText = UiText::new(c"оболочка", c"shell");
+#[cfg(test)]
 pub const BADGE_EXITED: UiText = UiText::new(c"завершена", c"exited");
 const AGENT_SINGULAR: UiText = UiText::new(c"агент", c"agent");
 const AGENT_FEW: UiText = UiText::new(c"агента", c"agents");
@@ -245,37 +253,7 @@ pub fn apply_pane_telemetry(reg: &mut PaneRegistry, updates: Vec<(PaneId, Sessio
     }
 }
 
-#[derive(Default)]
-pub struct PaneProbeRouter {
-    next_probe_id: usize,
-    to_probe: HashMap<(usize, PaneId), usize>,
-}
-
-impl PaneProbeRouter {
-    pub fn probe_id_for(&mut self, sid: usize, pane_id: PaneId) -> usize {
-        if let Some(&id) = self.to_probe.get(&(sid, pane_id)) {
-            return id;
-        }
-        self.next_probe_id = self.next_probe_id.saturating_add(1);
-        self.to_probe.insert((sid, pane_id), self.next_probe_id);
-        self.next_probe_id
-    }
-
-    pub fn collect_targets(
-        &mut self,
-        sid: usize,
-        reg: &PaneRegistry,
-        remote: Option<&RemoteConnection>,
-    ) -> Vec<(PaneId, RemoteSessionTarget)> {
-        let host = remote.map(|r| r.host.as_str());
-        let tmux = remote.and_then(|r| r.tmux_session.as_deref());
-        reg.panes().iter().filter_map(|p| {
-            let pid = self.probe_id_for(sid, p.id);
-            RemoteSessionTarget::from_pane(pid, p, host, tmux).map(|t| (p.id, t))
-        }).collect()
-    }
-}
-
+#[cfg(test)]
 pub fn aggregate_registry_tokens(reg: &PaneRegistry) -> TokenSnapshot {
     let mut out = TokenSnapshot::default();
     let mut seen = HashSet::new();
@@ -288,6 +266,7 @@ pub fn aggregate_registry_tokens(reg: &PaneRegistry) -> TokenSnapshot {
     out
 }
 
+#[cfg(test)]
 fn merge_snapshot(acc: &mut TokenSnapshot, snap: &TokenSnapshot) {
     if !snap.has_data() {
         return;
@@ -303,6 +282,7 @@ fn merge_snapshot(acc: &mut TokenSnapshot, snap: &TokenSnapshot) {
     merge_snapshot_extras(acc, snap);
 }
 
+#[cfg(test)]
 fn merge_snapshot_extras(acc: &mut TokenSnapshot, snap: &TokenSnapshot) {
     acc.context_pct = match (acc.context_pct, snap.context_pct) {
         (Some(a), Some(b)) => Some(a.max(b)),
@@ -345,6 +325,7 @@ pub fn build_panes_tokens_view(sources: &[PaneTokenSource<'_>], mode: ThemeMode,
     build_tokens_view_with_keys(&rows, mode)
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct TabRadarSummary {
     pub state: WorkState,
@@ -358,6 +339,7 @@ pub struct TabRadarSummary {
     pub approval_snippet: Option<String>,
 }
 
+#[cfg(test)]
 pub fn summarize_registry_for(reg: &PaneRegistry, now: Instant, locale: UiLocale) -> TabRadarSummary {
     let active_agents = reg.active_agent_count();
     TabRadarSummary {
@@ -369,10 +351,7 @@ pub fn summarize_registry_for(reg: &PaneRegistry, now: Instant, locale: UiLocale
     }
 }
 
-pub fn summarize_registry(reg: &PaneRegistry, now: Instant) -> TabRadarSummary {
-    summarize_registry_for(reg, now, current_locale())
-}
-
+#[cfg(test)]
 fn pick_primary_agent(reg: &PaneRegistry) -> String {
     let order = [WorkState::NeedsApproval, WorkState::Working, WorkState::Ready, WorkState::Idle];
     for target in order {
@@ -383,10 +362,12 @@ fn pick_primary_agent(reg: &PaneRegistry) -> String {
     String::new()
 }
 
+#[cfg(test)]
 fn pick_approval_snippet(reg: &PaneRegistry) -> Option<String> {
     reg.panes().iter().filter(|p| p.state == WorkState::NeedsApproval).find_map(|p| p.approval_snippet.clone())
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PaneHeaderSummary {
     pub pane_id: PaneId,
@@ -400,6 +381,7 @@ pub struct PaneHeaderSummary {
     pub header_line: String,
 }
 
+#[cfg(test)]
 pub fn format_pane_header_summary_for(pane: &PaneRecord, now: Instant, locale: UiLocale) -> PaneHeaderSummary {
     let agent_or_proc = pane_actor_label(pane, locale);
     let short_cwd = pane_short_cwd(pane);
@@ -413,14 +395,12 @@ pub fn format_pane_header_summary_for(pane: &PaneRecord, now: Instant, locale: U
     }
 }
 
-pub fn format_pane_header_summary(pane: &PaneRecord, now: Instant) -> PaneHeaderSummary {
-    format_pane_header_summary_for(pane, now, current_locale())
-}
-
+#[cfg(test)]
 fn loc_str(text: UiText, locale: UiLocale) -> &'static str {
     text.for_locale(locale).to_str().unwrap_or("")
 }
 
+#[cfg(test)]
 fn pane_actor_label(pane: &PaneRecord, locale: UiLocale) -> String {
     let agent = pane.effective_agent();
     if !agent.is_empty() {
@@ -435,6 +415,7 @@ fn pane_actor_label(pane: &PaneRecord, locale: UiLocale) -> String {
     loc_str(BADGE_SHELL, locale).to_owned()
 }
 
+#[cfg(test)]
 fn pane_state_badge(pane: &PaneRecord, now: Instant, locale: UiLocale) -> String {
     match pane.state {
         WorkState::NeedsApproval => loc_str(BADGE_APPROVE, locale).to_owned(),
@@ -446,6 +427,7 @@ fn pane_state_badge(pane: &PaneRecord, now: Instant, locale: UiLocale) -> String
     }
 }
 
+#[cfg(test)]
 fn pane_short_cwd(pane: &PaneRecord) -> String {
     let raw = if !pane.cwd.is_empty() {
         pane.cwd.as_str()
@@ -455,6 +437,7 @@ fn pane_short_cwd(pane: &PaneRecord) -> String {
     shorten_home(raw)
 }
 
+#[cfg(test)]
 fn join_header_parts(actor: &str, cwd: &str, state: &str, ctx: Option<&str>) -> String {
     let mut parts: Vec<&str> = Vec::with_capacity(4);
     for item in [actor, cwd, state] {
@@ -468,40 +451,167 @@ fn join_header_parts(actor: &str, cwd: &str, state: &str, ctx: Option<&str>) -> 
     parts.join(" · ")
 }
 
-pub fn summarize_registry_headers(reg: &PaneRegistry, now: Instant) -> Vec<PaneHeaderSummary> {
-    summarize_registry_headers_for(reg, now, current_locale())
-}
-
-#[derive(Clone, Debug)]
-pub struct PaneSwarmInfo {
-    pub session_id: usize,
-    pub pane_id: PaneId,
-    pub vte: *mut GtkWidget,
-    pub header: PaneHeaderSummary,
-    pub live_turn_secs: Option<u64>,
-    pub last_turn_secs: Option<u64>,
-    pub snapshot: TokenSnapshot,
-}
-
-fn to_swarm_info(session_id: usize, pane: &PaneRecord, now: Instant) -> PaneSwarmInfo {
-    PaneSwarmInfo {
-        session_id, pane_id: pane.id, vte: pane.vte,
-        header: format_pane_header_summary(pane, now),
-        live_turn_secs: pane.live_turn_secs(now),
-        last_turn_secs: pane.last_turn_secs,
-        snapshot: pane.telemetry.snapshot().clone(),
-    }
-}
-
+#[cfg(test)]
 pub fn summarize_registry_headers_for(reg: &PaneRegistry, now: Instant, locale: UiLocale) -> Vec<PaneHeaderSummary> {
     reg.panes().iter().map(|p| format_pane_header_summary_for(p, now, locale)).collect()
 }
 
-pub fn collect_swarm_pane_infos(session_id: usize, reg: &PaneRegistry, now: Instant) -> Vec<PaneSwarmInfo> {
-    reg.panes().iter()
-        .filter(|p| p.is_active_agent() || p.state != WorkState::Idle)
-        .map(|p| to_swarm_info(session_id, p, now))
-        .collect()
+fn mirror_session_remote_to_primary(s: &mut TermSession) {
+    let host = s.remote().map_or(&s.proc_info.ssh_host, |r| &r.host).clone();
+    if let Some(p) = s.pane_registry.by_vte_mut(s.vte) {
+        if !host.is_empty() {
+            p.proc_info.ssh_host = host;
+        }
+        if let Some(ref tmux) = s.remote_tmux {
+            p.remote_tmux = Some(tmux.clone());
+        }
+    }
+}
+
+pub fn sync_and_settle_session(
+    s: &mut TermSession,
+    now: Instant,
+    is_active_tab: bool,
+    win: *mut GtkWidget,
+    window_active: bool,
+) {
+    if s.pane_registry.is_empty() {
+        return;
+    }
+    sync_registry_procs(&mut s.pane_registry);
+    mirror_session_remote_to_primary(s);
+    let ctx = SettleContext {
+        is_active_tab, focused_vte: s.active_vte(), is_daemon: s.category == crate::session::SessionCategory::Daemon,
+        tab_title: s.title.clone(), now, win, window_active,
+    };
+    settle_registry_panes(&mut s.pane_registry, &ctx);
+    s.state = s.pane_registry.aggregated_state();
+    s.unread = s.pane_registry.has_unread();
+    s.last_turn_secs = s.pane_registry.last_turn_secs().or(s.last_turn_secs);
+}
+
+pub fn collect_sessions_pane_jobs(sessions: &[TermSession]) -> Vec<PanePollJob> {
+    let mut out = Vec::new();
+    for s in sessions {
+        let is_daemon = s.category == crate::session::SessionCategory::Daemon;
+        let is_remote = s.effective_category() == crate::session::SessionCategory::Remote;
+        out.extend(collect_pane_poll_jobs(s.id, &s.pane_registry, is_daemon, is_remote));
+    }
+    out
+}
+
+pub fn run_pane_poll_jobs(
+    jobs: Vec<PanePollJob>,
+    remote_map: &HashMap<usize, RemoteTailer>,
+    home: &Path,
+    now: Instant,
+) -> Vec<(usize, PaneId, SessionTelemetry)> {
+    jobs.into_iter().map(|job| {
+        let sid = job.sid;
+        let rt = remote_map.get(&sid).cloned();
+        let (pane_id, telem) = run_pane_poll_job(job, rt, home, now);
+        (sid, pane_id, telem)
+    }).collect()
+}
+
+pub fn apply_sessions_pane_telemetry(sessions: &mut [TermSession], updates: Vec<(usize, PaneId, SessionTelemetry)>) {
+    for (sid, pane_id, telem) in updates {
+        if let Some(s) = sessions.iter_mut().find(|s| s.id == sid) {
+            apply_pane_telemetry(&mut s.pane_registry, vec![(pane_id, telem)]);
+        }
+    }
+    for s in sessions {
+        let active_vte = s.active_vte();
+        if let Some(p) = s.pane_registry.by_vte(active_vte).or_else(|| s.pane_registry.panes().first()) {
+            s.telemetry = p.telemetry.clone();
+        }
+    }
+}
+
+fn pane_primary_actor(s: &TermSession) -> Option<String> {
+    let agent = s.effective_agent();
+    if !agent.is_empty() {
+        return Some(agent);
+    }
+    (!s.proc_info.fg_cmd.is_empty()).then(|| s.proc_info.fg_cmd.clone())
+}
+
+fn pane_agent_fallback(s: &TermSession, idx: usize, vte: *mut GtkWidget) -> String {
+    if idx == 0 {
+        if let Some(actor) = pane_primary_actor(s) {
+            return actor;
+        }
+    }
+    s.panes.remote_for_vte(vte, s.scroll_wrap, s.vte)
+        .or_else(|| s.remote()).map(crate::tabs::RemoteConnection::title).unwrap_or_default()
+}
+
+fn pane_vte_and_cwd(s: &TermSession, idx: usize) -> (*mut GtkWidget, &str) {
+    if idx == 0 { (s.vte, s.cwd.as_str()) } else {
+        let p = &s.panes.extra[idx - 1];
+        (p.vte, p.cwd.as_str())
+    }
+}
+
+fn pane_header_actor(s: &TermSession, idx: usize, vte: *mut GtkWidget) -> String {
+    if let Some(p) = s.pane_registry.by_vte(vte) {
+        let agent = p.effective_agent();
+        if !agent.is_empty() {
+            return agent;
+        }
+        if !p.proc_info.fg_cmd.is_empty() {
+            return p.proc_info.fg_cmd.clone();
+        }
+    }
+    pane_agent_fallback(s, idx, vte)
+}
+
+fn pane_elapsed(s: &TermSession, idx: usize, active: bool, reg: Option<&PaneRecord>, now: Instant) -> Option<u64> {
+    reg.and_then(|p| p.live_turn_secs(now).or(p.last_turn_secs))
+        .or_else(|| (idx == 0 || active).then(|| s.live_turn_secs(now).or_else(|| s.settled_turn_secs())).flatten())
+}
+
+fn pane_ctx_text(s: &TermSession, idx: usize, reg: Option<&PaneRecord>) -> String {
+    reg.and_then(|p| p.telemetry.snapshot().compact_context_badge())
+        .unwrap_or_else(|| if idx == 0 { s.telemetry.snapshot().compact_context_badge().unwrap_or_default() } else { String::new() })
+}
+
+fn build_pane_header_state(s: &TermSession, idx: usize, is_act: bool, active_vte: *mut GtkWidget, now: Instant) -> crate::pane_header::PaneHeaderState {
+    let (vte, cwd) = pane_vte_and_cwd(s, idx);
+    let reg = s.pane_registry.by_vte(vte);
+    crate::pane_header::PaneHeaderState {
+        agent_or_proc: pane_header_actor(s, idx, vte),
+        cwd: cwd.to_owned(),
+        exit_code: reg.and_then(|p| p.last_exit_code),
+        elapsed_secs: pane_elapsed(s, idx, is_act && vte == active_vte, reg, now),
+        ctx_badge: pane_ctx_text(s, idx, reg),
+        active: is_act && vte == active_vte,
+        zoomed: s.panes.zoomed_vte(s.scroll_wrap, s.vte) == Some(vte),
+    }
+}
+
+fn append_session_pane_headers(
+    s: &TermSession,
+    is_active: bool,
+    now: Instant,
+    out: &mut Vec<(crate::pane_header::PaneHeader, crate::pane_header::PaneHeaderState, bool)>,
+) {
+    let visible = s.panes.header_visible();
+    let active_vte = s.active_vte();
+    for (idx, hdr) in s.panes.all_headers().into_iter().enumerate() {
+        if visible || hdr.is_visible() {
+            out.push((hdr, build_pane_header_state(s, idx, is_active, active_vte, now), visible));
+        }
+    }
+}
+
+pub(crate) fn collect_pane_header_updates(sessions: &[TermSession], active_id: usize) -> Vec<(crate::pane_header::PaneHeader, crate::pane_header::PaneHeaderState, bool)> {
+    let now = Instant::now();
+    let mut out = Vec::new();
+    for s in sessions {
+        append_session_pane_headers(s, s.id == active_id, now, &mut out);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -652,6 +762,7 @@ mod tests {
             unread: false, last_output: now, work_started: now, work_started_at: None, last_turn_secs: None,
             last_notified: None, proc_info: ProcInfo::default(), tab: Tab::local("shell"), remote_tmux: None,
             tmux_title_from_vte: false, telemetry: SessionTelemetry::default(),
+            pane_registry: PaneRegistry::default(),
         }
     }
 

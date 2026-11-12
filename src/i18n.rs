@@ -1,7 +1,5 @@
 //! Bilingual localization runtime (`RU` / `EN`) with zero-allocation CStr lookup.
 
-#![allow(dead_code)]
-
 use std::ffi::{c_char, CStr};
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -79,6 +77,7 @@ fn encode_locale(locale: UiLocale) -> u8 {
     }
 }
 
+#[cfg(test)]
 fn decode_locale(raw: u8) -> UiLocale {
     match raw {
         LOCALE_RU => UiLocale::Ru,
@@ -123,6 +122,7 @@ pub fn set_locale(locale: UiLocale) {
     RESOLVED_LOCALE.store(encode_locale(resolved), Ordering::Release);
 }
 
+#[cfg(test)]
 pub fn configured_locale() -> UiLocale {
     decode_locale(CONFIGURED_LOCALE.load(Ordering::Acquire))
 }

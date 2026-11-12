@@ -1,5 +1,4 @@
 //! Swarm Dashboard (`Ctrl+Shift+S`), Topbar `Рой ▾` popover, Quick Approve & Broadcast.
-#![allow(dead_code)]
 
 use std::cell::RefCell;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
@@ -55,7 +54,6 @@ extern "C" {
     fn gtk_widget_set_margin_end(widget: *mut GtkWidget, margin: c_int);
     fn gtk_widget_set_margin_top(widget: *mut GtkWidget, margin: c_int);
     fn gtk_widget_set_margin_bottom(widget: *mut GtkWidget, margin: c_int);
-    fn gtk_widget_set_hexpand(widget: *mut GtkWidget, expand: c_int);
     fn gtk_widget_set_vexpand(widget: *mut GtkWidget, expand: c_int);
 }
 
@@ -190,34 +188,30 @@ pub fn collect_swarm_cards_from_sessions(sessions: &[TermSession], now: Instant)
 fn collect_pane_cards(session: &TermSession, now: Instant, out: &mut Vec<SwarmCardSpec>) {
     let mut vtes = Vec::new();
     session.panes.collect_vtes(session.vte, &mut vtes);
-    let elapsed = session.live_turn_secs(now).or_else(|| session.settled_turn_secs());
     for vte in vtes {
-        out.push(build_card_spec(session, vte, elapsed));
+        out.push(build_card_spec(session, vte, now));
     }
 }
 
-fn build_card_spec(session: &TermSession, vte: *mut GtkWidget, elapsed: Option<u64>) -> SwarmCardSpec {
-    let cwd = session.panes.live_cwd_for_vte(vte, session.vte, session.child_pid, &session.cwd)
-        .unwrap_or_else(|| session.cwd.clone());
+fn build_card_spec(session: &TermSession, vte: *mut GtkWidget, now: Instant) -> SwarmCardSpec {
+    let reg_pane = session.pane_registry.by_vte(vte);
+    let cwd = reg_pane.filter(|p| !p.cwd.is_empty()).map(|p| p.cwd.clone()).unwrap_or_else(|| {
+        session.panes.live_cwd_for_vte(vte, session.vte, session.child_pid, &session.cwd).unwrap_or_else(|| session.cwd.clone())
+    });
     let (repo_name, branch_badge, is_worktree) = resolve_repo_meta(&cwd, &session.title);
     let visible = read_vte_visible_text(vte);
-    let snap = session.telemetry.snapshot();
-    let cost_usd = if snap.has_data() { snap.cost_usd } else { None };
+    let state = reg_pane.map_or(session.state, |p| p.state);
+    let elapsed_secs = reg_pane
+        .and_then(|p| p.live_turn_secs(now).or(p.last_turn_secs))
+        .or_else(|| session.live_turn_secs(now).or_else(|| session.settled_turn_secs()));
+    let snap = reg_pane.map_or_else(|| session.telemetry.snapshot(), |p| p.telemetry.snapshot());
+    let agent = reg_pane.map(crate::pane_registry::PaneRecord::effective_agent).filter(|a| !a.is_empty())
+        .unwrap_or_else(|| card_agent_label(session));
     SwarmCardSpec {
-        sid: session.id,
-        vte,
-        agent: card_agent_label(session),
-        repo_name,
-        branch_badge,
-        is_worktree,
-        state: session.state,
-        elapsed_secs: elapsed,
-        context_badge: snap.compact_context_badge(),
-        cost_usd,
+        sid: session.id, vte, agent, repo_name, branch_badge, is_worktree, state, elapsed_secs,
+        context_badge: snap.compact_context_badge(), cost_usd: snap.has_data().then_some(snap.cost_usd).flatten(),
         preview_lines: extract_preview_lines(&visible, 3),
-        approval_line: (session.state == WorkState::NeedsApproval)
-            .then(|| extract_approval_line(&visible))
-            .flatten(),
+        approval_line: (state == WorkState::NeedsApproval).then(|| extract_approval_line(&visible)).flatten(),
     }
 }
 
@@ -265,8 +259,12 @@ pub fn build_app_swarm_callbacks() -> SwarmCallbacks {
 }
 
 fn open_app_swarm_view() {
-    let stack = with_app(|app| app.stack).unwrap_or(ptr::null_mut());
-    if !stack.is_null() {
+    let snap = with_app(|app| {
+        let cards = collect_swarm_cards_from_sessions(&app.sessions, Instant::now());
+        (app.stack, app.swarm_view.clone(), cards)
+    });
+    if let Some((stack, view, cards)) = snap.filter(|(s, _, _)| !s.is_null()) {
+        view.update_cards(&cards, crate::i18n::current_locale());
         unsafe { gtk_stack_set_visible_child_name(stack, SWARM_STACK_CSTR.as_ptr()) };
     }
 }
@@ -345,7 +343,9 @@ pub fn is_swarm_active_in_stack(stack: *mut GtkStack) -> bool {
 pub struct SwarmCardWidgets {
     pub root: *mut GtkWidget,
     pub check: *mut GtkWidget,
+    #[cfg(test)]
     pub approve_btn: Option<*mut GtkWidget>,
+    #[cfg(test)]
     pub focus_btn: *mut GtkWidget,
     pub sid: usize,
     pub vte: *mut GtkWidget,
@@ -428,6 +428,7 @@ impl SwarmView {
         self.inner.borrow().root
     }
 
+    #[cfg(test)]
     pub fn entry_widget(&self) -> *mut GtkWidget {
         self.inner.borrow().entry
     }
@@ -515,18 +516,22 @@ impl SwarmView {
         }
     }
 
+    #[cfg(test)]
     pub fn card_count(&self) -> usize {
         self.inner.borrow().cards.iter().filter(|c| !c.check.is_null()).count()
     }
 
+    #[cfg(test)]
     pub fn card_approve_button(&self, idx: usize) -> Option<*mut GtkWidget> {
         self.inner.borrow().cards.get(idx).and_then(|c| c.approve_btn)
     }
 
+    #[cfg(test)]
     pub fn card_focus_button(&self, idx: usize) -> Option<*mut GtkWidget> {
         self.inner.borrow().cards.get(idx).map(|c| c.focus_btn)
     }
 
+    #[cfg(test)]
     pub fn preset_buttons(&self) -> (*mut GtkWidget, *mut GtkWidget, *mut GtkWidget, *mut GtkWidget) {
         let inner = self.inner.borrow();
         (inner.select_all_btn, inner.select_idle_btn, inner.clear_btn, inner.broadcast_btn)
@@ -550,10 +555,6 @@ impl SwarmPopover {
         Self { inner: Rc::new(RefCell::new(inner)) }
     }
 
-    pub fn widget(&self) -> *mut GtkWidget {
-        self.inner.borrow().popover
-    }
-
     pub fn popup(&self) {
         unsafe {
             gtk_widget_show_all(self.inner.borrow().popover);
@@ -561,13 +562,13 @@ impl SwarmPopover {
         }
     }
 
-    pub fn popdown(&self) {
-        unsafe { gtk_popover_popdown(self.inner.borrow().popover.cast()) };
-    }
-
     pub fn update_cards(&self, specs: &[SwarmCardSpec], locale: UiLocale) {
         let mut inner = self.inner.borrow_mut();
         clear_popover_rows(&mut inner);
+        unsafe {
+            gtk_button_set_label(inner.open_board_btn.cast(), BTN_OPEN_DASHBOARD.for_locale(locale).as_ptr());
+            gtk_button_set_label(inner.open_dispatch_btn.cast(), BTN_NEW_TASK.for_locale(locale).as_ptr());
+        }
         if specs.is_empty() {
             let lbl = make_label(EMPTY_SWARM_TEXT.for_locale(locale), 0.0);
             unsafe { gtk_box_pack_start(inner.list_box.cast(), lbl, 0, 0, 0) };
@@ -580,10 +581,12 @@ impl SwarmPopover {
         unsafe { gtk_widget_show_all(inner.list_box) };
     }
 
+    #[cfg(test)]
     pub fn row_count(&self) -> usize {
         self.inner.borrow().row_widgets.len()
     }
 
+    #[cfg(test)]
     pub fn approve_buttons(&self) -> Vec<*mut GtkWidget> {
         self.inner.borrow().approve_btns.clone()
     }
@@ -694,9 +697,14 @@ fn append_empty_label(cards_box: *mut GtkWidget, locale: UiLocale, cards: &mut V
         gtk_box_pack_start(cards_box.cast(), lbl, 0, 0, 8);
         gtk_widget_show_all(cards_box);
     }
+    #[cfg(test)]
     cards.push(SwarmCardWidgets {
         root: lbl, check: ptr::null_mut(), approve_btn: None,
         focus_btn: ptr::null_mut(), sid: 0, vte: ptr::null_mut(), state: WorkState::Idle,
+    });
+    #[cfg(not(test))]
+    cards.push(SwarmCardWidgets {
+        root: lbl, check: ptr::null_mut(), sid: 0, vte: ptr::null_mut(), state: WorkState::Idle,
     });
 }
 
@@ -709,9 +717,15 @@ fn build_card_row(spec: &SwarmCardSpec, cb: &SwarmCallbacks, locale: UiLocale) -
     append_card_meta_line(card, spec, locale);
     append_card_preview(card, spec);
     let approve_btn = maybe_append_approval_bar(card, spec, cb, locale);
-    SwarmCardWidgets {
+    #[cfg(test)]
+    return SwarmCardWidgets {
         root: card, check, approve_btn, focus_btn,
         sid: spec.sid, vte: spec.vte, state: spec.state,
+    };
+    #[cfg(not(test))]
+    {
+        let _ = (approve_btn, focus_btn);
+        SwarmCardWidgets { root: card, check, sid: spec.sid, vte: spec.vte, state: spec.state }
     }
 }
 

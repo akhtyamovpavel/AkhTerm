@@ -248,7 +248,13 @@ fn install_app_state(a: AppAssembly) {
     let handoff = HandoffMenu::new(a.tb.handoff_btn, pane_actions::handoff_open_cb());
     let palette = palette::CommandPalette::new(a.tb.topbar, shortcuts::execute_palette_action, focus_active_vte);
     let pin_pop = tab_order::TabPinPopover::new(a.tb.topbar, session_ops::apply_pinned_tab_title, focus_active_vte);
-    APP.with(|cell| *cell.borrow_mut() = Some(build_app_state(a, git_menu, handoff, palette, pin_pop)));
+    let swarm_cb = swarm_view::build_app_swarm_callbacks();
+    let swarm_pop = swarm_view::SwarmPopover::new(a.tb.swarm_btn, swarm_cb.clone(), i18n::current_locale());
+    let swarm_view = swarm_view::SwarmView::new(swarm_cb, i18n::current_locale());
+    swarm_view.mount_in_stack(a.stack.cast());
+    APP.with(|cell| *cell.borrow_mut() = Some(build_app_state(
+        a, git_menu, handoff, palette, pin_pop, swarm_pop, swarm_view,
+    )));
 }
 
 fn build_app_state(
@@ -257,10 +263,14 @@ fn build_app_state(
     handoff: HandoffMenu,
     palette: palette::CommandPalette,
     pin_pop: tab_order::TabPinPopover,
+    swarm_pop: swarm_view::SwarmPopover,
+    swarm_view: swarm_view::SwarmView,
 ) -> AppState {
     AppState {
         config: a.config, win: a.win, is_fullscreen: false, sidebar: a.sidebar,
         sidebar_visible: true, theme_mode: a.initial_theme, theme_btn: a.tb.theme_btn,
+        box_btn: a.tb.box_btn, servers_btn: a.tb.settings_btn, handoff_btn: a.tb.handoff_btn,
+        agents_btn: a.tb.agents_btn, prefs_btn: a.tb.prefs_btn, swarm_btn: a.tb.swarm_btn,
         font_scale: 1.0, zoom_btn: a.tb.zoom_btn, reconnect_btn: a.tb.reconnect_btn,
         split_vert_btn: a.tb.split_vert_btn, split_horiz_btn: a.tb.split_horiz_btn,
         next_id: 1, active_id: 1, sessions: Vec::new(), tab_store: None, stack: a.stack,
@@ -276,7 +286,7 @@ fn build_app_state(
         enabled_hosts_shared: a.sched.enabled_hosts, tmux_jump_btns: Vec::new(),
         last_tmux_keys: Vec::new(), mi_scheduler: a.sched.mi, git_scheduler: a.sched.git,
         remote_telemetry: a.sched.remote, box_state: a.sched.box_state,
-        palette, search_bar: a.search_bar, pin_pop,
+        palette, search_bar: a.search_bar, pin_pop, swarm_pop, swarm_view,
     }
 }
 
@@ -309,6 +319,9 @@ fn finish_startup(win: *mut GtkWidget) {
 fn run_app() {
     init_app_hooks();
     let config = WorkspaceConfig::load();
+    i18n::set_locale(config.locale);
+    pty_tap::set_osc52_enabled(config.osc52_enabled);
+    pty_tap::set_notify_threshold_secs(config.notify_secs);
     let initial_theme = theme_mode::load_initial_theme(config.theme);
     init_gtk_theme(initial_theme);
     assemble_and_install(config, initial_theme);

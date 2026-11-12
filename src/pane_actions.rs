@@ -813,6 +813,7 @@ fn close_pane_in_session(sid: usize, target_vte: *mut GtkWidget) {
             return Some((false, None));
         }
         let op = s.panes.prepare_close_vte(target_vte, &mut s.scroll_wrap, &mut s.vte, &mut s.child_pid, &mut s.cwd)?;
+        s.pane_registry.remove_by_vte(target_vte);
         session_ops::sync_session_proc(s, None);
         Some((s.id == active_id, Some(op)))
     })
@@ -910,6 +911,11 @@ fn execute_vte_action(action: ContextAction) -> Result<(), ContextAction> {
         }
         ContextAction::OpenLink(url) => proc_radar::open_external_link(&url),
         ContextAction::CopyText(value) => context_menu::copy_text_to_clipboard(&value),
+        ContextAction::OpenContainingFolder(path) => {
+            let ok = crate::platform::open_containing_folder(&path);
+            let prefix = if ok { "📂" } else { "⚠" };
+            app_state::set_footer_message(&format!("{prefix} {}", paths::shorten_home(&path.to_string_lossy())));
+        }
         ContextAction::ForwardToTab { source_sid, source_vte, target_sid, selected_text } => {
             forward_pane_to_tab(source_sid, source_vte, target_sid, selected_text);
         }

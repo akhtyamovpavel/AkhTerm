@@ -862,6 +862,12 @@ menu separator {
     padding: 2px 8px;
 }
 
+headerbar.window-header button.about-version-badge {
+    min-height: 20px;
+    padding: 1px 7px;
+    margin-left: 6px;
+}
+
 button.settings-preset-btn {
     background-image: none;
     background-color: @control_bg;

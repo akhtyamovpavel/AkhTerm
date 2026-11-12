@@ -6,10 +6,9 @@ use std::{path::PathBuf, ptr, time::Instant};
 
 use crate::app_state::{self, AppState, APP};
 use crate::ffi::*;
-use crate::pane_header::{PaneHeader, PaneHeaderState};
 use crate::session::{LinkCwd, SessionCategory, TermSession, WorkState};
 use crate::tabs::{is_ssh_host, RemoteConnection, SplitLeaf, SplitTree, Tab, TabMeta, TabStore, TabsState};
-use crate::{approval, config::WorkspaceConfig, context_menu, pane_actions, paths, platform};
+use crate::{approval, config::WorkspaceConfig, context_menu, pane_actions, pane_radar, paths, platform};
 use crate::{proc_radar, remote_telemetry, session, shortcuts, sidebar, split_pane, ssh_ui};
 use crate::{tab_order, tab_strip, telemetry, topbar};
 
@@ -55,6 +54,10 @@ pub(crate) fn prepare_sidebar_filter(app: &AppState) -> sidebar::SidebarUpdate {
     app.sidebar.prepare_filter(&app.sidebar_filter, &app.sessions, tmux_rows)
 }
 
+fn clear_pane_unread_for(s: &mut TermSession, vte: *mut GtkWidget) {
+    s.pane_registry.focus_pane(vte, Instant::now());
+}
+
 extern "C" fn on_vte_focus_in(
     vte: *mut GtkWidget,
     _event: *const GdkEvent,
@@ -64,6 +67,7 @@ extern "C" fn on_vte_focus_in(
     let updated = app_state::with_app_mut(|app| {
         let s = app.sessions.iter_mut().find(|s| s.id == sid && s.has_vte(vte))?;
         s.panes.record_focus(vte);
+        clear_pane_unread_for(s, vte);
         sync_session_proc(s, None);
         Some((s.id == app.active_id, app.search_bar.clone()))
     })
@@ -92,12 +96,27 @@ pub(crate) fn lookup_vte_link_cwd(vte: *mut GtkWidget) -> LinkCwd {
     .unwrap_or(LinkCwd::Unmanaged)
 }
 
+fn mark_pane_working(s: &mut TermSession, vte: *mut GtkWidget, is_active_tab: bool) {
+    let is_daemon = s.category == SessionCategory::Daemon;
+    let is_focused = is_active_tab && s.active_vte() == vte;
+    let now = Instant::now();
+    if let Some(pane) = s.pane_registry.by_vte_mut(vte) {
+        pane.last_exit_code = None;
+        if !is_daemon {
+            pane.mark_output(now, is_focused);
+        } else {
+            pane.last_output = now;
+        }
+    }
+}
+
 extern "C" fn on_vte_contents_changed(vte: *mut GtkWidget, user_data: *mut c_void) {
     let sid = user_data as usize;
     app_state::with_app_mut(|app| {
         let active = app.active_id;
         let session = app.sessions.iter_mut().find(|s| s.id == sid && s.has_vte(vte));
-        if let Some(s) = session.filter(|s| s.active_pid() > 0) {
+        if let Some(s) = session.filter(|s| s.pid_for_vte(vte) > 0 || s.active_pid() > 0) {
+            mark_pane_working(s, vte, sid == active);
             mark_session_working(s, sid == active);
         }
     });
@@ -123,6 +142,7 @@ fn prepare_split_reap(exited_vte: *mut GtkWidget) -> Option<(bool, split_pane::C
         let op = s.panes.prepare_close_exited(
             exited_vte, &mut s.scroll_wrap, &mut s.vte, &mut s.child_pid, &mut s.cwd,
         )?;
+        s.pane_registry.remove_by_vte(exited_vte);
         sync_session_proc(s, None);
         Some((s.id == active_id, op))
     })
@@ -162,6 +182,12 @@ fn reset_exited_primary_pane(s: &mut TermSession) {
     s.state = WorkState::Idle;
     s.unread = false;
     s.work_started_at = None;
+    if let Some(pane) = s.pane_registry.by_vte_mut(s.vte) {
+        pane.child_pid = 0;
+        pane.state = WorkState::Idle;
+        pane.unread = false;
+        pane.work_started_at = None;
+    }
 }
 
 extern "C" fn on_vte_title_changed(vte: *mut GtkWidget, user_data: *mut c_void) {
@@ -402,6 +428,8 @@ fn prepare_session_selection(
         if s.state == WorkState::Ready {
             s.state = WorkState::Idle;
         }
+        let active_vte = s.active_vte();
+        clear_pane_unread_for(s, active_vte);
         let mut vtes = Vec::new();
         s.panes.collect_vtes(s.vte, &mut vtes);
         Some((app.stack, vtes, s.panes.last_focus, app.search_bar.clone()))
@@ -500,8 +528,17 @@ extern "C" fn on_new_tab(_btn: *mut GtkWidget, _data: *mut c_void) {
     open_default_tab();
 }
 
+fn apply_app_vte_prefs(vte: *mut GtkWidget) {
+    if let Some((font, scrollback)) = app_state::with_app(|app| {
+        (app.config.font_desc.clone(), app.config.scrollback_lines as isize)
+    }) {
+        session::apply_vte_preferences(vte, &font, scrollback);
+    }
+}
+
 pub(crate) fn create_terminal(cwd: &str, argv: &[&str], sid: usize, scale: f64) -> (*mut GtkWidget, i32) {
     let (vte, pid) = session::create_vte_widget(cwd, argv);
+    apply_app_vte_prefs(vte);
     let handlers = [
         (c"key-press-event", shortcuts::window_key_press_cb() as *const c_void),
         (c"focus-in-event", on_vte_focus_in as *const c_void),
@@ -518,6 +555,16 @@ pub(crate) fn create_terminal(cwd: &str, argv: &[&str], sid: usize, scale: f64) 
     (vte, pid)
 }
 
+fn mount_tab_stack(stack: *mut GtkWidget, root: *mut GtkWidget, sid: usize) {
+    unsafe {
+        if !stack.is_null() {
+            let stack_name = CString::new(format!("term_{sid}")).unwrap();
+            gtk_stack_add_named(stack, root, stack_name.as_ptr());
+        }
+        gtk_widget_show_all(root);
+    }
+}
+
 fn spawn_tab_widgets(
     sid: usize,
     cwd: &str,
@@ -528,13 +575,7 @@ fn spawn_tab_widgets(
     let (vte, pid) = create_terminal(cwd, argv, sid, scale);
     let term_scroll = split_pane::wrap_vte_scroll(vte);
     let panes = split_pane::TabPanes::new(term_scroll, vte);
-    unsafe {
-        if !stack.is_null() {
-            let stack_name = CString::new(format!("term_{sid}")).unwrap();
-            gtk_stack_add_named(stack, panes.root, stack_name.as_ptr());
-        }
-        gtk_widget_show_all(panes.root);
-    }
+    mount_tab_stack(stack, panes.root, sid);
     (vte, term_scroll, panes, pid)
 }
 
@@ -553,9 +594,19 @@ struct SessionInit {
     tab: Tab,
 }
 
+fn init_primary_pane_registry(init: &SessionInit, proc_info: &proc_radar::ProcInfo) -> crate::pane_registry::PaneRegistry {
+    let mut reg = crate::pane_registry::PaneRegistry::default();
+    let pid = reg.register(init.vte, init.scroll_wrap, init.child_pid, init.cwd.clone());
+    if let Some(p) = reg.get_mut(pid) {
+        p.proc_info = proc_info.clone();
+    }
+    reg
+}
+
 fn build_term_session(init: SessionInit) -> TermSession {
     let now = Instant::now();
     let proc_info = proc_radar::inspect_proc_tree(init.child_pid);
+    let pane_registry = init_primary_pane_registry(&init, &proc_info);
     let mut s = TermSession {
         id: init.sid, base_title: init.title.clone(), profile_cwd: init.profile_cwd,
         title: init.title, osc_title: String::new(), pinned_title: None,
@@ -564,7 +615,7 @@ fn build_term_session(init: SessionInit) -> TermSession {
         child_pid: init.child_pid, state: WorkState::Idle, unread: false, last_output: now,
         work_started: now, work_started_at: None, last_turn_secs: None, last_notified: None,
         proc_info, tab: init.tab, remote_tmux: None, tmux_title_from_vte: false,
-        telemetry: telemetry::SessionTelemetry::default(),
+        telemetry: telemetry::SessionTelemetry::default(), pane_registry,
     };
     session::refresh_smart_title(&mut s);
     s
@@ -673,6 +724,20 @@ fn spawn_split_terminal(
     }
 }
 
+pub(crate) fn register_split_pane(
+    s: &mut TermSession,
+    new_vte: *mut GtkWidget,
+    new_scroll: *mut GtkWidget,
+    new_pid: i32,
+    cwd: String,
+    host: Option<&str>,
+) {
+    let id = s.pane_registry.register(new_vte, new_scroll, new_pid, cwd);
+    if let (Some(h), Some(p)) = (host, s.pane_registry.get_mut(id)) {
+        p.proc_info.ssh_host = h.to_owned();
+    }
+}
+
 fn commit_split_to_session(
     sid: usize,
     pane_vte: *mut GtkWidget,
@@ -687,8 +752,10 @@ fn commit_split_to_session(
         let s = app.sessions.iter_mut().find(|s| s.id == sid)?;
         let chosen = if s.has_vte(pane_vte) { pane_vte } else { ptr::null_mut() };
         let op = s.panes.prepare_split_vte(
-            chosen, s.scroll_wrap, s.vte, new_scroll, new_vte, new_pid, cwd, orientation,
+            chosen, s.scroll_wrap, s.vte, new_scroll, new_vte, new_pid, cwd.clone(), orientation,
         );
+        let host = remote.as_ref().map(|r| r.host.as_str());
+        register_split_pane(s, new_vte, new_scroll, new_pid, cwd, host);
         if let Some(conn) = remote {
             s.panes.record_remote_pane(new_scroll, conn);
         }
@@ -742,87 +809,6 @@ pub(crate) fn toggle_active_pane_zoom() {
     }
 }
 
-fn pane_agent_label(s: &TermSession, idx: usize, vte: *mut GtkWidget) -> String {
-    if idx == 0 {
-        let agent = s.effective_agent();
-        if !agent.is_empty() {
-            return agent;
-        }
-        if !s.proc_info.fg_cmd.is_empty() {
-            return s.proc_info.fg_cmd.clone();
-        }
-    }
-    s.panes
-        .remote_for_vte(vte, s.scroll_wrap, s.vte)
-        .or_else(|| s.remote())
-        .map(RemoteConnection::title)
-        .unwrap_or_default()
-}
-
-fn pane_vte_and_cwd(s: &TermSession, idx: usize) -> (*mut GtkWidget, &str) {
-    if idx == 0 {
-        (s.vte, s.cwd.as_str())
-    } else {
-        let p = &s.panes.extra[idx - 1];
-        (p.vte, p.cwd.as_str())
-    }
-}
-
-fn pane_ctx_badge(s: &TermSession, idx: usize) -> String {
-    if idx == 0 {
-        s.telemetry.snapshot().compact_context_badge().unwrap_or_default()
-    } else {
-        String::new()
-    }
-}
-
-fn build_pane_header_state(
-    s: &TermSession,
-    idx: usize,
-    is_active_tab: bool,
-    active_vte: *mut GtkWidget,
-    now: Instant,
-) -> PaneHeaderState {
-    let (vte, cwd) = pane_vte_and_cwd(s, idx);
-    let active = is_active_tab && vte == active_vte;
-    let elapsed = (idx == 0 || active)
-        .then(|| s.live_turn_secs(now).or_else(|| s.settled_turn_secs()))
-        .flatten();
-    PaneHeaderState {
-        agent_or_proc: pane_agent_label(s, idx, vte),
-        cwd: cwd.to_owned(),
-        exit_code: None,
-        elapsed_secs: elapsed,
-        ctx_badge: pane_ctx_badge(s, idx),
-        active,
-        zoomed: s.panes.zoomed_vte(s.scroll_wrap, s.vte) == Some(vte),
-    }
-}
-
-fn append_session_headers(
-    s: &TermSession,
-    is_act: bool,
-    now: Instant,
-    out: &mut Vec<(PaneHeader, PaneHeaderState, bool)>,
-) {
-    let visible = s.panes.header_visible();
-    let active_vte = s.active_vte();
-    for (idx, hdr) in s.panes.all_headers().into_iter().enumerate() {
-        if visible || hdr.is_visible() {
-            out.push((hdr, build_pane_header_state(s, idx, is_act, active_vte, now), visible));
-        }
-    }
-}
-
-pub(crate) fn collect_pane_header_updates(app: &AppState) -> Vec<(PaneHeader, PaneHeaderState, bool)> {
-    let now = Instant::now();
-    let mut out = Vec::new();
-    for s in &app.sessions {
-        append_session_headers(s, s.id == app.active_id, now, &mut out);
-    }
-    out
-}
-
 pub(crate) fn split_active_tab(orientation: c_int) {
     split_pane_in_session(None, ptr::null_mut(), orientation);
 }
@@ -850,8 +836,10 @@ pub(crate) fn close_active_pane_or_tab() {
     }
     let close_op = app_state::with_app_mut(|app| {
         let s = app.sessions.iter_mut().find(|s| s.id == sid)?;
+        let closing_vte = s.active_vte();
         let op =
             s.panes.prepare_close_active(&mut s.scroll_wrap, &mut s.vte, &mut s.child_pid, &mut s.cwd)?;
+        s.pane_registry.remove_by_vte(closing_vte);
         sync_session_proc(s, None);
         Some(op)
     })
@@ -986,6 +974,8 @@ fn reset_replaced_session(
     title: String,
 ) -> *mut GtkWidget {
     let old_vte = std::mem::replace(&mut s.vte, vte);
+    s.pane_registry.remove_by_vte(old_vte);
+    s.pane_registry.register(vte, s.scroll_wrap, pid, s.cwd.clone());
     s.panes.record_focus(vte);
     s.child_pid = pid;
     s.proc_info = proc_radar::inspect_proc_tree(pid);
@@ -1035,7 +1025,11 @@ fn tick_radar_app(app: &mut AppState) {
     let win_active = approval::sync_window_focus_urgency(app.win);
     for s in &mut app.sessions {
         sync_session_proc(s, Some(&box_snap));
-        approval::settle_working_session(s, now, active, app.win, win_active);
+        if s.pane_registry.is_empty() {
+            approval::settle_working_session(s, now, active, app.win, win_active);
+        } else {
+            pane_radar::sync_and_settle_session(s, now, s.id == active, app.win, win_active);
+        }
     }
     if !box_snap.gpu_lines.is_empty() {
         set_label_text(app.box_gpu_label, &box_snap.gpu_lines.join("\n"));
@@ -1094,42 +1088,25 @@ extern "C" fn on_remote_telemetry_ready(_data: *mut c_void) -> c_int {
     0
 }
 
-fn snapshot_telemetry_jobs() -> (Vec<telemetry::SessionPollJob>, HashMap<usize, remote_telemetry::RemoteTailer>) {
+fn snapshot_pane_telemetry_jobs() -> (Vec<pane_radar::PanePollJob>, HashMap<usize, remote_telemetry::RemoteTailer>) {
     app_state::with_app(|app| {
         let remote_targets: Vec<remote_telemetry::RemoteSessionTarget> =
             app.sessions.iter().filter_map(remote_telemetry::RemoteSessionTarget::from_session).collect();
         app.remote_telemetry.sync_targets(&remote_targets);
-        let jobs = app.sessions.iter().map(telemetry::SessionPollJob::from_session).collect();
+        let jobs = pane_radar::collect_sessions_pane_jobs(&app.sessions);
         (jobs, app.remote_telemetry.snapshot())
     })
     .unwrap_or_else(|| (Vec::new(), HashMap::new()))
 }
 
-fn apply_telemetry_updates(updated: Vec<(usize, telemetry::SessionTelemetry)>) {
-    app_state::with_app_mut(|app| {
-        for (sid, telem) in updated {
-            if let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid) {
-                s.telemetry = telem;
-            }
-        }
-    });
-}
-
 fn poll_all_session_telemetry() {
-    let (jobs, mut remote_map) = snapshot_telemetry_jobs();
+    let (jobs, remote_map) = snapshot_pane_telemetry_jobs();
     if jobs.is_empty() {
         return;
     }
     let home = PathBuf::from(paths::home_dir());
-    let now = Instant::now();
-    let updated = jobs
-        .into_iter()
-        .map(|job| {
-            let rt = remote_map.remove(&job.sid);
-            telemetry::run_poll_job_with_remote(job, rt, &home, now)
-        })
-        .collect();
-    apply_telemetry_updates(updated);
+    let updated = pane_radar::run_pane_poll_jobs(jobs, &remote_map, &home, Instant::now());
+    app_state::with_app_mut(|app| pane_radar::apply_sessions_pane_telemetry(&mut app.sessions, updated));
 }
 
 pub(crate) fn send_to_session(sid: usize, text: &str) {

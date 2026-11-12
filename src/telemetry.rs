@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 use crate::approval::read_vte_visible_text;
 use crate::connect_click;
 use crate::ffi::*;
-use crate::session::{SessionCategory, TermSession};
+use crate::session::TermSession;
+#[cfg(test)]
+use crate::session::SessionCategory;
 pub use crate::telemetry_agy::parse_vte_context_panel;
 use crate::telemetry_agy::{
     discover_agy_by_fd, discover_agy_transcript, is_vte_breakdown_line, metadata_stamp,
@@ -329,6 +331,7 @@ pub struct SessionPollJob {
 }
 
 impl SessionPollJob {
+    #[cfg(test)]
     pub fn from_session(s: &TermSession) -> Self {
         Self {
             sid: s.id,
@@ -1307,6 +1310,7 @@ impl TabTokenRow {
     }
 }
 
+#[cfg(test)]
 pub fn build_sessions_tokens_view(
     sessions: &[TermSession],
     active_id: usize,
@@ -1526,7 +1530,6 @@ impl TokensMenu {
         self.popover
     }
 
-    #[cfg(test)]
     pub fn button_widget(&self) -> *mut GtkWidget {
         self.button
     }

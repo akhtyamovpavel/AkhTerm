@@ -1,7 +1,5 @@
 //! About AkhTerm modal dialog, runtime GTK/VTE version inspection, and `--version` CLI output.
 
-#![allow(dead_code)]
-
 use std::ffi::{c_int, c_uint, c_void, CStr, CString};
 use std::ptr;
 use std::rc::Rc;
@@ -138,8 +136,11 @@ pub fn format_diagnostic_block(info: &BuildInfoSnapshot) -> String {
 
 pub struct AboutDialog {
     window: *mut GtkWidget,
+    #[cfg(test)]
     copy_btn: *mut GtkWidget,
+    #[cfg(test)]
     close_btn: *mut GtkWidget,
+    #[cfg(test)]
     diagnostic_text: String,
 }
 
@@ -148,22 +149,19 @@ impl AboutDialog {
         self.window
     }
 
+    #[cfg(test)]
     pub fn copy_button(&self) -> *mut GtkWidget {
         self.copy_btn
     }
 
+    #[cfg(test)]
     pub fn close_button(&self) -> *mut GtkWidget {
         self.close_btn
     }
 
+    #[cfg(test)]
     pub fn diagnostic_text(&self) -> &str {
         &self.diagnostic_text
-    }
-
-    pub fn destroy(&self) {
-        if !self.window.is_null() {
-            unsafe { gtk_widget_destroy(self.window) };
-        }
     }
 }
 
@@ -371,7 +369,13 @@ pub fn open_about_dialog(parent: *mut GtkWidget) -> AboutDialog {
         gtk_container_add(win, vbox);
         gtk_widget_show_all(win);
     }
-    AboutDialog { window: win, copy_btn, close_btn, diagnostic_text }
+    #[cfg(test)]
+    return AboutDialog { window: win, copy_btn, close_btn, diagnostic_text };
+    #[cfg(not(test))]
+    {
+        let _ = (copy_btn, close_btn);
+        AboutDialog { window: win }
+    }
 }
 
 #[cfg(test)]

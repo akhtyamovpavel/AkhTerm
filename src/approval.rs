@@ -152,6 +152,7 @@ pub fn is_jump_attention_shortcut(keyval: c_uint, keycode: u16) -> bool {
     matches!(char::from_u32(keyval), Some('U' | 'u')) || keycode == KEYCODE_U
 }
 
+#[cfg(test)]
 fn find_cyclic_match(
     tabs: &[TabAttention],
     start: usize,
@@ -165,14 +166,17 @@ fn find_cyclic_match(
         .map(|tab| tab.id)
 }
 
+#[cfg(test)]
 fn is_approval_tab(tab: &TabAttention) -> bool {
     tab.state == WorkState::NeedsApproval
 }
 
+#[cfg(test)]
 fn is_ready_or_unread_tab(tab: &TabAttention) -> bool {
     tab.unread || tab.state == WorkState::Ready
 }
 
+#[cfg(test)]
 pub fn next_attention_tab(tabs: &[TabAttention], active_id: usize) -> Option<usize> {
     if tabs.is_empty() {
         return None;
@@ -185,15 +189,6 @@ pub fn next_attention_tab(tabs: &[TabAttention], active_id: usize) -> Option<usi
         .or_else(|| find_cyclic_match(tabs, start, active_id, is_ready_or_unread_tab))
 }
 
-pub fn find_next_session_attention(sessions: &[TermSession], active_id: usize) -> Option<usize> {
-    let items: Vec<TabAttention> = sessions
-        .iter()
-        .map(|s| TabAttention { id: s.id, state: s.state, unread: s.unread })
-        .collect();
-    next_attention_tab(&items, active_id)
-}
-
-#[allow(dead_code)]
 fn is_same_pane(p: &PaneAttention, active_session_id: usize, active_vte: *mut GtkWidget) -> bool {
     if p.session_id != active_session_id {
         return false;
@@ -201,12 +196,10 @@ fn is_same_pane(p: &PaneAttention, active_session_id: usize, active_vte: *mut Gt
     active_vte.is_null() || p.vte == active_vte
 }
 
-#[allow(dead_code)]
 fn is_approval_pane(pane: &PaneAttention) -> bool {
     pane.state == WorkState::NeedsApproval
 }
 
-#[allow(dead_code)]
 fn is_ready_or_unread_pane(pane: &PaneAttention) -> bool {
     pane.unread || pane.state == WorkState::Ready
 }
@@ -291,7 +284,6 @@ fn append_session_panes(
     });
 }
 
-#[allow(dead_code)]
 pub fn find_next_pane_attention(
     sessions: &[(&TermSession, Option<&PaneRegistry>)],
     active_id: usize,

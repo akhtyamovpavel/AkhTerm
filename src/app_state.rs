@@ -31,6 +31,12 @@ pub(crate) struct AppState {
     pub(crate) sidebar_visible: bool,
     pub(crate) theme_mode: theme_mode::ThemeMode,
     pub(crate) theme_btn: *mut GtkWidget,
+    pub(crate) box_btn: *mut GtkWidget,
+    pub(crate) servers_btn: *mut GtkWidget,
+    pub(crate) handoff_btn: *mut GtkWidget,
+    pub(crate) agents_btn: *mut GtkWidget,
+    pub(crate) prefs_btn: *mut GtkWidget,
+    pub(crate) swarm_btn: *mut GtkWidget,
     pub(crate) font_scale: f64,
     pub(crate) zoom_btn: *mut GtkWidget,
     pub(crate) reconnect_btn: *mut GtkWidget,
@@ -73,6 +79,8 @@ pub(crate) struct AppState {
     pub(crate) palette: palette::CommandPalette,
     pub(crate) search_bar: search_bar::SearchBar,
     pub(crate) pin_pop: tab_order::TabPinPopover,
+    pub(crate) swarm_pop: crate::swarm_view::SwarmPopover,
+    pub(crate) swarm_view: crate::swarm_view::SwarmView,
 }
 
 thread_local! {

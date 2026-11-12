@@ -120,7 +120,6 @@ pub struct PtyTapSink {
     pub skip_gtk_clipboard: bool,
 }
 
-#[allow(dead_code)]
 pub fn set_osc52_enabled(enabled: bool) {
     OSC52_ENABLED.store(enabled, Ordering::Release);
 }
@@ -129,27 +128,12 @@ pub fn is_osc52_enabled() -> bool {
     OSC52_ENABLED.load(Ordering::Acquire)
 }
 
-#[allow(dead_code)]
 pub fn set_notify_threshold_secs(secs: u64) {
     NOTIFY_THRESHOLD_SECS.store(secs, Ordering::Release);
 }
 
 pub fn notify_threshold_secs() -> u64 {
     NOTIFY_THRESHOLD_SECS.load(Ordering::Acquire)
-}
-
-#[allow(dead_code)]
-pub fn register_footer_hook(hook: fn(&str)) {
-    if let Ok(mut guard) = FOOTER_HOOK.lock() {
-        *guard = Some(hook);
-    }
-}
-
-#[allow(dead_code)]
-pub fn register_osc133_hook(hook: fn(Osc133Completion)) {
-    if let Ok(mut guard) = OSC133_HOOK.lock() {
-        *guard = Some(hook);
-    }
 }
 
 pub fn current_footer_hook() -> Option<fn(&str)> {

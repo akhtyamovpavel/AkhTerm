@@ -1,13 +1,14 @@
 //! Static interface labels and bilingual (`RU` / `EN`) `UiText` registry for AkhTerm.
 
-#![allow(dead_code)]
-
 use std::ffi::CStr;
 
 #[allow(unused_imports)]
 pub use crate::i18n::{
-    configured_locale, current_locale, detect_system_locale_from_env, set_locale, UiLocale, UiText,
+    current_locale, detect_system_locale_from_env, set_locale, UiLocale, UiText,
 };
+#[cfg(test)]
+#[allow(unused_imports)]
+pub use crate::i18n::configured_locale;
 
 pub const APP_NAME: &CStr = c"AkhTerm";
 pub const PROFILES: &CStr = c"Профили / SSH ▾";
@@ -148,13 +149,11 @@ pub const RENAME_PLACEHOLDER: &CStr = c"Имя вкладки (пусто — а
 pub const RENAME_SAVE: &CStr = c"Сохранить";
 
 pub mod i18n_text {
-    use super::*;
+    use std::ffi::CStr;
+    use crate::i18n::UiText;
 
-    pub const APP_NAME: UiText = UiText::new(super::APP_NAME, c"AkhTerm");
-    pub fn app_name() -> &'static CStr { APP_NAME.cstr() }
     pub const PROFILES: UiText = UiText::new(super::PROFILES, c"Profiles / SSH ▾");
     pub fn profiles() -> &'static CStr { PROFILES.cstr() }
-    pub fn profiles_str() -> &'static str { PROFILES.as_str() }
     pub const SERVERS: UiText = UiText::new(super::SERVERS, c"Servers ▾");
     pub fn servers() -> &'static CStr { SERVERS.cstr() }
     pub const AGENTS: UiText = UiText::new(super::AGENTS, c"Agents ▾");
@@ -163,208 +162,101 @@ pub mod i18n_text {
     pub fn handoff() -> &'static CStr { HANDOFF.cstr() }
     pub const MAINTAINABILITY: UiText = UiText::new(super::MAINTAINABILITY, c"MI ▾");
     pub fn maintainability() -> &'static CStr { MAINTAINABILITY.cstr() }
-    pub const MI_EMPTY: UiText = UiText::new(super::MI_EMPTY, c"No MI data for the active tab.\nOpen a project directory (.git, Cargo.toml, pyproject.toml, package.json, go.mod, Makefile).");
-    pub fn mi_empty() -> &'static CStr { MI_EMPTY.cstr() }
-    pub const MI_REFACTOR: UiText = UiText::new(super::MI_REFACTOR, c"Ask agent to refactor");
-    pub fn mi_refactor() -> &'static CStr { MI_REFACTOR.cstr() }
-    pub const MI_REFACTOR_TIP: UiText = UiText::new(super::MI_REFACTOR_TIP, c"Send a prompt to the active terminal to refactor low-MI files");
-    pub fn mi_refactor_tip() -> &'static CStr { MI_REFACTOR_TIP.cstr() }
-    pub const TOGGLE_SIDEBAR: UiText = UiText::new(super::TOGGLE_SIDEBAR, c"◧");
-    pub fn toggle_sidebar() -> &'static CStr { TOGGLE_SIDEBAR.cstr() }
-    pub const TOGGLE_SIDEBAR_TIP: UiText = UiText::new(super::TOGGLE_SIDEBAR_TIP, c"Show or hide sidebar");
-    pub fn toggle_sidebar_tip() -> &'static CStr { TOGGLE_SIDEBAR_TIP.cstr() }
-    pub const THEME_DARK_ICON: UiText = UiText::new(super::THEME_DARK_ICON, c"☾");
-    pub fn theme_dark_icon() -> &'static CStr { THEME_DARK_ICON.cstr() }
-    pub const THEME_LIGHT_ICON: UiText = UiText::new(super::THEME_LIGHT_ICON, c"☀");
-    pub fn theme_light_icon() -> &'static CStr { THEME_LIGHT_ICON.cstr() }
     pub const THEME_TO_LIGHT_TIP: UiText = UiText::new(super::THEME_TO_LIGHT_TIP, c"Switch to light theme (Ctrl+Shift+L)");
     pub fn theme_to_light_tip() -> &'static CStr { THEME_TO_LIGHT_TIP.cstr() }
     pub const THEME_TO_DARK_TIP: UiText = UiText::new(super::THEME_TO_DARK_TIP, c"Switch to dark theme (Ctrl+Shift+L)");
     pub fn theme_to_dark_tip() -> &'static CStr { THEME_TO_DARK_TIP.cstr() }
-    pub const SPLIT_VERT: UiText = UiText::new(super::SPLIT_VERT, c"◫");
-    pub fn split_vert() -> &'static CStr { SPLIT_VERT.cstr() }
-    pub const SPLIT_VERT_TIP: UiText = UiText::new(super::SPLIT_VERT_TIP, c"Split tab vertically (Ctrl+Shift+D)");
-    pub fn split_vert_tip() -> &'static CStr { SPLIT_VERT_TIP.cstr() }
-    pub const SPLIT_HORIZ: UiText = UiText::new(super::SPLIT_HORIZ, c"⬒");
-    pub fn split_horiz() -> &'static CStr { SPLIT_HORIZ.cstr() }
-    pub const SPLIT_HORIZ_TIP: UiText = UiText::new(super::SPLIT_HORIZ_TIP, c"Split tab horizontally (Ctrl+Shift+E)");
-    pub fn split_horiz_tip() -> &'static CStr { SPLIT_HORIZ_TIP.cstr() }
     pub const RECONNECT: UiText = UiText::new(super::RECONNECT, c"Reconnect");
     pub fn reconnect() -> &'static CStr { RECONNECT.cstr() }
     pub const RECONNECT_TIP: UiText = UiText::new(super::RECONNECT_TIP, c"Reconnect active SSH or tmux tab (Ctrl+Shift+R)");
     pub fn reconnect_tip() -> &'static CStr { RECONNECT_TIP.cstr() }
-    pub const INTERRUPT: UiText = UiText::new(super::INTERRUPT, c"SIGINT");
-    pub fn interrupt() -> &'static CStr { INTERRUPT.cstr() }
-    pub const INTERRUPT_TIP: UiText = UiText::new(super::INTERRUPT_TIP, c"Interrupt active process (SIGINT)");
-    pub fn interrupt_tip() -> &'static CStr { INTERRUPT_TIP.cstr() }
-    pub const PASTE_IMAGE: UiText = UiText::new(super::PASTE_IMAGE, c"Screenshot");
-    pub fn paste_image() -> &'static CStr { PASTE_IMAGE.cstr() }
-    pub const PASTE_IMAGE_TIP: UiText = UiText::new(super::PASTE_IMAGE_TIP, c"Save clipboard image into active session and paste path");
-    pub fn paste_image_tip() -> &'static CStr { PASTE_IMAGE_TIP.cstr() }
-    pub const ZOOM_IN: UiText = UiText::new(super::ZOOM_IN, c"+");
-    pub fn zoom_in() -> &'static CStr { ZOOM_IN.cstr() }
-    pub const ZOOM_IN_TIP: UiText = UiText::new(super::ZOOM_IN_TIP, c"Increase terminal font size (Ctrl++)");
-    pub fn zoom_in_tip() -> &'static CStr { ZOOM_IN_TIP.cstr() }
-    pub const ZOOM_RESET: UiText = UiText::new(super::ZOOM_RESET, c"100%");
-    pub fn zoom_reset() -> &'static CStr { ZOOM_RESET.cstr() }
-    pub const ZOOM_RESET_TIP: UiText = UiText::new(super::ZOOM_RESET_TIP, c"Reset terminal zoom (Ctrl+0)");
-    pub fn zoom_reset_tip() -> &'static CStr { ZOOM_RESET_TIP.cstr() }
-    pub const ZOOM_OUT: UiText = UiText::new(super::ZOOM_OUT, c"−");
-    pub fn zoom_out() -> &'static CStr { ZOOM_OUT.cstr() }
-    pub const ZOOM_OUT_TIP: UiText = UiText::new(super::ZOOM_OUT_TIP, c"Decrease terminal font size (Ctrl+-)");
-    pub fn zoom_out_tip() -> &'static CStr { ZOOM_OUT_TIP.cstr() }
-    pub const NEW_TAB: UiText = UiText::new(super::NEW_TAB, c"+");
-    pub fn new_tab() -> &'static CStr { NEW_TAB.cstr() }
-    pub const NEW_TAB_TIP: UiText = UiText::new(super::NEW_TAB_TIP, c"New tab (Ctrl+Shift+T)");
-    pub fn new_tab_tip() -> &'static CStr { NEW_TAB_TIP.cstr() }
-    pub const CLOSE_TAB: UiText = UiText::new(super::CLOSE_TAB, c"×");
-    pub fn close_tab() -> &'static CStr { CLOSE_TAB.cstr() }
-    pub const CLOSE_TAB_TIP: UiText = UiText::new(super::CLOSE_TAB_TIP, c"Close tab");
-    pub fn close_tab_tip() -> &'static CStr { CLOSE_TAB_TIP.cstr() }
-    pub const PIN_TAB_TITLE: UiText = UiText::new(super::PIN_TAB_TITLE, c"Tab Title");
-    pub fn pin_tab_title() -> &'static CStr { PIN_TAB_TITLE.cstr() }
-    pub const PIN_TAB_PLACEHOLDER: UiText = UiText::new(super::PIN_TAB_PLACEHOLDER, c"Pinned title (empty — auto)");
-    pub fn pin_tab_placeholder() -> &'static CStr { PIN_TAB_PLACEHOLDER.cstr() }
-    pub const PIN_TAB_SAVE: UiText = UiText::new(super::PIN_TAB_SAVE, c"Pin");
-    pub fn pin_tab_save() -> &'static CStr { PIN_TAB_SAVE.cstr() }
-    pub const PIN_TAB_RESET: UiText = UiText::new(super::PIN_TAB_RESET, c"Reset");
-    pub fn pin_tab_reset() -> &'static CStr { PIN_TAB_RESET.cstr() }
-    pub const STATUS_APPROVAL: UiText = UiText::new(super::STATUS_APPROVAL, c"Needs approval");
-    pub fn status_approval() -> &'static CStr { STATUS_APPROVAL.cstr() }
-    pub const APPROVAL_TAB_TIP: UiText = UiText::new(super::APPROVAL_TAB_TIP, c"Needs approval (Ctrl+Shift+U to jump)");
-    pub fn approval_tab_tip() -> &'static CStr { APPROVAL_TAB_TIP.cstr() }
-    pub const NOTIFY_APPROVAL_TITLE: UiText = UiText::new(super::NOTIFY_APPROVAL_TITLE, c"AkhTerm · Needs Approval");
-    pub fn notify_approval_title() -> &'static CStr { NOTIFY_APPROVAL_TITLE.cstr() }
-    pub const NOTIFY_READY_TITLE: UiText = UiText::new(super::NOTIFY_READY_TITLE, c"AkhTerm · Ready");
-    pub fn notify_ready_title() -> &'static CStr { NOTIFY_READY_TITLE.cstr() }
-    pub const TMUX_MAIN: UiText = UiText::new(super::TMUX_MAIN, c"tmux:main");
-    pub fn tmux_main() -> &'static CStr { TMUX_MAIN.cstr() }
-    pub const AGENTS_WORKTREE_HEADER: UiText = UiText::new(super::AGENTS_WORKTREE_HEADER, c"NEW GIT WORKTREE · SEPARATE TAB");
-    pub fn agents_worktree_header() -> &'static CStr { AGENTS_WORKTREE_HEADER.cstr() }
-    pub const AGENT_WORKTREE_TIP: UiText = UiText::new(super::AGENT_WORKTREE_TIP, c"Create an isolated Git worktree and launch agent in a new tab");
-    pub fn agent_worktree_tip() -> &'static CStr { AGENT_WORKTREE_TIP.cstr() }
-    pub const WORKTREE_LOCAL_ONLY: UiText = UiText::new(super::WORKTREE_LOCAL_ONLY, c"⚠ Git worktree is only available for a local repository tab");
-    pub fn worktree_local_only() -> &'static CStr { WORKTREE_LOCAL_ONLY.cstr() }
-    pub const PALETTE_TITLE: UiText = UiText::new(super::PALETTE_TITLE, c"Command Palette");
-    pub fn palette_title() -> &'static CStr { PALETTE_TITLE.cstr() }
-    pub const PALETTE_HINT: UiText = UiText::new(super::PALETTE_HINT, c"↑↓ select · Enter run · Esc close");
-    pub fn palette_hint() -> &'static CStr { PALETTE_HINT.cstr() }
-    pub const PALETTE_PLACEHOLDER: UiText = UiText::new(super::PALETTE_PLACEHOLDER, c"Tab, folder, tmux session, SSH, agent, or Handoff...");
-    pub fn palette_placeholder() -> &'static CStr { PALETTE_PLACEHOLDER.cstr() }
-    pub const PALETTE_EMPTY: UiText = UiText::new(super::PALETTE_EMPTY, c"Nothing found");
-    pub fn palette_empty() -> &'static CStr { PALETTE_EMPTY.cstr() }
-    pub const PALETTE_BADGE_TAB: UiText = UiText::new(super::PALETTE_BADGE_TAB, c"Tab");
-    pub fn palette_badge_tab() -> &'static CStr { PALETTE_BADGE_TAB.cstr() }
-    pub const PALETTE_BADGE_TMUX: UiText = UiText::new(super::PALETTE_BADGE_TMUX, c"tmux");
-    pub fn palette_badge_tmux() -> &'static CStr { PALETTE_BADGE_TMUX.cstr() }
-    pub const PALETTE_BADGE_PROFILE: UiText = UiText::new(super::PALETTE_BADGE_PROFILE, c"Profile");
-    pub fn palette_badge_profile() -> &'static CStr { PALETTE_BADGE_PROFILE.cstr() }
-    pub const PALETTE_BADGE_SSH: UiText = UiText::new(super::PALETTE_BADGE_SSH, c"SSH");
-    pub fn palette_badge_ssh() -> &'static CStr { PALETTE_BADGE_SSH.cstr() }
-    pub const PALETTE_BADGE_SSH_TMUX: UiText = UiText::new(super::PALETTE_BADGE_SSH_TMUX, c"SSH · tmux");
-    pub fn palette_badge_ssh_tmux() -> &'static CStr { PALETTE_BADGE_SSH_TMUX.cstr() }
-    pub const PALETTE_BADGE_AGENT: UiText = UiText::new(super::PALETTE_BADGE_AGENT, c"Agent");
-    pub fn palette_badge_agent() -> &'static CStr { PALETTE_BADGE_AGENT.cstr() }
-    pub const PALETTE_BADGE_HANDOFF: UiText = UiText::new(super::PALETTE_BADGE_HANDOFF, c"Handoff");
-    pub fn palette_badge_handoff() -> &'static CStr { PALETTE_BADGE_HANDOFF.cstr() }
-    pub const PALETTE_BADGE_THEME: UiText = UiText::new(super::PALETTE_BADGE_THEME, c"Theme");
-    pub fn palette_badge_theme() -> &'static CStr { PALETTE_BADGE_THEME.cstr() }
-    pub const PALETTE_BADGE_SEARCH: UiText = UiText::new(super::PALETTE_BADGE_SEARCH, c"Search");
-    pub fn palette_badge_search() -> &'static CStr { PALETTE_BADGE_SEARCH.cstr() }
-    pub const PALETTE_BADGE_GIT: UiText = UiText::new(super::PALETTE_BADGE_GIT, c"Git");
-    pub fn palette_badge_git() -> &'static CStr { PALETTE_BADGE_GIT.cstr() }
-    pub const PALETTE_BADGE_SETTINGS: UiText = UiText::new(c"Настройки", c"Settings");
-    pub fn palette_badge_settings() -> &'static CStr { PALETTE_BADGE_SETTINGS.cstr() }
-    pub const PALETTE_SEARCH_TITLE: UiText = UiText::new(super::PALETTE_SEARCH_TITLE, c"Search Output");
-    pub fn palette_search_title() -> &'static CStr { PALETTE_SEARCH_TITLE.cstr() }
-    pub const PALETTE_SEARCH_DETAIL: UiText = UiText::new(super::PALETTE_SEARCH_DETAIL, c"Find text or regex in active terminal · Ctrl+Shift+F");
-    pub fn palette_search_detail() -> &'static CStr { PALETTE_SEARCH_DETAIL.cstr() }
-    pub const PALETTE_SETTINGS_TITLE: UiText = UiText::new(c"Настройки AkhTerm", c"AkhTerm Settings");
-    pub fn palette_settings_title() -> &'static CStr { PALETTE_SETTINGS_TITLE.cstr() }
-    pub const PALETTE_SETTINGS_DETAIL: UiText = UiText::new(c"Тема, язык, шрифт, scrollback, OSC 52 · Ctrl+,", c"Theme, language, font, scrollback, OSC 52 · Ctrl+,");
-    pub fn palette_settings_detail() -> &'static CStr { PALETTE_SETTINGS_DETAIL.cstr() }
-    pub const PALETTE_ABOUT_TITLE: UiText = UiText::new(c"О программе AkhTerm", c"About AkhTerm");
-    pub fn palette_about_title() -> &'static CStr { PALETTE_ABOUT_TITLE.cstr() }
-    pub const PALETTE_ABOUT_DETAIL: UiText = UiText::new(c"Версия, git SHA, GTK/VTE, Wayland/X11 и пути конфига", c"Version, git SHA, GTK/VTE, Wayland/X11, and config paths");
-    pub fn palette_about_detail() -> &'static CStr { PALETTE_ABOUT_DETAIL.cstr() }
-
-    pub const SEARCH_PLACEHOLDER: UiText = UiText::new(super::SEARCH_PLACEHOLDER, c"Search terminal output...");
-    pub fn search_placeholder() -> &'static CStr { SEARCH_PLACEHOLDER.cstr() }
-    pub const SEARCH_PREV: UiText = UiText::new(super::SEARCH_PREV, c"↑");
-    pub fn search_prev() -> &'static CStr { SEARCH_PREV.cstr() }
-    pub const SEARCH_PREV_TIP: UiText = UiText::new(super::SEARCH_PREV_TIP, c"Previous match (Shift+Enter)");
-    pub fn search_prev_tip() -> &'static CStr { SEARCH_PREV_TIP.cstr() }
-    pub const SEARCH_NEXT: UiText = UiText::new(super::SEARCH_NEXT, c"↓");
-    pub fn search_next() -> &'static CStr { SEARCH_NEXT.cstr() }
-    pub const SEARCH_NEXT_TIP: UiText = UiText::new(super::SEARCH_NEXT_TIP, c"Next match (Enter)");
-    pub fn search_next_tip() -> &'static CStr { SEARCH_NEXT_TIP.cstr() }
-    pub const SEARCH_CASE: UiText = UiText::new(super::SEARCH_CASE, c"Aa");
-    pub fn search_case() -> &'static CStr { SEARCH_CASE.cstr() }
-    pub const SEARCH_CASE_TIP: UiText = UiText::new(super::SEARCH_CASE_TIP, c"Match case");
-    pub fn search_case_tip() -> &'static CStr { SEARCH_CASE_TIP.cstr() }
-    pub const SEARCH_REGEX: UiText = UiText::new(super::SEARCH_REGEX, c".*");
-    pub fn search_regex() -> &'static CStr { SEARCH_REGEX.cstr() }
-    pub const SEARCH_REGEX_TIP: UiText = UiText::new(super::SEARCH_REGEX_TIP, c"Regular expression (PCRE2)");
-    pub fn search_regex_tip() -> &'static CStr { SEARCH_REGEX_TIP.cstr() }
-    pub const SEARCH_CLOSE_TIP: UiText = UiText::new(super::SEARCH_CLOSE_TIP, c"Close search (Esc)");
-    pub fn search_close_tip() -> &'static CStr { SEARCH_CLOSE_TIP.cstr() }
-    pub const SEARCH_FOUND: UiText = UiText::new(super::SEARCH_FOUND, c"Found");
-    pub fn search_found() -> &'static CStr { SEARCH_FOUND.cstr() }
-    pub const SEARCH_NOT_FOUND: UiText = UiText::new(super::SEARCH_NOT_FOUND, c"No matches");
-    pub fn search_not_found() -> &'static CStr { SEARCH_NOT_FOUND.cstr() }
-    pub const SEARCH_REGEX_ERR: UiText = UiText::new(super::SEARCH_REGEX_ERR, c"Regex error");
-    pub fn search_regex_err() -> &'static CStr { SEARCH_REGEX_ERR.cstr() }
-
     pub const GIT_MENU: UiText = UiText::new(super::GIT_MENU, c"Git ▾");
     pub fn git_menu() -> &'static CStr { GIT_MENU.cstr() }
     pub const GIT_MENU_TIP: UiText = UiText::new(super::GIT_MENU_TIP, c"Git modified files, quick diff, and worktree cleanup (Ctrl+Shift+G)");
     pub fn git_menu_tip() -> &'static CStr { GIT_MENU_TIP.cstr() }
-    pub const GIT_LOCAL_ONLY: UiText = UiText::new(super::GIT_LOCAL_ONLY, c"⚠ Git menu is only available for a local tab");
-    pub fn git_local_only() -> &'static CStr { GIT_LOCAL_ONLY.cstr() }
-    pub const GIT_HEADER: UiText = UiText::new(super::GIT_HEADER, c"GIT · LOCAL TAB");
-    pub fn git_header() -> &'static CStr { GIT_HEADER.cstr() }
-    pub const GIT_NOT_REPO: UiText = UiText::new(super::GIT_NOT_REPO, c"Current directory is not a Git repository");
-    pub fn git_not_repo() -> &'static CStr { GIT_NOT_REPO.cstr() }
-    pub const GIT_FILES_HEADER: UiText = UiText::new(super::GIT_FILES_HEADER, c"MODIFIED & UNTRACKED FILES (CLICK TO DIFF / OPEN)");
-    pub fn git_files_header() -> &'static CStr { GIT_FILES_HEADER.cstr() }
-    pub const GIT_CLEAN: UiText = UiText::new(super::GIT_CLEAN, c"Working tree clean — no uncommitted changes");
-    pub fn git_clean() -> &'static CStr { GIT_CLEAN.cstr() }
-    pub const GIT_LOADING: UiText = UiText::new(super::GIT_LOADING, c"Refreshing Git status in background…");
-    pub fn git_loading() -> &'static CStr { GIT_LOADING.cstr() }
-    pub const GIT_REMOVE_WT_BTN: UiText = UiText::new(super::GIT_REMOVE_WT_BTN, c"Remove clean worktree");
-    pub fn git_remove_wt_btn() -> &'static CStr { GIT_REMOVE_WT_BTN.cstr() }
-    pub const GIT_REMOVE_WT_TIP: UiText = UiText::new(super::GIT_REMOVE_WT_TIP, c"Verify no changes remain and remove isolated Git worktree");
-    pub fn git_remove_wt_tip() -> &'static CStr { GIT_REMOVE_WT_TIP.cstr() }
-
     pub const HANDOFF_TIP: UiText = UiText::new(super::HANDOFF_TIP, c"Capture active tab log or forward an .md brief to a session");
     pub fn handoff_tip() -> &'static CStr { HANDOFF_TIP.cstr() }
-    pub const HANDOFF_CAPTURE_BTN: UiText = UiText::new(super::HANDOFF_CAPTURE_BTN, c"Save active tab output (.md)");
-    pub fn handoff_capture_btn() -> &'static CStr { HANDOFF_CAPTURE_BTN.cstr() }
-    pub const HANDOFF_CAPTURE_TIP: UiText = UiText::new(super::HANDOFF_CAPTURE_TIP, c"Save recent terminal lines to a Markdown file (0600)");
-    pub fn handoff_capture_tip() -> &'static CStr { HANDOFF_CAPTURE_TIP.cstr() }
-    pub const HANDOFF_FORWARD_HEADER: UiText = UiText::new(super::HANDOFF_FORWARD_HEADER, c"FORWARD ACTIVE TAB OUTPUT TO SESSION");
-    pub fn handoff_forward_header() -> &'static CStr { HANDOFF_FORWARD_HEADER.cstr() }
-    pub const HANDOFF_BRIEFS_HEADER: UiText = UiText::new(super::HANDOFF_BRIEFS_HEADER, c"BRIEFS & CAPTURES (.MD) — INTO ACTIVE TAB");
-    pub fn handoff_briefs_header() -> &'static CStr { HANDOFF_BRIEFS_HEADER.cstr() }
-    pub const HANDOFF_EMPTY: UiText = UiText::new(super::HANDOFF_EMPTY, c"No saved .md files — capture output above");
-    pub fn handoff_empty() -> &'static CStr { HANDOFF_EMPTY.cstr() }
-    pub const DROP_SCP_START: UiText = UiText::new(super::DROP_SCP_START, c"⬆ Uploading via SCP to");
-    pub fn drop_scp_start() -> &'static CStr { DROP_SCP_START.cstr() }
-    pub const DROP_SCP_DONE: UiText = UiText::new(super::DROP_SCP_DONE, c"📎 Uploaded via SCP to");
-    pub fn drop_scp_done() -> &'static CStr { DROP_SCP_DONE.cstr() }
-    pub const DROP_SCP_ERROR: UiText = UiText::new(super::DROP_SCP_ERROR, c"⚠ SCP upload error to");
-    pub fn drop_scp_error() -> &'static CStr { DROP_SCP_ERROR.cstr() }
-    pub const DROP_SCP_NO_FILE: UiText = UiText::new(super::DROP_SCP_NO_FILE, c"⚠ SCP error: local file unavailable");
-    pub fn drop_scp_no_file() -> &'static CStr { DROP_SCP_NO_FILE.cstr() }
-
-    pub const TOKENS: UiText = UiText::new(super::TOKENS, c"Tokens ▾");
-    pub fn tokens() -> &'static CStr { TOKENS.cstr() }
     pub const TOKENS_TIP: UiText = UiText::new(super::TOKENS_TIP, c"Token usage, context window, and agent turn timer per tab");
     pub fn tokens_tip() -> &'static CStr { TOKENS_TIP.cstr() }
-    pub const TOKENS_HEADER: UiText = UiText::new(super::TOKENS_HEADER, c"TOKENS · CONTEXT & TURN DURATION");
-    pub fn tokens_header() -> &'static CStr { TOKENS_HEADER.cstr() }
-    pub const TOKENS_EMPTY: UiText = UiText::new(super::TOKENS_EMPTY, c"No token telemetry for open tabs.\nStart an agent (AGY, Claude Code, Codex CLI) or a session with context usage.");
-    pub fn tokens_empty() -> &'static CStr { TOKENS_EMPTY.cstr() }
+
+    #[cfg(test)]
+    pub mod catalog {
+        use crate::i18n::UiText;
+        pub const APP_NAME: UiText = UiText::new(super::super::APP_NAME, c"AkhTerm");
+        pub fn profiles_str() -> &'static str { super::PROFILES.as_str() }
+        pub const MI_EMPTY: UiText = UiText::new(super::super::MI_EMPTY, c"No MI data for the active tab.\nOpen a project directory (.git, Cargo.toml, pyproject.toml, package.json, go.mod, Makefile).");
+        pub const MI_REFACTOR: UiText = UiText::new(super::super::MI_REFACTOR, c"Ask agent to refactor");
+        pub const MI_REFACTOR_TIP: UiText = UiText::new(super::super::MI_REFACTOR_TIP, c"Send a prompt to the active terminal to refactor low-MI files");
+        pub const TOGGLE_SIDEBAR: UiText = UiText::new(super::super::TOGGLE_SIDEBAR, c"◧");
+        pub const TOGGLE_SIDEBAR_TIP: UiText = UiText::new(super::super::TOGGLE_SIDEBAR_TIP, c"Show or hide sidebar");
+        pub const SPLIT_VERT_TIP: UiText = UiText::new(super::super::SPLIT_VERT_TIP, c"Split tab vertically (Ctrl+Shift+D)");
+        pub const SPLIT_HORIZ_TIP: UiText = UiText::new(super::super::SPLIT_HORIZ_TIP, c"Split tab horizontally (Ctrl+Shift+E)");
+        pub const INTERRUPT: UiText = UiText::new(super::super::INTERRUPT, c"SIGINT");
+        pub const INTERRUPT_TIP: UiText = UiText::new(super::super::INTERRUPT_TIP, c"Interrupt active process (SIGINT)");
+        pub const PASTE_IMAGE: UiText = UiText::new(super::super::PASTE_IMAGE, c"Screenshot");
+        pub const PASTE_IMAGE_TIP: UiText = UiText::new(super::super::PASTE_IMAGE_TIP, c"Save clipboard image into active session and paste path");
+        pub const ZOOM_IN_TIP: UiText = UiText::new(super::super::ZOOM_IN_TIP, c"Increase terminal font size (Ctrl++)");
+        pub const ZOOM_RESET_TIP: UiText = UiText::new(super::super::ZOOM_RESET_TIP, c"Reset terminal zoom (Ctrl+0)");
+        pub const ZOOM_OUT_TIP: UiText = UiText::new(super::super::ZOOM_OUT_TIP, c"Decrease terminal font size (Ctrl+-)");
+        pub const NEW_TAB_TIP: UiText = UiText::new(super::super::NEW_TAB_TIP, c"New tab (Ctrl+Shift+T)");
+        pub const CLOSE_TAB_TIP: UiText = UiText::new(super::super::CLOSE_TAB_TIP, c"Close tab");
+        pub const PIN_TAB_TITLE: UiText = UiText::new(super::super::PIN_TAB_TITLE, c"Tab Title");
+        pub const PIN_TAB_PLACEHOLDER: UiText = UiText::new(super::super::PIN_TAB_PLACEHOLDER, c"Pinned title (empty — auto)");
+        pub const PIN_TAB_SAVE: UiText = UiText::new(super::super::PIN_TAB_SAVE, c"Pin");
+        pub const PIN_TAB_RESET: UiText = UiText::new(super::super::PIN_TAB_RESET, c"Reset");
+        pub const STATUS_APPROVAL: UiText = UiText::new(super::super::STATUS_APPROVAL, c"Needs approval");
+        pub const APPROVAL_TAB_TIP: UiText = UiText::new(super::super::APPROVAL_TAB_TIP, c"Needs approval (Ctrl+Shift+U to jump)");
+        pub const NOTIFY_APPROVAL_TITLE: UiText = UiText::new(super::super::NOTIFY_APPROVAL_TITLE, c"AkhTerm · Needs Approval");
+        pub const NOTIFY_READY_TITLE: UiText = UiText::new(super::super::NOTIFY_READY_TITLE, c"AkhTerm · Ready");
+        pub const AGENTS_WORKTREE_HEADER: UiText = UiText::new(super::super::AGENTS_WORKTREE_HEADER, c"NEW GIT WORKTREE · SEPARATE TAB");
+        pub const AGENT_WORKTREE_TIP: UiText = UiText::new(super::super::AGENT_WORKTREE_TIP, c"Create an isolated Git worktree and launch agent in a new tab");
+        pub const WORKTREE_LOCAL_ONLY: UiText = UiText::new(super::super::WORKTREE_LOCAL_ONLY, c"⚠ Git worktree is only available for a local repository tab");
+        pub const PALETTE_TITLE: UiText = UiText::new(super::super::PALETTE_TITLE, c"Command Palette");
+        pub const PALETTE_HINT: UiText = UiText::new(super::super::PALETTE_HINT, c"↑↓ select · Enter run · Esc close");
+        pub const PALETTE_PLACEHOLDER: UiText = UiText::new(super::super::PALETTE_PLACEHOLDER, c"Tab, folder, tmux session, SSH, agent, or Handoff...");
+        pub const PALETTE_EMPTY: UiText = UiText::new(super::super::PALETTE_EMPTY, c"Nothing found");
+        pub const PALETTE_BADGE_TAB: UiText = UiText::new(super::super::PALETTE_BADGE_TAB, c"Tab");
+        pub const PALETTE_BADGE_PROFILE: UiText = UiText::new(super::super::PALETTE_BADGE_PROFILE, c"Profile");
+        pub const PALETTE_BADGE_AGENT: UiText = UiText::new(super::super::PALETTE_BADGE_AGENT, c"Agent");
+        pub const PALETTE_BADGE_THEME: UiText = UiText::new(super::super::PALETTE_BADGE_THEME, c"Theme");
+        pub const PALETTE_BADGE_SEARCH: UiText = UiText::new(super::super::PALETTE_BADGE_SEARCH, c"Search");
+        pub const PALETTE_BADGE_SETTINGS: UiText = UiText::new(c"Настройки", c"Settings");
+        pub const PALETTE_SEARCH_TITLE: UiText = UiText::new(super::super::PALETTE_SEARCH_TITLE, c"Search Output");
+        pub const PALETTE_SEARCH_DETAIL: UiText = UiText::new(super::super::PALETTE_SEARCH_DETAIL, c"Find text or regex in active terminal · Ctrl+Shift+F");
+        pub const PALETTE_SETTINGS_TITLE: UiText = UiText::new(c"Настройки AkhTerm", c"AkhTerm Settings");
+        pub const PALETTE_ABOUT_TITLE: UiText = UiText::new(c"О программе AkhTerm", c"About AkhTerm");
+        pub const SEARCH_PLACEHOLDER: UiText = UiText::new(super::super::SEARCH_PLACEHOLDER, c"Search terminal output...");
+        pub const SEARCH_PREV_TIP: UiText = UiText::new(super::super::SEARCH_PREV_TIP, c"Previous match (Shift+Enter)");
+        pub const SEARCH_NEXT_TIP: UiText = UiText::new(super::super::SEARCH_NEXT_TIP, c"Next match (Enter)");
+        pub const SEARCH_CASE_TIP: UiText = UiText::new(super::super::SEARCH_CASE_TIP, c"Match case");
+        pub const SEARCH_REGEX_TIP: UiText = UiText::new(super::super::SEARCH_REGEX_TIP, c"Regular expression (PCRE2)");
+        pub const SEARCH_CLOSE_TIP: UiText = UiText::new(super::super::SEARCH_CLOSE_TIP, c"Close search (Esc)");
+        pub const SEARCH_FOUND: UiText = UiText::new(super::super::SEARCH_FOUND, c"Found");
+        pub const SEARCH_NOT_FOUND: UiText = UiText::new(super::super::SEARCH_NOT_FOUND, c"No matches");
+        pub const SEARCH_REGEX_ERR: UiText = UiText::new(super::super::SEARCH_REGEX_ERR, c"Regex error");
+        pub const GIT_LOCAL_ONLY: UiText = UiText::new(super::super::GIT_LOCAL_ONLY, c"⚠ Git menu is only available for a local tab");
+        pub const GIT_HEADER: UiText = UiText::new(super::super::GIT_HEADER, c"GIT · LOCAL TAB");
+        pub const GIT_NOT_REPO: UiText = UiText::new(super::super::GIT_NOT_REPO, c"Current directory is not a Git repository");
+        pub const GIT_FILES_HEADER: UiText = UiText::new(super::super::GIT_FILES_HEADER, c"MODIFIED & UNTRACKED FILES (CLICK TO DIFF / OPEN)");
+        pub const GIT_CLEAN: UiText = UiText::new(super::super::GIT_CLEAN, c"Working tree clean — no uncommitted changes");
+        pub const GIT_LOADING: UiText = UiText::new(super::super::GIT_LOADING, c"Refreshing Git status in background…");
+        pub const GIT_REMOVE_WT_BTN: UiText = UiText::new(super::super::GIT_REMOVE_WT_BTN, c"Remove clean worktree");
+        pub const GIT_REMOVE_WT_TIP: UiText = UiText::new(super::super::GIT_REMOVE_WT_TIP, c"Verify no changes remain and remove isolated Git worktree");
+        pub const HANDOFF_CAPTURE_BTN: UiText = UiText::new(super::super::HANDOFF_CAPTURE_BTN, c"Save active tab output (.md)");
+        pub const HANDOFF_CAPTURE_TIP: UiText = UiText::new(super::super::HANDOFF_CAPTURE_TIP, c"Save recent terminal lines to a Markdown file (0600)");
+        pub const HANDOFF_FORWARD_HEADER: UiText = UiText::new(super::super::HANDOFF_FORWARD_HEADER, c"FORWARD ACTIVE TAB OUTPUT TO SESSION");
+        pub const HANDOFF_BRIEFS_HEADER: UiText = UiText::new(super::super::HANDOFF_BRIEFS_HEADER, c"BRIEFS & CAPTURES (.MD) — INTO ACTIVE TAB");
+        pub const HANDOFF_EMPTY: UiText = UiText::new(super::super::HANDOFF_EMPTY, c"No saved .md files — capture output above");
+        pub const DROP_SCP_START: UiText = UiText::new(super::super::DROP_SCP_START, c"⬆ Uploading via SCP to");
+        pub const DROP_SCP_DONE: UiText = UiText::new(super::super::DROP_SCP_DONE, c"📎 Uploaded via SCP to");
+        pub const DROP_SCP_ERROR: UiText = UiText::new(super::super::DROP_SCP_ERROR, c"⚠ SCP upload error to");
+        pub const DROP_SCP_NO_FILE: UiText = UiText::new(super::super::DROP_SCP_NO_FILE, c"⚠ SCP error: local file unavailable");
+        pub const TOKENS: UiText = UiText::new(super::super::TOKENS, c"Tokens ▾");
+        pub const TOKENS_HEADER: UiText = UiText::new(super::super::TOKENS_HEADER, c"TOKENS · CONTEXT & TURN DURATION");
+        pub const TOKENS_EMPTY: UiText = UiText::new(super::super::TOKENS_EMPTY, c"No token telemetry for open tabs.\nStart an agent (AGY, Claude Code, Codex CLI) or a session with context usage.");
+    }
+    #[cfg(test)]
+    pub use catalog::*;
 
     pub const CTX_COPY: UiText = UiText::new(super::CTX_COPY, c"Copy");
     pub fn ctx_copy() -> &'static CStr { CTX_COPY.cstr() }
@@ -376,6 +268,7 @@ pub mod i18n_text {
     pub fn ctx_copy_link() -> &'static CStr { CTX_COPY_LINK.cstr() }
     pub const CTX_OPEN_FOLDER: UiText = UiText::new(super::CTX_OPEN_FOLDER, c"Open Containing Folder");
     pub fn ctx_open_folder() -> &'static CStr { CTX_OPEN_FOLDER.cstr() }
+    #[cfg(test)]
     pub fn ctx_open_folder_str() -> &'static str { CTX_OPEN_FOLDER.as_str() }
     pub const CTX_SEND_TO_TAB: UiText = UiText::new(super::CTX_SEND_TO_TAB, c"Send to Tab ▸");
     pub fn ctx_send_to_tab() -> &'static CStr { CTX_SEND_TO_TAB.cstr() }
@@ -411,6 +304,7 @@ pub mod i18n_text {
     pub fn settings_tip() -> &'static CStr { SETTINGS_TIP.cstr() }
     pub const SETTINGS_TITLE: UiText = UiText::new(c"Настройки AkhTerm", c"AkhTerm Settings");
     pub fn settings_title() -> &'static CStr { SETTINGS_TITLE.cstr() }
+    #[cfg(test)]
     pub fn settings_title_str() -> &'static str { SETTINGS_TITLE.as_str() }
     pub const SETTINGS_SUBTITLE: UiText = UiText::new(c"Параметры применяются сразу и сохраняются в config.conf", c"Changes apply live and are saved to config.conf");
     pub fn settings_subtitle() -> &'static CStr { SETTINGS_SUBTITLE.cstr() }
@@ -467,27 +361,12 @@ pub mod i18n_text {
     pub fn about_license_val() -> &'static CStr { ABOUT_LICENSE_VAL.cstr() }
     pub const ABOUT_COPY_BTN: UiText = UiText::new(c"Скопировать данные сборки", c"Copy Build Info");
     pub fn about_copy_btn() -> &'static CStr { ABOUT_COPY_BTN.cstr() }
+    #[cfg(test)]
     pub fn about_copy_btn_str() -> &'static str { ABOUT_COPY_BTN.as_str() }
     pub const ABOUT_COPIED_BTN: UiText = UiText::new(c"Скопировано ✓", c"Copied ✓");
     pub fn about_copied_btn() -> &'static CStr { ABOUT_COPIED_BTN.cstr() }
     pub const ABOUT_CLOSE_BTN: UiText = UiText::new(c"Закрыть", c"Close");
     pub fn about_close_btn() -> &'static CStr { ABOUT_CLOSE_BTN.cstr() }
-
-    pub fn theme_palette_title(is_light: bool) -> &'static str {
-        if is_light {
-            UiText::new(c"☾ Тёмная тема (Dark Zinc)", c"☾ Dark Theme (Dark Zinc)").as_str()
-        } else {
-            UiText::new(c"☀ Светлая тема (Light Zinc)", c"☀ Light Theme (Light Zinc)").as_str()
-        }
-    }
-
-    pub fn theme_palette_detail(is_light: bool) -> &'static str {
-        if is_light {
-            UiText::new(c"Сейчас: Light Zinc · Ctrl+Shift+L", c"Active: Light Zinc · Ctrl+Shift+L").as_str()
-        } else {
-            UiText::new(c"Сейчас: Dark Zinc · Ctrl+Shift+L", c"Active: Dark Zinc · Ctrl+Shift+L").as_str()
-        }
-    }
 }
 
 pub use i18n_text::*;
@@ -506,14 +385,6 @@ pub fn theme_toggle_tooltip(is_light: bool) -> &'static CStr {
 
 pub fn cstr_text(value: &'static CStr) -> &'static str {
     value.to_str().unwrap_or("")
-}
-
-pub fn tr(entry: UiText) -> &'static CStr {
-    entry.cstr()
-}
-
-pub fn tr_str(entry: UiText) -> &'static str {
-    entry.as_str()
 }
 
 pub fn locale_is_ru() -> bool {

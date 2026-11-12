@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! 1-step multi-agent task dispatch modal, atomic `0600` brief files, and worktree fan-out.
 
 use std::cell::RefCell;
@@ -346,19 +345,6 @@ pub fn fetch_gh_issues(cwd: &Path) -> Result<Vec<GitHubIssue>, String> {
     Ok(parse_gh_issue_list(&String::from_utf8_lossy(&out.stdout)))
 }
 
-pub fn fetch_gh_issue_body(cwd: &Path, number: u32) -> Option<String> {
-    let out = Command::new("gh")
-        .args(["issue", "view", &number.to_string()])
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
-        .filter(|s| !s.is_empty())
-}
-
 pub fn format_issue_prompt(issue: &GitHubIssue) -> String {
     if issue.labels.is_empty() {
         format!("# Issue #{}: {}\n\nResolve GitHub issue #{}.\n", issue.number, issue.title, issue.number)
@@ -645,7 +631,6 @@ struct DispatchModalCtx {
     window: *mut GtkWidget,
     source_combo: *mut GtkWidget,
     source_status: *mut GtkWidget,
-    text_view: *mut GtkWidget,
     text_buffer: *mut c_void,
     slug_entry: *mut GtkWidget,
     error_label: *mut GtkWidget,
@@ -659,6 +644,7 @@ struct DispatchModalCtx {
 
 #[derive(Clone)]
 pub struct TaskDispatchHandle {
+    #[cfg(test)]
     ctx: Rc<DispatchModalCtx>,
 }
 
@@ -1061,7 +1047,7 @@ pub fn open_task_dispatch_modal(
         gtk_widget_grab_focus(text_view);
     }
     let ctx = Rc::new(DispatchModalCtx {
-        window, source_combo, source_status, text_view, text_buffer, slug_entry, error_label,
+        window, source_combo, source_status, text_buffer, slug_entry, error_label,
         checks, sources: RefCell::new(Vec::new()), slug_manual: RefCell::new(false),
         syncing_slug: RefCell::new(false), alive: Arc::new(AtomicBool::new(true)),
         on_submit: Box::new(on_submit),
@@ -1071,7 +1057,10 @@ pub fn open_task_dispatch_modal(
     populate_source_combo(&ctx, briefs);
     wire_modal_signals(&ctx, cancel_btn, launch_btn);
     spawn_gh_issue_loader(&ctx, base_cwd);
-    TaskDispatchHandle { ctx }
+    #[cfg(test)]
+    return TaskDispatchHandle { ctx };
+    #[cfg(not(test))]
+    TaskDispatchHandle {}
 }
 
 pub fn open_for_app() {
@@ -1093,6 +1082,7 @@ pub fn open_for_app() {
     });
 }
 
+#[cfg(test)]
 impl TaskDispatchHandle {
     pub fn set_prompt_for_test(&self, text: &str) {
         set_buffer_text(self.ctx.text_buffer, text);
@@ -1110,10 +1100,6 @@ impl TaskDispatchHandle {
 
     pub fn trigger_submit_for_test(&self) {
         submit_modal(&self.ctx);
-    }
-
-    pub fn close_for_test(&self) {
-        close_modal(&self.ctx);
     }
 
     pub fn is_alive_for_test(&self) -> bool {

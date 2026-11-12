@@ -80,6 +80,10 @@ fn handle_ctrl_shortcut(keyval: c_uint, state: c_uint, keycode: u16) -> Option<c
     if (state & GDK_CONTROL_MASK) == 0 {
         return None;
     }
+    if crate::settings_dialog::is_settings_shortcut(keyval, state, keycode) {
+        topbar::open_settings_for_app();
+        return Some(1);
+    }
     if handle_zoom_shortcut(keyval, state, keycode) {
         return Some(1);
     }
@@ -147,6 +151,17 @@ fn dispatch_global_key(keyval: c_uint, state: c_uint, keycode: u16) -> c_int {
     c_int::from(handle_ctrl_shift_shortcut(keyval, state, keycode))
 }
 
+pub(crate) fn route_swarm_escape(keyval: c_uint) -> bool {
+    let handled = app_state::with_app(|app| {
+        app.swarm_view.handle_key_press(app.stack.cast(), Some(app.active_id), keyval)
+    })
+    .unwrap_or(false);
+    if handled {
+        topbar::refresh_ui();
+    }
+    handled
+}
+
 extern "C" fn on_window_key_press(
     _win: *mut GtkWidget,
     event: *const GdkEvent,
@@ -155,6 +170,9 @@ extern "C" fn on_window_key_press(
     let Some((keyval, state, keycode)) = extract_key_event(event) else {
         return 0;
     };
+    if route_swarm_escape(keyval) {
+        return 1;
+    }
     if let Some(handled) = route_palette_key(keyval, state, keycode) {
         return handled;
     }
@@ -164,21 +182,26 @@ extern "C" fn on_window_key_press(
     dispatch_global_key(keyval, state, keycode)
 }
 
-fn jump_next_attention() {
-    let next_sid = app_state::with_app(|app| {
-        approval::find_next_session_attention(&app.sessions, app.active_id)
+pub(crate) fn jump_next_attention() {
+    let target = app_state::with_app(|app| {
+        let pairs: Vec<(&crate::session::TermSession, Option<&crate::pane_registry::PaneRegistry>)> =
+            app.sessions.iter().map(|s| (s, (!s.pane_registry.is_empty()).then_some(&s.pane_registry))).collect();
+        let active_vte = app.sessions.iter().find(|s| s.id == app.active_id).map_or(ptr::null_mut(), |s| s.active_vte());
+        approval::find_next_pane_attention(&pairs, app.active_id, active_vte)
     })
     .flatten();
-    if let Some(sid) = next_sid {
-        session_ops::select_session(sid);
+    if let Some(hit) = target {
+        session_ops::select_session(hit.session_id);
+        app_state::record_pane_focus(hit.session_id, hit.vte);
+        if !hit.vte.is_null() {
+            unsafe { gtk_widget_grab_focus(hit.vte) };
+        }
+        topbar::refresh_ui();
     }
 }
 
-fn dispatch_tab_action_key(keyval: c_uint, keycode: u16) -> bool {
+fn dispatch_tab_split_or_zoom(keyval: c_uint, keycode: u16) -> bool {
     match (char::from_u32(keyval), keycode) {
-        (Some('T' | 't'), _) | (_, 28) => session_ops::open_default_tab(),
-        (Some('W' | 'w'), _) | (_, 25) => session_ops::close_active_pane_or_tab(),
-        (Some('R' | 'r'), _) | (_, 27) => session_ops::reconnect_session(app_state::active_session_id()),
         (Some('D' | 'd'), _) | (_, 40) => session_ops::split_active_tab(GTK_ORIENTATION_HORIZONTAL),
         (Some('E' | 'e'), _) | (_, 26) => session_ops::split_active_tab(GTK_ORIENTATION_VERTICAL),
         (Some('Z' | 'z'), _) | (_, 52) => session_ops::toggle_active_pane_zoom(),
@@ -187,16 +210,38 @@ fn dispatch_tab_action_key(keyval: c_uint, keycode: u16) -> bool {
     true
 }
 
+fn dispatch_tab_action_key(keyval: c_uint, keycode: u16) -> bool {
+    match (char::from_u32(keyval), keycode) {
+        (Some('T' | 't'), _) | (_, 28) => session_ops::open_default_tab(),
+        (Some('W' | 'w'), _) | (_, 25) => session_ops::close_active_pane_or_tab(),
+        (Some('R' | 'r'), _) | (_, 27) => session_ops::reconnect_session(app_state::active_session_id()),
+        _ => return dispatch_tab_split_or_zoom(keyval, keycode),
+    }
+    true
+}
+
+fn dispatch_workspace_shortcut(keyval: c_uint, state: c_uint, keycode: u16) -> bool {
+    if approval::is_jump_attention_shortcut(keyval, keycode) {
+        jump_next_attention();
+        return true;
+    }
+    if crate::task_dispatch::is_dispatch_shortcut(keyval, state, keycode) {
+        crate::task_dispatch::open_for_app();
+        return true;
+    }
+    if crate::swarm_view::is_swarm_shortcut(keyval, state, keycode) {
+        topbar::toggle_swarm_view();
+        return true;
+    }
+    false
+}
+
 fn handle_tab_shortcut(keyval: c_uint, state: c_uint, keycode: u16) -> bool {
     if let Some(delta) = tab_order::tab_reorder_delta(keyval, state, keycode) {
         session_ops::move_active_tab(delta);
         return true;
     }
-    if approval::is_jump_attention_shortcut(keyval, keycode) {
-        jump_next_attention();
-        return true;
-    }
-    dispatch_tab_action_key(keyval, keycode)
+    dispatch_workspace_shortcut(keyval, state, keycode) || dispatch_tab_action_key(keyval, keycode)
 }
 
 pub(crate) fn execute_palette_action(action: palette::PaletteAction) {
@@ -226,6 +271,11 @@ fn execute_palette_tool_action(action: palette::PaletteAction) {
             pane_actions::open_git_file_action(&repo_root, &path, untracked);
         }
         palette::PaletteAction::RemoveCleanWorktree => pane_actions::start_remove_clean_worktree(),
+        palette::PaletteAction::OpenTaskDispatch => crate::task_dispatch::open_for_app(),
+        palette::PaletteAction::ToggleSwarmDashboard => topbar::toggle_swarm_view(),
+        palette::PaletteAction::OpenSettings => topbar::open_settings_for_app(),
+        palette::PaletteAction::OpenAbout => topbar::open_about_for_app(),
+        palette::PaletteAction::SwitchLocale => topbar::toggle_locale_for_app(),
         _ => {}
     }
 }

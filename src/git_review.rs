@@ -598,6 +598,7 @@ fn prepare_review_split(
 ) -> Option<split_pane::SplitOp> {
     app_state::with_app_mut(|app| {
         let s = app.sessions.iter_mut().find(|s| s.id == sid)?;
+        session_ops::register_split_pane(s, new_vte, new_scroll, new_pid, repo_root.to_owned(), None);
         Some(s.panes.prepare_split(
             s.scroll_wrap, s.vte, new_scroll, new_vte, new_pid, repo_root.to_owned(), GTK_ORIENTATION_HORIZONTAL,
         ))
