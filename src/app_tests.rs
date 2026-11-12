@@ -388,13 +388,14 @@ fn check_module_mi_gates(name: &str, score: f64, failures: &mut Vec<String>) {
         ("file_drop.rs", 58.0), ("git_status.rs", 58.0), ("search_bar.rs", 58.0),
         ("ssh_detect.rs", 58.0), ("tab_order.rs", 58.0), ("theme_mode.rs", 58.0),
     ];
-    let wave0: &[(&str, f64)] = &[
+    let wave0_and_1: &[(&str, f64)] = &[
         ("app_state.rs", 60.0), ("app_tests.rs", 60.0), ("i18n.rs", 60.0),
         ("pane_actions.rs", 60.0), ("pane_registry.rs", 60.0), ("session_ops.rs", 60.0),
         ("shortcuts.rs", 60.0), ("ssh_ui.rs", 60.0), ("topbar.rs", 60.0),
+        ("palette.rs", 58.85), ("swarm_view.rs", 60.0), ("task_dispatch.rs", 60.0),
     ];
     check_min_targets(name, score, core_and_v04, failures);
-    check_min_targets(name, score, wave0, failures);
+    check_min_targets(name, score, wave0_and_1, failures);
 }
 
 #[test]
