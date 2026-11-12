@@ -112,12 +112,33 @@ pub(crate) fn window_key_press_cb() -> extern "C" fn(*mut GtkWidget, *const GdkE
     on_window_key_press
 }
 
+fn alt_arrow_direction(keyval: c_uint) -> Option<split_pane::FocusDir> {
+    match keyval {
+        0xff51 => Some(split_pane::FocusDir::Left),
+        0xff52 => Some(split_pane::FocusDir::Up),
+        0xff53 => Some(split_pane::FocusDir::Right),
+        0xff54 => Some(split_pane::FocusDir::Down),
+        _ => None,
+    }
+}
+
+fn handle_alt_arrow_focus(keyval: c_uint, state: c_uint) -> bool {
+    let mods = GDK_CONTROL_MASK | GDK_SHIFT_MASK | GDK_MOD1_MASK;
+    if (state & mods) != GDK_MOD1_MASK {
+        return false;
+    }
+    let Some(dir) = alt_arrow_direction(keyval) else {
+        return false;
+    };
+    session_ops::focus_pane_direction(dir)
+}
+
 fn dispatch_global_key(keyval: c_uint, state: c_uint, keycode: u16) -> c_int {
     if keyval == 0xffc8 {
         topbar::toggle_window_square();
         return 1;
     }
-    if handle_alt_tab_shortcut(keyval, state) {
+    if handle_alt_tab_shortcut(keyval, state) || handle_alt_arrow_focus(keyval, state) {
         return 1;
     }
     if let Some(handled) = handle_ctrl_shortcut(keyval, state, keycode) {
@@ -160,6 +181,7 @@ fn dispatch_tab_action_key(keyval: c_uint, keycode: u16) -> bool {
         (Some('R' | 'r'), _) | (_, 27) => session_ops::reconnect_session(app_state::active_session_id()),
         (Some('D' | 'd'), _) | (_, 40) => session_ops::split_active_tab(GTK_ORIENTATION_HORIZONTAL),
         (Some('E' | 'e'), _) | (_, 26) => session_ops::split_active_tab(GTK_ORIENTATION_VERTICAL),
+        (Some('Z' | 'z'), _) | (_, 52) => session_ops::toggle_active_pane_zoom(),
         _ => return false,
     }
     true

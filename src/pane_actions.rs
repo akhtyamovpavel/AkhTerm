@@ -795,10 +795,20 @@ fn forward_pane_to_tab(
     }
 }
 
+pub(crate) fn close_pane_by_vte(target_vte: *mut GtkWidget) {
+    let sid = app_state::with_app(|app| {
+        app.sessions.iter().find(|s| s.has_vte(target_vte)).map(|s| s.id)
+    })
+    .flatten();
+    if let Some(sid) = sid {
+        close_pane_in_session(sid, target_vte);
+    }
+}
+
 fn close_pane_in_session(sid: usize, target_vte: *mut GtkWidget) {
     let outcome = app_state::with_app_mut(|app| {
         let active_id = app.active_id;
-        let s = app.sessions.iter_mut().find(|s| s.id == sid && s.remote().is_none() && s.has_vte(target_vte))?;
+        let s = app.sessions.iter_mut().find(|s| s.id == sid && s.has_vte(target_vte))?;
         if !s.panes.has_splits() {
             return Some((false, None));
         }
@@ -951,7 +961,7 @@ fn build_vte_menu_spec(
         let idx = app.sessions.iter().position(|s| s.has_vte(vte))?;
         app.sessions[idx].panes.record_focus(vte);
         let sid = app.sessions[idx].id;
-        let is_local = app.sessions[idx].remote().is_none();
+        let is_local = true;
         let targets = collect_forward_targets(app, sid);
         Some(context_menu::VteMenuSpec {
             sid, vte, has_selection, selected_text, link_target, is_local, targets,

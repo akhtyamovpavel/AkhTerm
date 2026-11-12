@@ -19,6 +19,7 @@ mod mi_watch;
 mod osc_parser;
 mod palette;
 mod pane_actions;
+mod pane_header;
 mod pane_radar;
 mod pane_registry;
 mod paste_route;
@@ -94,6 +95,7 @@ fn init_app_hooks() {
     register_link_cwd_lookup(session_ops::lookup_vte_link_cwd);
     install_file_drop_hooks();
     register_vte_menu_hook(pane_actions::open_vte_context_menu);
+    pane_header::register_pane_close_hook(pane_actions::close_pane_by_vte);
 }
 
 fn init_gtk_theme(initial_theme: theme_mode::ThemeMode) {
