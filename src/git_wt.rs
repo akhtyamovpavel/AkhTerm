@@ -122,6 +122,20 @@ fn sanitize_agent_slug(raw: &str) -> String {
     if clean.is_empty() { "agent".to_owned() } else { clean.to_owned() }
 }
 
+fn sanitize_task_slug(raw: &str) -> String {
+    let mut out = String::new();
+    for ch in raw.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    let capped: String = trimmed.chars().take(40).collect();
+    capped.trim_end_matches('-').to_owned()
+}
+
 fn next_short_stamp() -> String {
     let seq = WORKTREE_SEQ.fetch_add(1, Ordering::Relaxed);
     let secs = SystemTime::now()
@@ -154,7 +168,7 @@ fn resolve_repo_root(cwd: &Path) -> Result<PathBuf, String> {
         .ok_or_else(|| "Не удалось определить корень репозитория".to_owned())
 }
 
-fn build_worktree_paths(repo_root: &Path, slug: &str, stamp: &str) -> Result<(PathBuf, String), String> {
+fn build_task_paths(repo_root: &Path, agent: &str, suffix: &str) -> Result<(PathBuf, String), String> {
     let parent = repo_root
         .parent()
         .ok_or_else(|| "Не найден родительский каталог репозитория".to_owned())?;
@@ -163,7 +177,30 @@ fn build_worktree_paths(repo_root: &Path, slug: &str, stamp: &str) -> Result<(Pa
         .and_then(|n| n.to_str())
         .filter(|n| !n.is_empty())
         .ok_or_else(|| "Некорректное имя каталога репозитория".to_owned())?;
-    Ok((parent.join(format!("{name}-wt-{slug}-{stamp}")), format!("wt/{slug}-{stamp}")))
+    Ok((parent.join(format!("{name}-wt-{agent}-{suffix}")), format!("wt/{agent}-{suffix}")))
+}
+
+fn branch_exists(repo_root: &Path, branch: &str) -> bool {
+    let full_ref = format!("refs/heads/{branch}");
+    run_git_in(repo_root, &["show-ref", "--verify", "--quiet", &full_ref])
+        .is_ok_and(|out| out.status.success())
+}
+
+fn resolve_unique_task_paths(
+    repo_root: &Path,
+    agent: &str,
+    task_slug: Option<&str>,
+) -> Result<(PathBuf, String), String> {
+    let clean = task_slug.map(sanitize_task_slug).unwrap_or_default();
+    if clean.is_empty() {
+        return build_task_paths(repo_root, agent, &next_short_stamp());
+    }
+    let first = build_task_paths(repo_root, agent, &clean)?;
+    if !first.0.exists() && !branch_exists(repo_root, &first.1) {
+        return Ok(first);
+    }
+    let stamped = format!("{clean}-{}", next_short_stamp());
+    build_task_paths(repo_root, agent, &stamped)
 }
 
 fn run_worktree_add(repo_root: &Path, wt_path: &Path, branch: &str) -> Result<(), String> {
@@ -177,13 +214,34 @@ fn run_worktree_add(repo_root: &Path, wt_path: &Path, branch: &str) -> Result<()
     Err(format!("Не удалось создать worktree: {detail}"))
 }
 
-pub fn create_agent_worktree(cwd: &Path, agent_slug: &str) -> Result<PathBuf, String> {
+pub fn create_task_worktree(
+    cwd: &Path,
+    agent_slug: &str,
+    task_slug: Option<&str>,
+) -> Result<(PathBuf, String), String> {
     let repo_root = resolve_repo_root(cwd)?;
-    let slug = sanitize_agent_slug(agent_slug);
-    let stamp = next_short_stamp();
-    let (wt_path, branch) = build_worktree_paths(&repo_root, &slug, &stamp)?;
+    let agent = sanitize_agent_slug(agent_slug);
+    let (wt_path, branch) = resolve_unique_task_paths(&repo_root, &agent, task_slug)?;
     run_worktree_add(&repo_root, &wt_path, &branch)?;
-    Ok(wt_path)
+    Ok((wt_path, branch))
+}
+
+pub fn create_agent_worktree(cwd: &Path, agent_slug: &str) -> Result<PathBuf, String> {
+    create_task_worktree(cwd, agent_slug, None).map(|(wt_path, _)| wt_path)
+}
+
+pub fn resolve_primary_worktree_root(wt_cwd: &Path) -> Option<PathBuf> {
+    if !wt_cwd.is_dir() {
+        return None;
+    }
+    let out = run_git_in(wt_cwd, &["worktree", "list", "--porcelain"]).ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&out.stdout);
+    let path_str = raw.lines().find_map(|l| l.strip_prefix("worktree "))?.trim_end_matches('\r');
+    let p = (!path_str.is_empty()).then(|| PathBuf::from(path_str))?;
+    Some(fs::canonicalize(&p).unwrap_or(p))
 }
 
 #[cfg(test)]
@@ -308,5 +366,31 @@ mod tests {
         assert_eq!(detect_git_head(&wt).unwrap().badge(), "⎇ wt/codex-7 [wt]");
         assert_eq!(agent_slug_from_cmd("claude\n"), "claude");
         assert_eq!(agent_slug_from_cmd("/usr/bin/agy --fast\n"), "agy");
+    }
+
+    #[test]
+    fn creates_task_worktree_with_custom_slug_and_resolves_primary_root() {
+        let tmp = TempRoot::new("task_slug");
+        let repo = tmp.0.join("App");
+        init_temp_repo(&repo);
+        let (wt1, br1) = create_task_worktree(&repo, "Claude", Some("Fix Auth Bug #12!")).unwrap();
+        assert_eq!(br1, "wt/claude-fix-auth-bug-12");
+        assert_eq!(wt1.file_name().unwrap().to_string_lossy(), "App-wt-claude-fix-auth-bug-12");
+        assert_eq!(resolve_primary_worktree_root(&wt1), Some(fs::canonicalize(&repo).unwrap()));
+
+        let (wt2, br2) = create_task_worktree(&repo, "Claude", Some("Fix Auth Bug #12!")).unwrap();
+        assert_ne!(wt2, wt1);
+        assert!(br2.starts_with("wt/claude-fix-auth-bug-12-"));
+    }
+
+    #[test]
+    fn falls_back_to_stamp_when_task_slug_is_empty_or_non_ascii() {
+        let tmp = TempRoot::new("empty_slug");
+        let repo = tmp.0.join("Repo");
+        init_temp_repo(&repo);
+        let (wt, branch) = create_task_worktree(&repo, "codex", Some("Задача без ASCII")).unwrap();
+        assert!(wt.exists());
+        assert!(branch.starts_with("wt/codex-"));
+        assert_eq!(resolve_primary_worktree_root(&tmp.0.join("missing")), None);
     }
 }

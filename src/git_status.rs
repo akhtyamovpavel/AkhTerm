@@ -578,19 +578,13 @@ fn resolve_main_worktree_root(wt_root: &Path) -> Result<PathBuf, String> {
 }
 
 fn exec_git_worktree_remove(main_repo: &Path, wt_root: &Path) -> Result<(), String> {
-    let wt_str = wt_root
-        .to_str()
-        .ok_or_else(|| "⚠ Некорректный путь worktree".to_owned())?;
+    let wt_str = wt_root.to_str().ok_or_else(|| "⚠ Некорректный путь worktree".to_owned())?;
     let out = run_git_cmd(main_repo, &["worktree", "remove", "--", wt_str])?;
     if out.status.success() {
         return Ok(());
     }
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let detail = stderr
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or("ошибка git worktree remove");
+    let detail = stderr.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("ошибка git");
     Err(format!("⚠ Не удалось удалить worktree: {detail}"))
 }
 
@@ -604,19 +598,13 @@ pub fn remove_clean_worktree(wt_dir: &Path) -> Result<WorktreeRemovalOutcome, St
     let (wt_root, head_info) = detect_git_repo(&canon)
         .ok_or_else(|| "⚠ Каталог вкладки не является Git-репозиторием".to_owned())?;
     if !head_info.is_linked_worktree {
-        let msg = "⚠ Удаление доступно только для дополнительного Git worktree, а не основного репозитория";
-        return Err(msg.to_owned());
+        return Err("⚠ Удаление доступно только для дополнительного Git worktree".to_owned());
     }
     verify_clean_worktree_tree(&wt_root)?;
     let main_repo = resolve_main_worktree_root(&wt_root)?;
     exec_git_worktree_remove(&main_repo, &wt_root)?;
     let branch_deleted = delete_merged_wt_branch(&main_repo, &head_info.head);
-    Ok(WorktreeRemovalOutcome {
-        main_repo,
-        wt_root,
-        branch: head_info.head,
-        branch_deleted,
-    })
+    Ok(WorktreeRemovalOutcome { main_repo, wt_root, branch: head_info.head, branch_deleted })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -728,25 +716,40 @@ fn pack_repo_header(
     root: &str,
     head: &GitHeadInfo,
     status: Option<&GitRepoStatus>,
-    on_remove_wt: ClickHandler,
+    review: &crate::git_review::BranchReview,
 ) {
     let title = format!("{}  ·  {}", head.badge(), shorten_home(root));
-    let summary = status.map_or_else(
+    let base_sum = status.map_or_else(
         || text::GIT_LOADING.to_string_lossy().into_owned(),
         GitRepoStatus::summary_line,
     );
+    let summary = crate::git_review::format_summary_with_branch(&base_sum, review);
     unsafe {
         let title_lbl = make_section_lbl(c"");
         set_label_text(title_lbl, &title);
         gtk_box_pack_start(vbox, title_lbl, 0, 1, 0);
         gtk_box_pack_start(vbox, make_muted_lbl(&summary), 0, 1, 0);
-        if head.is_linked_worktree {
-            let rm_btn = gtk_button_new_with_label(text::GIT_REMOVE_WT_BTN.as_ptr());
-            gtk_widget_set_tooltip_text(rm_btn, text::GIT_REMOVE_WT_TIP.as_ptr());
-            connect_click(rm_btn, on_remove_wt, ptr::null_mut());
-            gtk_box_pack_start(vbox, rm_btn, 0, 1, 2);
-        }
     }
+    if head.is_linked_worktree {
+        let _ = (text::GIT_REMOVE_WT_BTN, text::GIT_REMOVE_WT_TIP);
+        crate::git_review::pack_worktree_actions(vbox);
+    }
+}
+
+fn pack_repo_sections(
+    popover: *mut GtkWidget,
+    vbox: *mut GtkWidget,
+    root: &str,
+    head: &GitHeadInfo,
+    status: Option<&GitRepoStatus>,
+    on_file: ClickHandler,
+) -> Vec<GitFileEntry> {
+    let review = crate::git_review::collect_branch_review(Path::new(root), head);
+    crate::git_review::reset_review_ui_state(popover, root, &review);
+    pack_repo_header(vbox, root, head, status, &review);
+    let entries = pack_repo_files(vbox, root, status, on_file);
+    crate::git_review::pack_branch_review(vbox, &review);
+    entries
 }
 
 fn build_file_buttons(
@@ -806,6 +809,7 @@ pub fn rebuild_git_widgets(
     status: Option<&GitRepoStatus>,
     cbs: GitMenuCallbacks,
 ) -> (*mut GtkWidget, Vec<GitFileEntry>) {
+    let _ = cbs.on_remove_wt;
     unsafe {
         if !widgets.old_inner.is_null() {
             gtk_widget_destroy(widgets.old_inner);
@@ -813,8 +817,7 @@ pub fn rebuild_git_widgets(
         let vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
         let entries = match repo {
             Some((root, head)) => {
-                pack_repo_header(vbox, root, head, status, cbs.on_remove_wt);
-                pack_repo_files(vbox, root, status, cbs.on_file)
+                pack_repo_sections(widgets.popover, vbox, root, head, status, cbs.on_file)
             }
             None => {
                 pack_non_repo_notice(vbox);
@@ -932,20 +935,7 @@ mod tests {
         git_ok(repo, &["init", "-b", "main"]);
         fs::write(repo.join("README.md"), "line 1\nline 2\n").unwrap();
         git_ok(repo, &["add", "."]);
-        git_ok(
-            repo,
-            &[
-                "-c",
-                "commit.gpgsign=false",
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@example.com",
-                "commit",
-                "-m",
-                "init",
-            ],
-        );
+        git_ok(repo, &["-c", "commit.gpgsign=false", "-c", "user.name=T", "-c", "user.email=t@e", "commit", "-m", "i"]);
     }
 
     extern "C" fn noop_click(_w: *mut GtkWidget, _d: *mut c_void) {}
