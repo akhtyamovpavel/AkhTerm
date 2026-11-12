@@ -9,6 +9,7 @@ mod config;
 mod context_menu;
 mod ffi;
 mod file_drop;
+mod git_review;
 mod git_status;
 mod git_wt;
 mod handoff;
