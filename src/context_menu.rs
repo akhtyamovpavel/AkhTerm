@@ -7,7 +7,9 @@ use std::ptr;
 use std::rc::Rc;
 
 use crate::ffi::*;
+use crate::file_drop::decode_file_uri;
 use crate::handoff::{captures_dir, current_unix_secs, extract_vte_text, write_capture_file, CaptureMeta};
+use crate::paths::{expand_home, strip_anchor_or_line, strip_link_punctuation};
 use crate::ui_text as text;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,6 +18,7 @@ pub enum ContextAction {
     PasteSmart { sid: usize, vte: *mut GtkWidget },
     OpenLink(String),
     CopyText(String),
+    OpenContainingFolder(PathBuf),
     ForwardToTab { source_sid: usize, source_vte: *mut GtkWidget, target_sid: usize, selected_text: Option<String> },
     SplitRight { sid: usize, vte: *mut GtkWidget },
     SplitDown { sid: usize, vte: *mut GtkWidget },
@@ -42,8 +45,53 @@ pub fn format_session_target(sid: usize, title: &str, ssh_host: &str, source_sid
     } else {
         title.to_owned()
     };
-    let label = if sid == source_sid { format!("{base} (текущая)") } else { base };
+    let label = if sid == source_sid {
+        format!("{base} {}", text::ctx_current_session_str())
+    } else {
+        base
+    };
     SessionTarget { sid, label }
+}
+
+fn existing_local_candidate(raw: &str) -> Option<PathBuf> {
+    let direct = PathBuf::from(raw);
+    if direct.exists() {
+        return Some(direct);
+    }
+    let stripped = strip_anchor_or_line(raw);
+    (!stripped.is_empty() && stripped != raw)
+        .then(|| PathBuf::from(stripped))
+        .filter(|p| p.exists())
+}
+
+fn resolve_file_uri_local_path(trimmed: &str) -> Option<PathBuf> {
+    if let Some(full) = decode_file_uri(trimmed).filter(|p| p.exists()) {
+        return Some(full);
+    }
+    let base_uri = trimmed.split(['#', '?']).next().unwrap_or(trimmed);
+    let decoded = decode_file_uri(base_uri)?;
+    existing_local_candidate(&decoded.to_string_lossy())
+}
+
+pub fn resolve_local_link_path(raw: &str) -> Option<PathBuf> {
+    let trimmed = strip_link_punctuation(raw);
+    if trimmed.is_empty() || trimmed.starts_with("mailto:") {
+        return None;
+    }
+    if trimmed.starts_with("file://") {
+        return resolve_file_uri_local_path(trimmed);
+    }
+    resolve_non_uri_local_path(trimmed)
+}
+
+fn resolve_non_uri_local_path(trimmed: &str) -> Option<PathBuf> {
+    if trimmed.contains("://") {
+        return None;
+    }
+    if trimmed == "~" || trimmed.starts_with("~/") {
+        return existing_local_candidate(&expand_home(trimmed));
+    }
+    existing_local_candidate(trimmed)
 }
 
 pub fn should_passthrough_vte_click(button: u32, state: u32) -> bool {
@@ -256,7 +304,7 @@ fn populate_forward_targets(sub: *mut GtkWidget, spec: &VteMenuSpec, dispatch: &
 }
 
 fn append_forward_submenu(menu: *mut GtkWidget, spec: &VteMenuSpec, dispatch: &DispatchFn, items: &mut Vec<*mut GtkWidget>, sub_out: &mut Vec<*mut GtkWidget>) {
-    let parent = unsafe { gtk_menu_item_new_with_label(text::CTX_SEND_TO_TAB.as_ptr()) };
+    let parent = unsafe { gtk_menu_item_new_with_label(text::ctx_send_to_tab().as_ptr()) };
     let enabled = !spec.targets.is_empty();
     unsafe { gtk_widget_set_sensitive(parent, c_int::from(enabled)) };
     if enabled {
@@ -275,48 +323,52 @@ fn append_vte_link_items(menu: *mut GtkWidget, link_target: Option<&str>, dispat
     };
     append_separator(menu);
     let open_act = ContextAction::OpenLink(url.to_owned());
-    items.push(append_bound_item(menu, text::CTX_OPEN_LINK.as_ptr(), true, open_act, dispatch));
+    items.push(append_bound_item(menu, text::ctx_open_link().as_ptr(), true, open_act, dispatch));
     let copy_act = ContextAction::CopyText(url.to_owned());
-    items.push(append_bound_item(menu, text::CTX_COPY_LINK.as_ptr(), true, copy_act, dispatch));
+    items.push(append_bound_item(menu, text::ctx_copy_link().as_ptr(), true, copy_act, dispatch));
+    if let Some(local_path) = resolve_local_link_path(url) {
+        let folder_act = ContextAction::OpenContainingFolder(local_path);
+        items.push(append_bound_item(menu, text::ctx_open_folder().as_ptr(), true, folder_act, dispatch));
+    }
 }
 
 fn append_vte_pane_items(menu: *mut GtkWidget, spec: &VteMenuSpec, dispatch: &DispatchFn, items: &mut Vec<*mut GtkWidget>) {
     let local = spec.is_local;
     let right = ContextAction::SplitRight { sid: spec.sid, vte: spec.vte };
-    items.push(append_bound_item(menu, text::CTX_SPLIT_RIGHT.as_ptr(), local, right, dispatch));
+    items.push(append_bound_item(menu, text::ctx_split_right().as_ptr(), local, right, dispatch));
     let down = ContextAction::SplitDown { sid: spec.sid, vte: spec.vte };
-    items.push(append_bound_item(menu, text::CTX_SPLIT_DOWN.as_ptr(), local, down, dispatch));
+    items.push(append_bound_item(menu, text::ctx_split_down().as_ptr(), local, down, dispatch));
     let close = ContextAction::ClosePane { sid: spec.sid, vte: spec.vte };
-    items.push(append_bound_item(menu, text::CTX_CLOSE_PANE.as_ptr(), local, close, dispatch));
+    items.push(append_bound_item(menu, text::ctx_close_pane().as_ptr(), local, close, dispatch));
 }
 
 pub fn build_vte_menu(spec: &VteMenuSpec, dispatch: &DispatchFn) -> BuiltMenu {
     let menu = new_styled_menu();
-    let mut items = Vec::with_capacity(9);
+    let mut items = Vec::with_capacity(10);
     let mut submenu_items = Vec::with_capacity(spec.targets.len());
-    items.push(append_bound_item(menu, text::CTX_COPY.as_ptr(), spec.has_selection, ContextAction::CopySelection(spec.vte), dispatch));
-    items.push(append_bound_item(menu, text::CTX_PASTE.as_ptr(), true, ContextAction::PasteSmart { sid: spec.sid, vte: spec.vte }, dispatch));
+    items.push(append_bound_item(menu, text::ctx_copy().as_ptr(), spec.has_selection, ContextAction::CopySelection(spec.vte), dispatch));
+    items.push(append_bound_item(menu, text::ctx_paste().as_ptr(), true, ContextAction::PasteSmart { sid: spec.sid, vte: spec.vte }, dispatch));
     append_vte_link_items(menu, spec.link_target.as_deref(), dispatch, &mut items);
     append_separator(menu);
     append_forward_submenu(menu, spec, dispatch, &mut items, &mut submenu_items);
     append_separator(menu);
     append_vte_pane_items(menu, spec, dispatch, &mut items);
     append_separator(menu);
-    items.push(append_bound_item(menu, text::CTX_CLEAR_BUFFER.as_ptr(), true, ContextAction::ClearBuffer(spec.vte), dispatch));
+    items.push(append_bound_item(menu, text::ctx_clear_buffer().as_ptr(), true, ContextAction::ClearBuffer(spec.vte), dispatch));
     BuiltMenu { menu, items, submenu_items }
 }
 
 pub fn build_tab_menu(spec: &TabMenuSpec, dispatch: &DispatchFn) -> BuiltMenu {
     let menu = new_styled_menu();
     let mut items = Vec::with_capacity(6);
-    items.push(append_bound_item(menu, text::CTX_RENAME_TAB.as_ptr(), true, ContextAction::RenameTab { sid: spec.sid, anchor: spec.anchor }, dispatch));
-    items.push(append_bound_item(menu, text::CTX_DUPLICATE_TAB.as_ptr(), true, ContextAction::DuplicateTab(spec.sid), dispatch));
+    items.push(append_bound_item(menu, text::ctx_rename_tab().as_ptr(), true, ContextAction::RenameTab { sid: spec.sid, anchor: spec.anchor }, dispatch));
+    items.push(append_bound_item(menu, text::ctx_duplicate_tab().as_ptr(), true, ContextAction::DuplicateTab(spec.sid), dispatch));
     let cwd = spec.local_cwd.clone().unwrap_or_default();
-    items.push(append_bound_item(menu, text::CTX_COPY_PATH.as_ptr(), spec.local_cwd.is_some(), ContextAction::CopyText(cwd), dispatch));
-    items.push(append_bound_item(menu, text::RECONNECT.as_ptr(), spec.is_remote, ContextAction::ReconnectTab(spec.sid), dispatch));
+    items.push(append_bound_item(menu, text::ctx_copy_path().as_ptr(), spec.local_cwd.is_some(), ContextAction::CopyText(cwd), dispatch));
+    items.push(append_bound_item(menu, text::reconnect().as_ptr(), spec.is_remote, ContextAction::ReconnectTab(spec.sid), dispatch));
     append_separator(menu);
-    items.push(append_bound_item(menu, text::CTX_CLOSE_TAB.as_ptr(), true, ContextAction::CloseTab(spec.sid), dispatch));
-    items.push(append_bound_item(menu, text::CTX_CLOSE_OTHER_TABS.as_ptr(), spec.can_close_others, ContextAction::CloseOtherTabs(spec.sid), dispatch));
+    items.push(append_bound_item(menu, text::ctx_close_tab().as_ptr(), true, ContextAction::CloseTab(spec.sid), dispatch));
+    items.push(append_bound_item(menu, text::ctx_close_other_tabs().as_ptr(), spec.can_close_others, ContextAction::CloseOtherTabs(spec.sid), dispatch));
     BuiltMenu { menu, items, submenu_items: Vec::new() }
 }
 
@@ -469,10 +521,10 @@ fn create_rename_row(current_title: &str) -> (*mut GtkWidget, *mut GtkWidget, *m
         let row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
         add_class(row, "popover-box");
         let entry = gtk_entry_new();
-        gtk_entry_set_placeholder_text(entry, text::RENAME_PLACEHOLDER.as_ptr());
+        gtk_entry_set_placeholder_text(entry, text::rename_placeholder().as_ptr());
         gtk_entry_set_text(entry, init_c.as_ptr());
         gtk_widget_set_size_request(entry, 220, -1);
-        let save_btn = gtk_button_new_with_label(text::RENAME_SAVE.as_ptr());
+        let save_btn = gtk_button_new_with_label(text::rename_save().as_ptr());
         gtk_box_pack_start(row, entry, 1, 1, 0);
         gtk_box_pack_start(row, save_btn, 0, 0, 0);
         gtk_widget_show_all(row);
@@ -552,17 +604,45 @@ mod tests {
 
     #[test]
     fn shift_right_click_passes_through_and_target_labels_format_cleanly() {
-        const LOCK_AND_MOD2: u32 = (1 << 1) | (1 << 4);
-        assert!(should_passthrough_vte_click(3, GDK_SHIFT_MASK));
-        assert!(should_passthrough_vte_click(3, GDK_SHIFT_MASK | LOCK_AND_MOD2));
-        assert!(!should_passthrough_vte_click(3, 0));
-        assert!(!should_passthrough_vte_click(3, LOCK_AND_MOD2));
-        assert!(!should_passthrough_vte_click(3, GDK_CONTROL_MASK));
-        assert!(!should_passthrough_vte_click(1, GDK_SHIFT_MASK));
-        let cur = format_session_target(2, "Проект", "", 2);
-        assert_eq!(cur.label, "Проект (текущая)");
-        let rem = format_session_target(5, "Claude", "devbox", 2);
-        assert_eq!(rem.label, "Claude [devbox]");
+        crate::i18n::with_locale_lock(|| {
+            crate::i18n::set_locale(crate::i18n::UiLocale::Ru);
+            const LOCK_AND_MOD2: u32 = (1 << 1) | (1 << 4);
+            assert!(should_passthrough_vte_click(3, GDK_SHIFT_MASK));
+            assert!(should_passthrough_vte_click(3, GDK_SHIFT_MASK | LOCK_AND_MOD2));
+            assert!(!should_passthrough_vte_click(3, 0));
+            assert!(!should_passthrough_vte_click(3, LOCK_AND_MOD2));
+            assert!(!should_passthrough_vte_click(3, GDK_CONTROL_MASK));
+            assert!(!should_passthrough_vte_click(1, GDK_SHIFT_MASK));
+            let cur = format_session_target(2, "Проект", "", 2);
+            assert_eq!(cur.label, "Проект (текущая)");
+            let rem = format_session_target(5, "Claude", "devbox", 2);
+            assert_eq!(rem.label, "Claude [devbox]");
+            crate::i18n::set_locale(crate::i18n::UiLocale::En);
+            assert_eq!(format_session_target(2, "Proj", "", 2).label, "Proj (current)");
+        });
+    }
+
+    #[test]
+    fn resolves_local_file_links_with_cyrillic_and_line_suffixes_and_skips_web_urls() {
+        assert_eq!(resolve_local_link_path("https://example.org/docs"), None);
+        assert_eq!(resolve_local_link_path("http://127.0.0.1:8080/api"), None);
+        assert_eq!(resolve_local_link_path("mailto:user@example.com"), None);
+        assert_eq!(resolve_local_link_path("/tmp/definitely_missing_akhterm_path_123"), None);
+
+        let dir = std::env::temp_dir().join(format!("akhterm_link_{}", std::process::id()));
+        let sub = dir.join("папка проекта");
+        let file = sub.join("отчёт.rs");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+
+        let with_line = format!("{}:42:7", file.display());
+        assert_eq!(resolve_local_link_path(&with_line), Some(file.clone()));
+        let uri = crate::platform::encode_file_uri(&file).expect("file uri");
+        assert_eq!(resolve_local_link_path(&uri), Some(file.clone()));
+        assert_eq!(resolve_local_link_path(&sub.to_string_lossy()), Some(sub.clone()));
+
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -736,30 +816,71 @@ mod tests {
         assert_eq!(read_clipboard_text(), "/tmp/кириллический_путь");
     }
 
+    fn build_link_test_spec(vte: *mut GtkWidget, link: String) -> VteMenuSpec {
+        VteMenuSpec {
+            sid: 2,
+            vte,
+            has_selection: false,
+            selected_text: None,
+            link_target: Some(link),
+            is_local: true,
+            targets: Vec::new(),
+        }
+    }
+
+    fn verify_link_menu_en_ru(spec: &VteMenuSpec, dispatch: &DispatchFn) {
+        crate::i18n::set_locale(crate::i18n::UiLocale::En);
+        let en_built = build_vte_menu(spec, dispatch);
+        assert_eq!(item_label(en_built.items[4]), "Open Containing Folder");
+        unsafe { gtk_widget_destroy(en_built.menu) };
+        crate::i18n::set_locale(crate::i18n::UiLocale::Ru);
+    }
+
+    fn check_local_file_link_menu(vte: *mut GtkWidget, dispatch: &DispatchFn, log: &Rc<RefCell<Vec<ContextAction>>>) {
+        let dir = std::env::temp_dir().join(format!("akhterm_ctx_file_{}", std::process::id()));
+        let file = dir.join("пример.rs");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "fn ok() {}\n").unwrap();
+        let spec = build_link_test_spec(vte, format!("{}:12:3", file.display()));
+        let built = build_vte_menu(&spec, dispatch);
+        assert_eq!(built.items.len(), 10);
+        assert_eq!(item_label(built.items[4]), "Открыть папку");
+        let before = log.borrow().len();
+        unsafe { gtk_menu_item_activate(built.items[4]) };
+        unsafe { gtk_widget_destroy(built.menu) };
+        assert_eq!(log.borrow().get(before), Some(&ContextAction::OpenContainingFolder(file.clone())));
+        verify_link_menu_en_ru(&spec, dispatch);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn headless_broadway_menus_selection_and_clear_buffer() {
-        with_headless_gtk(|| unsafe {
-            let win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-            gtk_window_set_default_size(win, 800, 600);
-            let box_w = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-            let anchor = gtk_button_new_with_label(c"Вкладка".as_ptr());
-            let vte = vte_terminal_new();
-            gtk_box_pack_start(box_w, anchor, 0, 0, 0);
-            gtk_box_pack_start(box_w, vte, 1, 1, 0);
-            gtk_container_add(win, box_w);
-            gtk_widget_show_all(win);
-            pump_gtk_events();
-            let log: Rc<RefCell<Vec<ContextAction>>> = Rc::new(RefCell::new(Vec::new()));
-            let log_cb = Rc::clone(&log);
-            let dispatch: DispatchFn = Rc::new(move |act| log_cb.borrow_mut().push(act));
-            check_remote_vte_menu(vte, &dispatch);
-            check_local_vte_menu(vte, &dispatch, &log);
-            check_tab_menus(anchor);
-            check_rename_popover(anchor);
-            check_vte_selection_and_clear(vte);
-            check_cyrillic_clipboard();
-            gtk_widget_destroy(win);
-            pump_gtk_events();
+        crate::i18n::with_locale_lock(|| {
+            crate::i18n::set_locale(crate::i18n::UiLocale::Ru);
+            with_headless_gtk(|| unsafe {
+                let win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+                gtk_window_set_default_size(win, 800, 600);
+                let box_w = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+                let anchor = gtk_button_new_with_label(c"Вкладка".as_ptr());
+                let vte = vte_terminal_new();
+                gtk_box_pack_start(box_w, anchor, 0, 0, 0);
+                gtk_box_pack_start(box_w, vte, 1, 1, 0);
+                gtk_container_add(win, box_w);
+                gtk_widget_show_all(win);
+                pump_gtk_events();
+                let log: Rc<RefCell<Vec<ContextAction>>> = Rc::new(RefCell::new(Vec::new()));
+                let log_cb = Rc::clone(&log);
+                let dispatch: DispatchFn = Rc::new(move |act| log_cb.borrow_mut().push(act));
+                check_remote_vte_menu(vte, &dispatch);
+                check_local_vte_menu(vte, &dispatch, &log);
+                check_local_file_link_menu(vte, &dispatch, &log);
+                check_tab_menus(anchor);
+                check_rename_popover(anchor);
+                check_vte_selection_and_clear(vte);
+                check_cyrillic_clipboard();
+                gtk_widget_destroy(win);
+                pump_gtk_events();
+            });
         });
     }
 }

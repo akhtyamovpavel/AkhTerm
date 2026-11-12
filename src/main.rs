@@ -1,5 +1,6 @@
 //! AkhTerm binary entry point and GTK application bootstrap.
 
+mod about;
 mod app_state;
 #[cfg(test)]
 #[path = "app_tests.rs"]
@@ -28,6 +29,7 @@ mod remote_telemetry;
 mod search_bar;
 mod session;
 mod session_ops;
+mod settings_dialog;
 mod shortcuts;
 mod sidebar;
 mod split_pane;
@@ -69,6 +71,11 @@ pub use session_ops::select_session;
 pub use topbar::{adjust_zoom, refresh_ui, set_zoom};
 
 fn main() -> std::process::ExitCode {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(version_line) = about::check_version_arg(&args) {
+        println!("{version_line}");
+        return std::process::ExitCode::SUCCESS;
+    }
     let _workspace = match tabs::lock_workspace() {
         Ok(file) => file,
         Err(error) => {

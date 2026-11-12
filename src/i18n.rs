@@ -5,8 +5,9 @@
 use std::ffi::{c_char, CStr};
 use std::sync::atomic::{AtomicU8, Ordering};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum UiLocale {
+    #[default]
     Auto,
     Ru,
     En,
@@ -135,12 +136,19 @@ pub fn current_locale() -> UiLocale {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) fn with_locale_lock<R>(f: impl FnOnce() -> R) -> R {
     use std::sync::Mutex;
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let prev = configured_locale();
+    let out = f();
+    set_locale(prev);
+    out
+}
 
+#[cfg(test)]
+mod tests {
     use super::*;
-
-    static LOCALE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn detects_ru_and_en_from_posix_env_precedence() {
@@ -162,16 +170,17 @@ mod tests {
 
     #[test]
     fn switches_active_locale_and_resolves_ui_text_without_allocation() {
-        let _guard = LOCALE_TEST_LOCK.lock().expect("lock locale");
-        let label = UiText::new(c"Настройки", c"Settings");
-        set_locale(UiLocale::Ru);
-        assert_eq!(configured_locale(), UiLocale::Ru);
-        assert_eq!(current_locale(), UiLocale::Ru);
-        assert_eq!(label.as_str(), "Настройки");
-        set_locale(UiLocale::En);
-        assert_eq!(current_locale(), UiLocale::En);
-        assert_eq!(label.cstr(), c"Settings");
-        set_locale(UiLocale::Auto);
-        assert_eq!(configured_locale(), UiLocale::Auto);
+        with_locale_lock(|| {
+            let label = UiText::new(c"Настройки", c"Settings");
+            set_locale(UiLocale::Ru);
+            assert_eq!(configured_locale(), UiLocale::Ru);
+            assert_eq!(current_locale(), UiLocale::Ru);
+            assert_eq!(label.as_str(), "Настройки");
+            set_locale(UiLocale::En);
+            assert_eq!(current_locale(), UiLocale::En);
+            assert_eq!(label.cstr(), c"Settings");
+            set_locale(UiLocale::Auto);
+            assert_eq!(configured_locale(), UiLocale::Auto);
+        });
     }
 }
