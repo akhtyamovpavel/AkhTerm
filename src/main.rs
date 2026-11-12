@@ -17,6 +17,7 @@ mod mi;
 mod mi_watch;
 mod palette;
 mod pane_actions;
+mod pane_radar;
 mod pane_registry;
 mod paste_route;
 mod paths;

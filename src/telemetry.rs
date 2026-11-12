@@ -1,5 +1,6 @@
 //! Incremental O(1) agent token/context telemetry, VTE status-bar fallback, and turn timer UI.
 
+use std::collections::HashSet;
 use std::ffi::{c_void, CString};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
@@ -280,6 +281,20 @@ impl SessionTelemetry {
             }
             TelemetrySource::None | TelemetrySource::VteFallback => None,
         }
+    }
+
+    pub fn transcript_key(&self) -> Option<String> {
+        if self.tailer.snapshot.has_data() {
+            if let Some(path) = &self.tailer.path {
+                let canon = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+                return Some(format!("local:{}", canon.display()));
+            }
+        }
+        let remote = &self.remote_tailer;
+        if remote.snapshot.has_data() && !remote.remote_path.is_empty() {
+            return Some(format!("remote:{}:{}", remote.host, remote.remote_path));
+        }
+        None
     }
 
     fn should_rediscover(&self, now: Instant) -> bool {
@@ -1298,11 +1313,11 @@ pub fn build_sessions_tokens_view(
     mode: ThemeMode,
     now: Instant,
 ) -> TokensViewData {
-    let rows: Vec<TabTokenRow> = sessions
+    let rows: Vec<(TabTokenRow, Option<String>)> = sessions
         .iter()
-        .map(|s| TabTokenRow::from_session(s, active_id, now))
+        .map(|s| (TabTokenRow::from_session(s, active_id, now), s.telemetry.transcript_key()))
         .collect();
-    build_tokens_view_for_mode(&rows, mode)
+    build_tokens_view_with_keys(&rows, mode)
 }
 
 pub struct TokensViewData {
@@ -1385,22 +1400,36 @@ struct WindowTotals {
     has_cost: bool,
     active_badge: Option<String>,
     active_alert: ContextAlert,
+    seen_keys: HashSet<String>,
 }
 
 impl WindowTotals {
-    fn record(&mut self, row: &TabTokenRow) {
-        self.tot_in = self.tot_in.saturating_add(row.snap.effective_input());
-        self.tot_cache = self.tot_cache.saturating_add(row.snap.cache_tokens);
-        self.tot_out = self.tot_out.saturating_add(row.snap.output_tokens);
-        self.tot_ctx = self.tot_ctx.saturating_add(row.snap.context_tokens);
-        if let Some(cost) = row.snap.cost_usd {
-            self.tot_cost += cost;
-            self.has_cost = true;
-        }
+    fn record_active(&mut self, row: &TabTokenRow) {
         if row.is_active {
             self.active_badge = row.snap.compact_context_badge();
             self.active_alert = row.snap.alert_level();
         }
+    }
+
+    fn record_totals(&mut self, snap: &TokenSnapshot) {
+        self.tot_in = self.tot_in.saturating_add(snap.effective_input());
+        self.tot_cache = self.tot_cache.saturating_add(snap.cache_tokens);
+        self.tot_out = self.tot_out.saturating_add(snap.output_tokens);
+        self.tot_ctx = self.tot_ctx.saturating_add(snap.context_tokens);
+        if let Some(cost) = snap.cost_usd {
+            self.tot_cost += cost;
+            self.has_cost = true;
+        }
+    }
+
+    fn record_unique(&mut self, row: &TabTokenRow, key: Option<&str>) {
+        self.record_active(row);
+        if let Some(k) = key {
+            if !self.seen_keys.insert(k.to_owned()) {
+                return;
+            }
+        }
+        self.record_totals(&row.snap);
     }
 
     fn button_label(&self) -> Option<String> {
@@ -1423,16 +1452,27 @@ impl WindowTotals {
     }
 }
 
-pub fn build_tokens_view_for_mode(rows: &[TabTokenRow], mode: ThemeMode) -> TokensViewData {
+pub fn build_tokens_view_with_keys(
+    rows: &[(TabTokenRow, Option<String>)],
+    mode: ThemeMode,
+) -> TokensViewData {
     let colors = mode.tokens_markup_colors();
     let mut totals = WindowTotals::default();
     let mut lines = Vec::new();
-    for row in rows {
-        totals.record(row);
+    for (row, key) in rows {
+        totals.record_unique(row, key.as_deref());
         if row.snap.has_data() || row.working_secs.is_some() || row.last_turn_secs.is_some() {
             lines.push(format_tab_token_markup(row, colors));
         }
     }
+    finalize_tokens_view(totals, lines, colors)
+}
+
+fn finalize_tokens_view(
+    totals: WindowTotals,
+    mut lines: Vec<String>,
+    colors: TokensMarkupColors,
+) -> TokensViewData {
     let button_label = totals.button_label();
     if lines.is_empty() {
         return TokensViewData { button_label, alert: totals.active_alert, markup: None };
@@ -1441,6 +1481,20 @@ pub fn build_tokens_view_for_mode(rows: &[TabTokenRow], mode: ThemeMode) -> Toke
     lines.push(String::new());
     lines.push(summary);
     TokensViewData { button_label, alert: totals.active_alert, markup: Some(lines.join("\n")) }
+}
+
+#[allow(dead_code)]
+pub fn build_tokens_view_for_mode(rows: &[TabTokenRow], mode: ThemeMode) -> TokensViewData {
+    let colors = mode.tokens_markup_colors();
+    let mut totals = WindowTotals::default();
+    let mut lines = Vec::new();
+    for row in rows {
+        totals.record_unique(row, None);
+        if row.snap.has_data() || row.working_secs.is_some() || row.last_turn_secs.is_some() {
+            lines.push(format_tab_token_markup(row, colors));
+        }
+    }
+    finalize_tokens_view(totals, lines, colors)
 }
 
 #[cfg(test)]

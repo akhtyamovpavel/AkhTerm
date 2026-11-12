@@ -393,8 +393,10 @@ fn check_module_mi_gates(name: &str, score: f64, failures: &mut Vec<String>) {
         ("pane_actions.rs", 60.0), ("pane_registry.rs", 60.0), ("session_ops.rs", 60.0),
         ("shortcuts.rs", 60.0), ("ssh_ui.rs", 60.0), ("topbar.rs", 60.0),
     ];
+    let wave1: &[(&str, f64)] = &[("pane_radar.rs", 60.0)];
     check_min_targets(name, score, core_and_v04, failures);
     check_min_targets(name, score, wave0, failures);
+    check_min_targets(name, score, wave1, failures);
 }
 
 #[test]

@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use crate::ffi::GtkWidget;
 use crate::proc_radar::ProcInfo;
-use crate::session::WorkState;
+use crate::session::{detect_agent_name, WorkState};
 use crate::telemetry::SessionTelemetry;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -33,8 +33,15 @@ pub struct PaneRecord {
     pub cwd: String,
     pub proc_info: ProcInfo,
     pub state: WorkState,
+    pub unread: bool,
+    pub last_output: Instant,
+    pub work_started: Instant,
     pub work_started_at: Option<Instant>,
     pub last_turn_secs: Option<u64>,
+    pub last_notified: Option<Instant>,
+    pub osc_title: String,
+    pub remote_tmux: Option<(String, String, String, String)>,
+    pub approval_snippet: Option<String>,
     pub telemetry: SessionTelemetry,
     pub last_exit_code: Option<i32>,
 }
@@ -47,6 +54,7 @@ impl PaneRecord {
         child_pid: i32,
         cwd: String,
     ) -> Self {
+        let now = Instant::now();
         Self {
             id,
             vte,
@@ -56,8 +64,15 @@ impl PaneRecord {
             cwd,
             proc_info: ProcInfo::default(),
             state: WorkState::Idle,
+            unread: false,
+            last_output: now,
+            work_started: now,
             work_started_at: None,
             last_turn_secs: None,
+            last_notified: None,
+            osc_title: String::new(),
+            remote_tmux: None,
+            approval_snippet: None,
             telemetry: SessionTelemetry::default(),
             last_exit_code: None,
         }
@@ -70,6 +85,7 @@ impl PaneRecord {
 
     pub fn set_state(&mut self, next: WorkState, now: Instant) {
         if next == WorkState::Working && self.work_started_at.is_none() {
+            self.work_started = now;
             self.work_started_at = Some(now);
         }
         if next != WorkState::Working {
@@ -77,11 +93,56 @@ impl PaneRecord {
                 self.last_turn_secs = Some(now.saturating_duration_since(started).as_secs());
             }
         }
+        if next != WorkState::NeedsApproval {
+            self.approval_snippet = None;
+        }
         self.state = next;
+    }
+
+    pub fn mark_output(&mut self, now: Instant, is_focused_active: bool) {
+        self.last_output = now;
+        if self.state != WorkState::Working {
+            self.set_state(WorkState::Working, now);
+        }
+        if is_focused_active {
+            self.unread = false;
+        }
+    }
+
+    pub fn set_approval(&mut self, snippet: Option<String>, unread: bool, now: Instant) {
+        self.set_state(WorkState::NeedsApproval, now);
+        self.approval_snippet = snippet;
+        self.unread = unread;
     }
 
     pub fn record_exit(&mut self, code: i32) {
         self.last_exit_code = Some(code);
+    }
+
+    pub fn live_turn_secs(&self, now: Instant) -> Option<u64> {
+        if self.state != WorkState::Working || self.child_pid <= 0 {
+            return None;
+        }
+        let started = self.work_started_at.unwrap_or(self.work_started);
+        Some(now.saturating_duration_since(started).as_secs())
+    }
+
+    pub fn effective_agent(&self) -> String {
+        if !self.proc_info.agent.is_empty() {
+            return self.proc_info.agent.clone();
+        }
+        let tmux_agent = self.remote_tmux.as_ref().and_then(|(_, w, c, _)| {
+            detect_agent_name(c).or_else(|| detect_agent_name(w))
+        });
+        tmux_agent
+            .or_else(|| detect_agent_name(&self.osc_title))
+            .or_else(|| self.telemetry.detected_agent_label())
+            .unwrap_or("")
+            .to_owned()
+    }
+
+    pub fn is_active_agent(&self) -> bool {
+        self.child_pid > 0 && !self.effective_agent().is_empty()
     }
 }
 
@@ -192,9 +253,35 @@ impl PaneRegistry {
         aggregate_pane_state(&self.panes)
     }
 
+    pub fn has_unread(&self) -> bool {
+        self.panes.iter().any(|p| p.unread)
+    }
+
+    pub fn active_agent_count(&self) -> usize {
+        self.panes.iter().filter(|p| p.is_active_agent()).count()
+    }
+
+    pub fn live_turn_secs(&self, now: Instant) -> Option<u64> {
+        self.panes.iter().filter_map(|p| p.live_turn_secs(now)).max()
+    }
+
+    pub fn last_turn_secs(&self) -> Option<u64> {
+        self.panes.iter().filter_map(|p| p.last_turn_secs).max()
+    }
+
+    pub fn focus_pane(&mut self, vte: *mut GtkWidget, now: Instant) {
+        let Some(pane) = self.by_vte_mut(vte) else {
+            return;
+        };
+        pane.unread = false;
+        if pane.state == WorkState::Ready {
+            pane.set_state(WorkState::Idle, now);
+        }
+    }
+
     pub fn first_attention_pane(&self) -> Option<&PaneRecord> {
         let approval = self.panes.iter().find(|p| p.state == WorkState::NeedsApproval);
-        approval.or_else(|| self.panes.iter().find(|p| p.state == WorkState::Ready))
+        approval.or_else(|| self.panes.iter().find(|p| p.unread || p.state == WorkState::Ready))
     }
 }
 
