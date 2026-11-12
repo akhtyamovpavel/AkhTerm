@@ -15,6 +15,10 @@ use crate::tabs::{RemoteConnection, Tab, TabMeta};
 use crate::telemetry::SessionTelemetry;
 use crate::theme::{apply_vte_colors, current_theme_mode};
 
+extern "C" {
+    fn vte_terminal_get_current_directory_uri(terminal: *mut VteTerminal) -> *const c_char;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionCategory {
     Project,
@@ -430,15 +434,151 @@ extern "C" fn on_vte_button_press(
 }
 
 fn apply_vte_style(vte: *mut GtkWidget) {
+    apply_vte_preferences(vte, "DejaVu Sans Mono 10.5", 15_000);
     unsafe {
-        vte_terminal_set_scrollback_lines(vte, 15_000);
         vte_terminal_set_allow_hyperlink(vte, 1);
         apply_vte_colors(vte, current_theme_mode());
-        let desc = pango_font_description_from_string(c"DejaVu Sans Mono 10.5".as_ptr());
-        if !desc.is_null() {
-            vte_terminal_set_font(vte, desc);
-            pango_font_description_free(desc);
+    }
+}
+
+pub fn apply_vte_preferences(vte: *mut GtkWidget, font_desc: &str, scrollback_lines: isize) {
+    if vte.is_null() {
+        return;
+    }
+    unsafe { vte_terminal_set_scrollback_lines(vte, scrollback_lines.max(0)) };
+    let trimmed = font_desc.trim();
+    if let (false, Ok(c_font)) = (trimmed.is_empty(), CString::new(trimmed)) {
+        unsafe {
+            let desc = pango_font_description_from_string(c_font.as_ptr());
+            if !desc.is_null() {
+                vte_terminal_set_font(vte, desc);
+                pango_font_description_free(desc);
+            }
         }
+    }
+}
+
+pub fn parse_osc7_directory_uri(uri: &str) -> Option<String> {
+    let rest = uri.trim().strip_prefix("file://")?;
+    let slash_idx = rest.find('/')?;
+    let decoded = crate::file_drop::percent_decode_utf8(&rest[slash_idx..])?;
+    (!decoded.is_empty()).then_some(decoded)
+}
+
+fn update_session_osc7_cwd(s: &mut TermSession, vte: *mut GtkWidget, dir: &str) {
+    if let Some(pane) = s.panes.extra.iter_mut().find(|p| p.vte == vte) {
+        pane.cwd = dir.to_owned();
+    }
+    let is_remote = s.effective_category() == SessionCategory::Remote;
+    apply_osc7_primary_cwd(s, vte, dir, is_remote);
+    refresh_smart_title(s);
+}
+
+fn apply_osc7_primary_cwd(s: &mut TermSession, vte: *mut GtkWidget, dir: &str, is_remote: bool) {
+    if s.vte == vte && (!is_remote || s.remote().is_some()) {
+        s.cwd = dir.to_owned();
+    }
+    if !is_remote && s.vte == vte {
+        if let Tab::Local { ref mut cwd, .. } = s.tab {
+            *cwd = dir.to_owned();
+        }
+    }
+    if vte == s.active_vte() {
+        s.proc_info.cwd = dir.to_owned();
+        if let Some((_, _, _, ref mut tmux_path)) = s.remote_tmux {
+            *tmux_path = dir.to_owned();
+        }
+    }
+}
+
+extern "C" fn on_vte_directory_uri_changed(vte: *mut GtkWidget, _data: *mut c_void) {
+    if vte.is_null() {
+        return;
+    }
+    let ptr = unsafe { vte_terminal_get_current_directory_uri(vte) };
+    let uri = (!ptr.is_null()).then(|| unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() });
+    let Some(dir) = uri.as_deref().and_then(parse_osc7_directory_uri) else {
+        return;
+    };
+    let hit = crate::app_state::with_app_mut(|app| {
+        let s = app.sessions.iter_mut().find(|s| s.has_vte(vte))?;
+        update_session_osc7_cwd(s, vte, &dir);
+        Some(())
+    })
+    .flatten();
+    if hit.is_some() {
+        crate::topbar::refresh_ui();
+    }
+}
+
+fn handle_pty_osc52_toast(msg: &str) {
+    if let Some(hook) = crate::pty_tap::current_footer_hook() {
+        hook(msg);
+    }
+    crate::app_state::set_footer_message(msg);
+}
+
+fn maybe_notify_osc133(
+    s: &mut TermSession,
+    done: &crate::pty_tap::Osc133Completion,
+    win: *mut GtkWidget,
+    is_focused: bool,
+    now: Instant,
+) {
+    let thresh = crate::pty_tap::notify_threshold_secs();
+    if !crate::pty_tap::should_send_osc133_notify(done.elapsed_secs, thresh, is_focused) {
+        return;
+    }
+    if !win.is_null() {
+        unsafe { gtk_window_set_urgency_hint(win, 1) };
+    }
+    if crate::approval::can_notify_session(s.last_notified, now) {
+        s.last_notified = Some(now);
+        let summary = crate::pty_tap::osc133_notify_title().to_owned();
+        let body = crate::pty_tap::format_osc133_notify_body(&s.title, done.exit_code, done.elapsed_secs);
+        std::thread::spawn(move || {
+            let _ = crate::platform::build_notify_command("notify-send", &summary, &body).status();
+        });
+    }
+}
+
+fn apply_osc133_to_session(done: &crate::pty_tap::Osc133Completion) -> bool {
+    let target_vte = done.vte_addr as *mut GtkWidget;
+    let now = Instant::now();
+    crate::app_state::with_app_mut(|app| {
+        let win_active = app.win.is_null() || unsafe { gtk_window_is_active(app.win) } != 0;
+        let active_id = app.active_id;
+        let win = app.win;
+        let s = app.sessions.iter_mut().find(|s| s.has_vte(target_vte))?;
+        let is_focused = win_active && s.id == active_id && s.active_vte() == target_vte;
+        if done.elapsed_secs >= 1 {
+            s.last_turn_secs = Some(done.elapsed_secs);
+        }
+        if !is_focused && s.category != SessionCategory::Daemon {
+            s.state = WorkState::Ready;
+            s.unread = true;
+        }
+        maybe_notify_osc133(s, done, win, is_focused, now);
+        Some(true)
+    })
+    .flatten()
+    .unwrap_or(false)
+}
+
+fn handle_pty_osc133_done(done: crate::pty_tap::Osc133Completion) {
+    if let Some(hook) = crate::pty_tap::current_osc133_hook() {
+        hook(done.clone());
+    }
+    if apply_osc133_to_session(&done) {
+        crate::topbar::refresh_ui();
+    }
+}
+
+fn session_tap_sink() -> crate::pty_tap::PtyTapSink {
+    crate::pty_tap::PtyTapSink {
+        on_osc52_toast: Some(std::sync::Arc::new(handle_pty_osc52_toast)),
+        on_osc133_done: Some(std::sync::Arc::new(handle_pty_osc133_done)),
+        skip_gtk_clipboard: false,
     }
 }
 
@@ -459,27 +599,7 @@ fn register_vte_url_matches(vte: *mut GtkWidget) {
 }
 
 fn spawn_vte_command(vte: *mut GtkWidget, cwd: &str, argv_strs: &[&str]) -> i32 {
-    let c_cwd = CString::new(cwd).unwrap_or_else(|_| CString::new("/tmp").unwrap());
-    let c_args: Vec<CString> = argv_strs.iter().filter_map(|s| CString::new(*s).ok()).collect();
-    let mut ptrs: Vec<*const c_char> = c_args.iter().map(|s| s.as_ptr()).collect();
-    ptrs.push(ptr::null());
-    let mut pid: i32 = 0;
-    let spawned = unsafe {
-        vte_terminal_spawn_sync(
-            vte,
-            0,
-            c_cwd.as_ptr(),
-            ptrs.as_ptr(),
-            ptr::null(),
-            G_SPAWN_SEARCH_PATH,
-            ptr::null(),
-            ptr::null_mut(),
-            &mut pid,
-            ptr::null_mut(),
-            ptr::null_mut(),
-        )
-    };
-    if spawned == 0 { 0 } else { pid }
+    crate::pty_tap::spawn_vte_with_tap(vte, cwd, argv_strs, session_tap_sink())
 }
 
 pub fn create_vte_widget(cwd: &str, argv_strs: &[&str]) -> (*mut GtkWidget, i32) {
@@ -499,6 +619,14 @@ pub fn create_vte_widget(cwd: &str, argv_strs: &[&str]) -> (*mut GtkWidget, i32)
             on_vte_button_press as *const c_void,
             ctx.cast(),
             drop_vte_link_ctx as *const c_void,
+            0,
+        );
+        g_signal_connect_data(
+            vte,
+            c"current-directory-uri-changed".as_ptr(),
+            on_vte_directory_uri_changed as *const c_void,
+            ptr::null_mut(),
+            ptr::null(),
             0,
         );
         (vte, pid)
@@ -1066,8 +1194,48 @@ mod tests {
     }
 
     #[test]
+    fn osc7_uri_decoding_and_session_cwd_updates() {
+        assert_eq!(
+            parse_osc7_directory_uri("file://gpu-box/srv/%D0%A6%D0%A3%202026"),
+            Some("/srv/ЦУ 2026".to_owned())
+        );
+        assert_eq!(parse_osc7_directory_uri("https://example.com/a"), None);
+
+        let mut local = sample_local_session("Shell", "/tmp/start");
+        update_session_osc7_cwd(&mut local, ptr::null_mut(), "/tmp/next");
+        assert_eq!(local.cwd, "/tmp/next");
+        assert_eq!(local.proc_info.cwd, "/tmp/next");
+
+        let mut remote = sample_local_session("gpu-box", "/tmp/start");
+        remote.category = SessionCategory::Remote;
+        remote.tab = Tab::remote("gpu-box", Some("main"));
+        remote.remote_tmux = Some(("main".into(), "0".into(), "zsh".into(), "/old".into()));
+        update_session_osc7_cwd(&mut remote, ptr::null_mut(), "/srv/remote");
+        assert_eq!(remote.cwd, "/srv/remote");
+        assert_eq!(remote.remote_tmux.as_ref().map(|t| t.3.as_str()), Some("/srv/remote"));
+    }
+
+    #[test]
+    fn headless_vte_applies_preferences_and_emits_osc7_uri() {
+        crate::proc_radar::tests::with_headless_gtk(|| unsafe {
+            let win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+            let vte = vte_terminal_new();
+            apply_vte_preferences(vte, "Monospace 12", 25_000);
+            gtk_container_add(win, vte);
+            gtk_widget_show_all(win);
+            let seq = "\x1b]7;file://localhost/tmp\x07";
+            vte_terminal_feed(vte, seq.as_ptr() as *const c_char, seq.len() as isize);
+            crate::proc_radar::tests::pump_gtk_events();
+            let ptr = vte_terminal_get_current_directory_uri(vte);
+            let uri = (!ptr.is_null()).then(|| CStr::from_ptr(ptr).to_string_lossy().into_owned());
+            assert_eq!(uri.as_deref().and_then(parse_osc7_directory_uri).as_deref(), Some("/tmp"));
+            gtk_widget_destroy(win);
+        });
+    }
+
+    #[test]
     fn session_module_meets_grade_b_mi_target() {
         let (_, _, mi) = crate::mi::compute_file_mi(include_str!("session.rs"));
-        assert!(mi >= 58.0, "session.rs MI {mi:.2} < 58.0");
+        assert!(mi >= 58.07, "session.rs MI {mi:.2} < 58.07");
     }
 }
