@@ -10,6 +10,7 @@ use std::rc::Rc;
 use crate::config::LocalProfile;
 use crate::ffi::*;
 use crate::git_status::{GitChangedFile, GitRepoStatus, MAX_GIT_FILES};
+use crate::i18n::{current_locale, UiLocale, UiText};
 use crate::paths::{shorten_home, state_dir};
 use crate::proc_radar::{RemoteTmuxItem, SshHostEntry};
 use crate::session::TermSession;
@@ -21,45 +22,61 @@ const MAX_VISIBLE_ROWS: usize = 48;
 const MAX_HANDOFF_FILES: usize = 24;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
 pub enum PaletteKind {
-    Tab,
-    RemoteTmux,
-    Profile,
-    SshPlain,
-    SshTmux,
-    Agent,
-    Handoff,
-    Theme,
-    Search,
-    Git,
+    Tab = 0,
+    RemoteTmux = 1,
+    Profile = 2,
+    SshPlain = 3,
+    SshTmux = 4,
+    Agent = 5,
+    Handoff = 6,
+    Theme = 7,
+    Search = 8,
+    Git = 9,
+    Dispatch = 10,
+    Swarm = 11,
+    Settings = 12,
+    About = 13,
+    Locale = 14,
 }
 
+const KIND_BADGES: [UiText; 15] = [
+    UiText::new(text::PALETTE_BADGE_TAB, c"Tab"),
+    UiText::new(text::PALETTE_BADGE_TMUX, c"tmux"),
+    UiText::new(text::PALETTE_BADGE_PROFILE, c"Profile"),
+    UiText::new(text::PALETTE_BADGE_SSH, c"SSH"),
+    UiText::new(text::PALETTE_BADGE_SSH_TMUX, c"SSH · tmux"),
+    UiText::new(text::PALETTE_BADGE_AGENT, c"Agent"),
+    UiText::new(text::PALETTE_BADGE_HANDOFF, c"Handoff"),
+    UiText::new(text::PALETTE_BADGE_THEME, c"Theme"),
+    UiText::new(text::PALETTE_BADGE_SEARCH, c"Search"),
+    UiText::new(text::PALETTE_BADGE_GIT, c"Git"),
+    UiText::new(c"Задача", c"Dispatch"),
+    UiText::new(c"Рой", c"Swarm"),
+    UiText::new(c"Настройки", c"Settings"),
+    UiText::new(c"Справка", c"About"),
+    UiText::new(c"Язык", c"Language"),
+];
+
+const KIND_CLASSES: [&str; 15] = [
+    "palette-badge-tab", "palette-badge-tmux", "palette-badge", "palette-badge-ssh",
+    "palette-badge-ssh", "palette-badge-agent", "palette-badge-handoff", "palette-badge",
+    "palette-badge", "palette-badge-git", "palette-badge-agent", "palette-badge-tmux",
+    "palette-badge", "palette-badge", "palette-badge-tab",
+];
+
 impl PaletteKind {
+    pub fn badge_text(self) -> UiText {
+        KIND_BADGES[self as usize]
+    }
+
     pub fn badge(self) -> &'static CStr {
-        match self {
-            Self::Tab => text::PALETTE_BADGE_TAB,
-            Self::RemoteTmux => text::PALETTE_BADGE_TMUX,
-            Self::Profile => text::PALETTE_BADGE_PROFILE,
-            Self::SshPlain => text::PALETTE_BADGE_SSH,
-            Self::SshTmux => text::PALETTE_BADGE_SSH_TMUX,
-            Self::Agent => text::PALETTE_BADGE_AGENT,
-            Self::Handoff => text::PALETTE_BADGE_HANDOFF,
-            Self::Theme => text::PALETTE_BADGE_THEME,
-            Self::Search => text::PALETTE_BADGE_SEARCH,
-            Self::Git => text::PALETTE_BADGE_GIT,
-        }
+        self.badge_text().cstr()
     }
 
     pub fn badge_class(self) -> &'static str {
-        match self {
-            Self::Tab => "palette-badge-tab",
-            Self::RemoteTmux => "palette-badge-tmux",
-            Self::Profile | Self::Theme | Self::Search => "palette-badge",
-            Self::SshPlain | Self::SshTmux => "palette-badge-ssh",
-            Self::Agent => "palette-badge-agent",
-            Self::Handoff => "palette-badge-handoff",
-            Self::Git => "palette-badge-git",
-        }
+        KIND_CLASSES[self as usize]
     }
 }
 
@@ -76,6 +93,11 @@ pub enum PaletteAction {
     OpenGitMenu,
     GitFile { repo_root: String, path: String, untracked: bool },
     RemoveCleanWorktree,
+    OpenTaskDispatch,
+    ToggleSwarmDashboard,
+    OpenSettings,
+    OpenAbout,
+    SwitchLocale,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -356,9 +378,83 @@ fn push_git_items(src: &PaletteSource<'_>, out: &mut Vec<PaletteItem>) {
     }
 }
 
-pub fn collect_items(src: &PaletteSource<'_>) -> Vec<PaletteItem> {
+fn ui_str(text: UiText, locale: UiLocale) -> String {
+    text.for_locale(locale).to_string_lossy().into_owned()
+}
+
+fn new_ui_item(
+    kind: PaletteKind,
+    title: UiText,
+    detail: UiText,
+    kw: &str,
+    action: PaletteAction,
+    locale: UiLocale,
+) -> PaletteItem {
+    new_item(kind, ui_str(title, locale), ui_str(detail, locale), kw.to_owned(), action)
+}
+
+fn make_dispatch_item(locale: UiLocale) -> PaletteItem {
+    let title = UiText::new(c"Диспетчер задач агентов (Ctrl+Shift+N)", c"Task Dispatch (Ctrl+Shift+N)");
+    let detail = UiText::new(
+        c"Запустить задачу по брифу или Issue в одном или нескольких worktree",
+        c"Launch a brief or Issue across one or more isolated worktrees",
+    );
+    let kw = "task dispatch задача worktree бриф issue ctrl+shift+n агент рой";
+    new_ui_item(PaletteKind::Dispatch, title, detail, kw, PaletteAction::OpenTaskDispatch, locale)
+}
+
+fn make_swarm_item(locale: UiLocale) -> PaletteItem {
+    let title = UiText::new(c"Панель роя (Ctrl+Shift+S)", c"Swarm Dashboard (Ctrl+Shift+S)");
+    let detail = UiText::new(
+        c"Карточки активных агентов, быстрый апрув и рассылка промптов",
+        c"Live agent cards, quick approve, and multi-pane prompt broadcast",
+    );
+    let kw = "swarm dashboard рой панели карточки апрув broadcast ctrl+shift+s";
+    new_ui_item(PaletteKind::Swarm, title, detail, kw, PaletteAction::ToggleSwarmDashboard, locale)
+}
+
+fn make_settings_item(locale: UiLocale) -> PaletteItem {
+    let title = UiText::new(c"Настройки (Ctrl+,)", c"Settings (Ctrl+,)");
+    let detail = UiText::new(
+        c"Тема, язык RU/EN, шрифт, прокрутка и перехват OSC 52",
+        c"Theme, RU/EN language, font, scrollback, and OSC 52 settings",
+    );
+    let kw = "settings настройки конфиг шрифт язык тема osc52 ctrl+,";
+    new_ui_item(PaletteKind::Settings, title, detail, kw, PaletteAction::OpenSettings, locale)
+}
+
+fn make_about_item(locale: UiLocale) -> PaletteItem {
+    let title = UiText::new(c"О программе AkhTerm", c"About AkhTerm");
+    let detail = UiText::new(
+        c"Версия, git SHA сборки, GTK/VTE и пути конфигурации",
+        c"Version, build git SHA, GTK/VTE info, and config paths",
+    );
+    let kw = "about akhterm о программе версия сборка build info sha";
+    new_ui_item(PaletteKind::About, title, detail, kw, PaletteAction::OpenAbout, locale)
+}
+
+fn make_locale_item(locale: UiLocale) -> PaletteItem {
+    let title = UiText::new(c"Переключить язык (RU / EN)", c"Switch Language (RU / EN)");
+    let detail = UiText::new(
+        c"Текущий язык: Русский · переключить интерфейс на English",
+        c"Current language: English · switch interface to Русский",
+    );
+    let kw = "language язык locale ru en русский english switch переключить";
+    new_ui_item(PaletteKind::Locale, title, detail, kw, PaletteAction::SwitchLocale, locale)
+}
+
+fn push_v1_command_items(out: &mut Vec<PaletteItem>, locale: UiLocale) {
+    out.push(make_dispatch_item(locale));
+    out.push(make_swarm_item(locale));
+    out.push(make_settings_item(locale));
+    out.push(make_about_item(locale));
+    out.push(make_locale_item(locale));
+}
+
+pub fn collect_items_for_locale(src: &PaletteSource<'_>, locale: UiLocale) -> Vec<PaletteItem> {
     let mut out = Vec::new();
     push_session_items(src.sessions, &mut out);
+    push_v1_command_items(&mut out, locale);
     push_search_item(&mut out);
     push_tmux_items(src.tmux_items, &mut out);
     push_profile_items(src.profiles, &mut out);
@@ -369,6 +465,10 @@ pub fn collect_items(src: &PaletteSource<'_>) -> Vec<PaletteItem> {
     let handoffs = discover_handoff_files(src.briefs_dir, src.extra_handoffs);
     push_handoff_items(&handoffs, &mut out);
     out
+}
+
+pub fn collect_items(src: &PaletteSource<'_>) -> Vec<PaletteItem> {
+    collect_items_for_locale(src, current_locale())
 }
 
 fn word_prefix_match(text: &str, tok: &str) -> bool {
@@ -943,9 +1043,30 @@ mod tests {
     }
 
     #[test]
+    fn indexes_v1_actions_with_bilingual_ru_and_en_labels_and_badges() {
+        let src = sample_source(&[], &[], &[], &[]);
+        let ru = collect_items_for_locale(&src, UiLocale::Ru);
+        let en = collect_items_for_locale(&src, UiLocale::En);
+        assert_eq!(PaletteKind::Dispatch.badge_text().for_locale(UiLocale::Ru), c"Задача");
+        assert_eq!(PaletteKind::Dispatch.badge_text().for_locale(UiLocale::En), c"Dispatch");
+        assert_eq!(PaletteKind::Swarm.badge_text().for_locale(UiLocale::Ru), c"Рой");
+        assert_eq!(PaletteKind::Swarm.badge_text().for_locale(UiLocale::En), c"Swarm");
+        assert!(ru.iter().any(|i| i.action == PaletteAction::OpenTaskDispatch && i.title.contains("Диспетчер")));
+        assert!(en.iter().any(|i| i.action == PaletteAction::OpenTaskDispatch && i.title.contains("Task Dispatch")));
+        assert!(ru.iter().any(|i| i.action == PaletteAction::ToggleSwarmDashboard && i.title.contains("Панель роя")));
+        assert!(en.iter().any(|i| i.action == PaletteAction::ToggleSwarmDashboard && i.title.contains("Swarm Dashboard")));
+        assert!(ru.iter().any(|i| i.action == PaletteAction::OpenSettings && i.title.contains("Настройки")));
+        assert!(en.iter().any(|i| i.action == PaletteAction::OpenSettings && i.title.contains("Settings")));
+        assert!(en.iter().any(|i| i.action == PaletteAction::OpenAbout && i.title.contains("About AkhTerm")));
+        assert!(ru.iter().any(|i| i.action == PaletteAction::SwitchLocale && i.title.contains("RU / EN")));
+        let hits = filter_items(&en, "swarm broadcast");
+        assert_eq!(en[hits[0]].action, PaletteAction::ToggleSwarmDashboard);
+    }
+
+    #[test]
     fn palette_module_maintains_grade_b_mi_score() {
         let (_, _, mi) = crate::mi::compute_file_mi(include_str!("palette.rs"));
-        assert!(mi >= 58.0, "expected palette.rs MI >= 58.0, got {mi:.2}");
+        assert!(mi >= 58.85, "expected palette.rs MI >= 58.85, got {mi:.2}");
     }
 
     fn pump_events() {
