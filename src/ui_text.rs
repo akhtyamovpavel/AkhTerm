@@ -2,6 +2,11 @@
 
 use std::ffi::CStr;
 
+#[allow(unused_imports)]
+pub use crate::i18n::{
+    configured_locale, current_locale, detect_system_locale_from_env, set_locale, UiLocale, UiText,
+};
+
 pub const APP_NAME: &CStr = c"AkhTerm";
 pub const PROFILES: &CStr = c"Профили / SSH ▾";
 pub const SERVERS: &CStr = c"Серверы ▾";
@@ -149,4 +154,19 @@ pub fn theme_toggle_tooltip(is_light: bool) -> &'static CStr {
 
 pub fn cstr_text(value: &'static CStr) -> &'static str {
     value.to_str().unwrap_or("")
+}
+
+#[allow(dead_code)]
+pub fn tr(entry: UiText) -> &'static CStr {
+    entry.cstr()
+}
+
+#[allow(dead_code)]
+pub fn tr_str(entry: UiText) -> &'static str {
+    entry.as_str()
+}
+
+#[allow(dead_code)]
+pub fn locale_is_ru() -> bool {
+    current_locale() == UiLocale::Ru
 }
