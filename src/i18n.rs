@@ -140,9 +140,13 @@ pub(crate) fn with_locale_lock<R>(f: impl FnOnce() -> R) -> R {
     use std::sync::Mutex;
     static LOCK: Mutex<()> = Mutex::new(());
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let prev = configured_locale();
+    let prev_loc = configured_locale();
+    let prev_osc = crate::pty_tap::is_osc52_enabled();
+    let prev_notify = crate::pty_tap::notify_threshold_secs();
     let out = f();
-    set_locale(prev);
+    set_locale(prev_loc);
+    crate::pty_tap::set_osc52_enabled(prev_osc);
+    crate::pty_tap::set_notify_threshold_secs(prev_notify);
     out
 }
 

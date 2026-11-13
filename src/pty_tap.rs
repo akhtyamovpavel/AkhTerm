@@ -733,29 +733,29 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::i18n::{configured_locale, set_locale, UiLocale};
+    use crate::i18n::{set_locale, with_locale_lock, UiLocale};
     use crate::proc_radar::tests::{pump_gtk_events, with_headless_gtk};
 
     #[test]
     fn runtime_toggles_and_bilingual_formatters_work() {
-        let prev_loc = configured_locale();
-        set_osc52_enabled(false);
-        assert!(!is_osc52_enabled());
-        set_osc52_enabled(true);
-        assert!(is_osc52_enabled());
+        with_locale_lock(|| {
+            set_osc52_enabled(false);
+            assert!(!is_osc52_enabled());
+            set_osc52_enabled(true);
+            assert!(is_osc52_enabled());
 
-        set_notify_threshold_secs(0);
-        assert!(!should_send_osc133_notify(60, notify_threshold_secs(), false));
-        set_notify_threshold_secs(15);
-        assert!(!should_send_osc133_notify(14, 15, false));
-        assert!(!should_send_osc133_notify(20, 15, true));
-        assert!(should_send_osc133_notify(15, 15, false));
+            set_notify_threshold_secs(0);
+            assert!(!should_send_osc133_notify(60, notify_threshold_secs(), false));
+            set_notify_threshold_secs(15);
+            assert!(!should_send_osc133_notify(14, 15, false));
+            assert!(!should_send_osc133_notify(20, 15, true));
+            assert!(should_send_osc133_notify(15, 15, false));
 
-        set_locale(UiLocale::Ru);
-        assert_eq!(format_osc52_toast(42), "Скопировано по OSC 52 · 42 байт");
-        set_locale(UiLocale::En);
-        assert_eq!(format_osc52_toast(42), "Copied via OSC 52 · 42 bytes");
-        set_locale(prev_loc);
+            set_locale(UiLocale::Ru);
+            assert_eq!(format_osc52_toast(42), "Скопировано по OSC 52 · 42 байт");
+            set_locale(UiLocale::En);
+            assert_eq!(format_osc52_toast(42), "Copied via OSC 52 · 42 bytes");
+        });
 
         assert_eq!(format_osc133_status(Some(0), 18), "✓ · 18s");
         assert_eq!(format_osc133_status(None, 5), "✓ · 5s");
@@ -789,46 +789,47 @@ mod tests {
 
     #[test]
     fn headless_vte_pty_tap_relays_osc52_blocks_queries_and_tracks_osc133() {
-        with_headless_gtk(|| {
+        with_locale_lock(|| {
             set_osc52_enabled(true);
-            let prev_loc = configured_locale();
             set_locale(UiLocale::Ru);
-            let toasts = Arc::new(Mutex::new(Vec::<String>::new()));
-            let completions = Arc::new(Mutex::new(Vec::<Osc133Completion>::new()));
-            let sink = make_test_sink(&toasts, &completions);
-            let (win, vte) = spawn_tap_probe_window(sink);
-            pump_until_done(&completions, vte, "TAP_OK");
-            assert_eq!(read_clipboard_text_blocking().as_deref(), Some("Привет ЦУ"));
-            assert_eq!(toasts.lock().unwrap().as_slice(), &["Скопировано по OSC 52 · 17 байт"]);
-            let screen = read_vte_screen_text(vte);
-            assert!(screen.contains("TAP_OK"), "screen={screen:?}");
-            assert!(!screen.contains('?'), "query leaked to screen={screen:?}");
-            let done = completions.lock().unwrap();
-            assert_eq!(done.len(), 1);
-            assert_eq!(done[0].exit_code, Some(42));
-            assert!(done[0].status_text.starts_with("✗ 42 · "));
-            unsafe { gtk_widget_destroy(win) };
-            pump_gtk_events();
-            set_locale(prev_loc);
+            with_headless_gtk(|| {
+                let toasts = Arc::new(Mutex::new(Vec::<String>::new()));
+                let completions = Arc::new(Mutex::new(Vec::<Osc133Completion>::new()));
+                let sink = make_test_sink(&toasts, &completions);
+                let (win, vte) = spawn_tap_probe_window(sink);
+                pump_until_done(&completions, vte, "TAP_OK");
+                assert_eq!(read_clipboard_text_blocking().as_deref(), Some("Привет ЦУ"));
+                assert_eq!(toasts.lock().unwrap().as_slice(), &["Скопировано по OSC 52 · 17 байт"]);
+                let screen = read_vte_screen_text(vte);
+                assert!(screen.contains("TAP_OK"), "screen={screen:?}");
+                assert!(!screen.contains('?'), "query leaked to screen={screen:?}");
+                let done = completions.lock().unwrap();
+                assert_eq!(done.len(), 1);
+                assert_eq!(done[0].exit_code, Some(42));
+                assert!(done[0].status_text.starts_with("✗ 42 · "));
+                unsafe { gtk_widget_destroy(win) };
+                pump_gtk_events();
+            });
         });
     }
 
     #[test]
     fn headless_vte_pty_tap_syncs_winsize_and_respects_osc52_disable() {
-        with_headless_gtk(|| {
+        with_locale_lock(|| {
             set_osc52_enabled(false);
-            let toasts = Arc::new(Mutex::new(Vec::<String>::new()));
-            let completions = Arc::new(Mutex::new(Vec::<Osc133Completion>::new()));
-            let sink = make_test_sink(&toasts, &completions);
-            let (win, vte) = spawn_resize_probe_window(sink);
-            pump_until_done(&completions, vte, "SIZE=");
-            assert!(toasts.lock().unwrap().is_empty());
-            let screen = read_vte_screen_text(vte);
-            assert!(screen.contains("SIZE="), "screen={screen:?}");
-            assert!(!screen.contains("SIZE=0 0"), "zero winsize: {screen:?}");
-            unsafe { gtk_widget_destroy(win) };
-            pump_gtk_events();
-            set_osc52_enabled(true);
+            with_headless_gtk(|| {
+                let toasts = Arc::new(Mutex::new(Vec::<String>::new()));
+                let completions = Arc::new(Mutex::new(Vec::<Osc133Completion>::new()));
+                let sink = make_test_sink(&toasts, &completions);
+                let (win, vte) = spawn_resize_probe_window(sink);
+                pump_until_done(&completions, vte, "SIZE=");
+                assert!(toasts.lock().unwrap().is_empty());
+                let screen = read_vte_screen_text(vte);
+                assert!(screen.contains("SIZE="), "screen={screen:?}");
+                assert!(!screen.contains("SIZE=0 0"), "zero winsize: {screen:?}");
+                unsafe { gtk_widget_destroy(win) };
+                pump_gtk_events();
+            });
         });
     }
 
