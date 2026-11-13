@@ -17,6 +17,9 @@ use crate::tabs::{is_ssh_host, Tab};
 pub struct ProcInfo {
     pub ssh_host: String,
     pub has_tmux: String,
+    pub tmux_session: String,
+    pub tmux_window: String,
+    pub active_pane_pid: i32,
     pub agent: String,
     pub fg_cmd: String,
     pub cwd: String,
@@ -264,6 +267,10 @@ fn apply_proc_cmd(info: &mut ProcInfo, parts: &[String]) {
 }
 
 pub fn inspect_proc_tree(root_pid: i32) -> ProcInfo {
+    inspect_proc_tree_inner(root_pid, true)
+}
+
+fn inspect_proc_tree_inner(root_pid: i32, allow_tmux: bool) -> ProcInfo {
     let mut info = ProcInfo::default();
     if root_pid <= 0 {
         return info;
@@ -280,7 +287,12 @@ pub fn inspect_proc_tree(root_pid: i32) -> ProcInfo {
     for entry in &procs {
         if entry.pid != root_pid {
             apply_proc_cmd(&mut info, &entry.argv);
+        } else if exe_basename(&entry.argv[0]) == "tmux" {
+            info.has_tmux = "tmux".to_string();
         }
+    }
+    if allow_tmux && info.ssh_host.is_empty() && !info.has_tmux.is_empty() {
+        crate::tmux_local::resolve_local_tmux_into(&visited, &mut info, |p| inspect_proc_tree_inner(p, false));
     }
     info
 }
@@ -329,10 +341,10 @@ pub fn query_ssh_servers(hosts: &[String]) -> BoxTelemetry {
     let remote_cmd = concat!(
         "tmux set -g set-titles on 2>/dev/null; ",
         "tmux set-option -g set-clipboard on 2>/dev/null; ",
-        "tmux set -g set-titles-string 'AKHTERM_TMUX:#{session_name}|#{window_name}|#{pane_current_command}|#{pane_current_path}' 2>/dev/null; ",
+        "tmux set -g set-titles-string 'AKHTERM_TMUX:#{session_name}|#{window_index}:#{window_name}|#{pane_current_command}|#{pane_current_path}' 2>/dev/null; ",
         "tmux list-sessions -F '#{session_name} (#{session_windows} окн.)' 2>/dev/null; ",
         "echo '---CLIENTS---'; ",
-        "tmux list-clients -F '#{session_name}|#{window_name}|#{pane_current_command}|#{pane_current_path}' 2>/dev/null | tail -n 1; ",
+        "tmux list-clients -F '#{session_name}|#{window_index}:#{window_name}|#{pane_current_command}|#{pane_current_path}' 2>/dev/null | tail -n 1; ",
         "echo '---GPU---'; ",
         "nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader 2>/dev/null | head -n 1"
     );

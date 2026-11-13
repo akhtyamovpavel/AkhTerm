@@ -195,6 +195,7 @@ pub struct SessionTelemetry {
     pub remote_tailer: crate::remote_telemetry::RemoteTailer,
     pub vte_fallback: TokenSnapshot,
     pub vte_panel_override: Option<(u64, Option<u8>, u64)>,
+    pub last_tmux_window: Option<String>,
     effective: TokenSnapshot,
     last_discovery: Option<Instant>,
 }
@@ -325,6 +326,7 @@ pub struct SessionPollJob {
     pub local_cwd: Option<String>,
     pub has_ssh: bool,
     pub has_tmux: bool,
+    pub tmux_window: Option<String>,
     pub agent: String,
     pub is_daemon: bool,
     pub telemetry: SessionTelemetry,
@@ -333,13 +335,26 @@ pub struct SessionPollJob {
 impl SessionPollJob {
     #[cfg(test)]
     pub fn from_session(s: &TermSession) -> Self {
+        let active_vte = s.active_vte();
+        let root_pid = if s.proc_info.active_pane_pid > 0 && active_vte == s.vte {
+            s.proc_info.active_pane_pid
+        } else {
+            s.active_pid()
+        };
+        let proc_win = (!s.proc_info.tmux_window.is_empty()).then(|| s.proc_info.tmux_window.clone());
+        let tmux_window = if !s.proc_info.ssh_host.is_empty() {
+            s.remote_tmux.as_ref().map(|t| t.1.clone()).or(proc_win)
+        } else {
+            proc_win
+        };
         Self {
             sid: s.id,
-            root_pid: s.active_pid(),
-            vte: s.active_vte(),
+            root_pid,
+            vte: active_vte,
             local_cwd: s.active_local_cwd(),
             has_ssh: !s.proc_info.ssh_host.is_empty(),
             has_tmux: !s.proc_info.has_tmux.is_empty(),
+            tmux_window,
             agent: s.effective_agent(),
             is_daemon: s.category == SessionCategory::Daemon,
             telemetry: s.telemetry.clone(),
@@ -392,6 +407,16 @@ pub fn run_poll_job(job: SessionPollJob, home: &Path, now: Instant) -> (usize, S
     run_poll_job_with_remote(job, None, home, now)
 }
 
+fn sync_tmux_window_change(telem: &mut SessionTelemetry, tmux_window: &Option<String>) {
+    if &telem.last_tmux_window != tmux_window {
+        reset_local_tailer(telem);
+        reset_remote_tailer(telem);
+        telem.vte_fallback = TokenSnapshot::default();
+        telem.vte_panel_override = None;
+        telem.last_tmux_window = tmux_window.clone();
+    }
+}
+
 pub fn run_poll_job_with_remote(
     mut job: SessionPollJob,
     remote_tailer: Option<crate::remote_telemetry::RemoteTailer>,
@@ -401,10 +426,11 @@ pub fn run_poll_job_with_remote(
     if job.is_daemon {
         return (job.sid, job.telemetry);
     }
+    sync_tmux_window_change(&mut job.telemetry, &job.tmux_window);
     let local_cwd = (!has_live_ssh(&job)).then_some(job.local_cwd.as_deref()).flatten();
     if let Some(cwd) = local_cwd {
         reset_remote_tailer(&mut job.telemetry);
-        refresh_local_jsonl(&mut job.telemetry, home, cwd, job.root_pid, &job.agent, now);
+        refresh_local_jsonl(&mut job.telemetry, home, cwd, job.root_pid, job.has_tmux, &job.agent, now);
     } else {
         reset_local_tailer(&mut job.telemetry);
         if let Some(rt) = remote_tailer {
@@ -443,6 +469,7 @@ fn refresh_local_jsonl(
     home: &Path,
     cwd: &str,
     root_pid: i32,
+    has_tmux: bool,
     agent: &str,
     now: Instant,
 ) {
@@ -452,6 +479,12 @@ fn refresh_local_jsonl(
         if let Some((path, kind)) = discover_transcript(home, cwd, root_pid, agent) {
             let _ = telem.tailer.poll_file(&path, kind);
             invalidate_panel_override_if_advanced(telem, prev_path.as_deref());
+            return;
+        }
+        if has_tmux {
+            telem.tailer = TranscriptTailer::default();
+            telem.vte_fallback = TokenSnapshot::default();
+            telem.vte_panel_override = None;
             return;
         }
     }
@@ -487,6 +520,9 @@ pub fn discover_transcript(
         return discover_claude_transcript(home, norm_cwd).map(|p| (p, TelemetrySource::Claude));
     }
     if low.contains("codex") {
+        if let Some(p) = crate::tmux_local::discover_codex_by_fd(root_pid, home) {
+            return Some((p, TelemetrySource::Codex));
+        }
         return discover_codex_transcript(home, norm_cwd).map(|p| (p, TelemetrySource::Codex));
     }
     discover_agy_by_fd(root_pid, home).map(|p| (p, TelemetrySource::Agy))
@@ -1926,7 +1962,7 @@ mod tests {
         seeded.tailer.offset = 512;
         let job = SessionPollJob {
             sid: 2, root_pid: 0, vte, local_cwd: Some("/nonexistent".to_owned()),
-            has_ssh: false, has_tmux: false, agent: "AGY".to_owned(), is_daemon: false, telemetry: seeded,
+            has_ssh: false, has_tmux: false, tmux_window: None, agent: "AGY".to_owned(), is_daemon: false, telemetry: seeded,
         };
         let (_, telem) = run_poll_job(job, Path::new("/nonexistent"), Instant::now());
         assert_eq!((telem.snapshot().context_tokens, telem.snapshot().context_pct), (130_700, Some(13)));
@@ -1957,6 +1993,7 @@ mod tests {
             local_cwd: Some("/tmp".to_owned()),
             has_ssh: false,
             has_tmux: false,
+            tmux_window: None,
             agent: String::new(),
             is_daemon: false,
             telemetry: SessionTelemetry::default(),
@@ -1974,6 +2011,7 @@ mod tests {
             local_cwd: Some("/tmp".to_owned()),
             has_ssh: true,
             has_tmux: false,
+            tmux_window: None,
             agent: "Claude".to_owned(),
             is_daemon: false,
             telemetry: seeded,
@@ -2026,6 +2064,7 @@ mod tests {
             local_cwd: Some(repo.to_string_lossy().into_owned()),
             has_ssh: false,
             has_tmux: false,
+            tmux_window: None,
             agent: "Claude".to_owned(),
             is_daemon: false,
             telemetry: SessionTelemetry::default(),
@@ -2040,6 +2079,7 @@ mod tests {
             local_cwd: Some(repo.to_string_lossy().into_owned()),
             has_ssh: true,
             has_tmux: false,
+            tmux_window: None,
             agent: "Claude".to_owned(),
             is_daemon: false,
             telemetry: local_tel,
@@ -2152,6 +2192,7 @@ mod tests {
             local_cwd: Some(ws.to_string_lossy().into_owned()),
             has_ssh: false,
             has_tmux: false,
+            tmux_window: None,
             agent: "AGY".to_owned(),
             is_daemon: false,
             telemetry: telem,
@@ -2229,7 +2270,7 @@ mod tests {
     fn make_remote_agy_job(telem: SessionTelemetry) -> SessionPollJob {
         SessionPollJob {
             sid: 5, root_pid: 0, vte: ptr::null_mut(), local_cwd: None,
-            has_ssh: true, has_tmux: true, agent: "AGY".to_owned(), is_daemon: false, telemetry: telem,
+            has_ssh: true, has_tmux: true, tmux_window: None, agent: "AGY".to_owned(), is_daemon: false, telemetry: telem,
         }
     }
 

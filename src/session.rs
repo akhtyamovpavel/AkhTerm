@@ -125,6 +125,12 @@ impl TermSession {
         if self.effective_category() == SessionCategory::Remote {
             return None;
         }
+        if !self.proc_info.has_tmux.is_empty()
+            && !self.proc_info.cwd.is_empty()
+            && self.active_vte() == self.vte
+        {
+            return Some(expand_home(&self.proc_info.cwd));
+        }
         let fallback = if !self.proc_info.cwd.is_empty() && self.active_vte() == self.vte {
             expand_home(&self.proc_info.cwd)
         } else {
@@ -136,11 +142,18 @@ impl TermSession {
 
     pub fn apply_proc_snapshot(&mut self, proc_info: ProcInfo) {
         let prev_host = std::mem::take(&mut self.proc_info.ssh_host);
+        let prev_win = std::mem::take(&mut self.proc_info.tmux_window);
         self.proc_info = proc_info;
         if self.category == SessionCategory::Project && prev_host != self.proc_info.ssh_host {
             self.osc_title.clear();
             self.remote_tmux = None;
             self.tmux_title_from_vte = false;
+        }
+        if !prev_win.is_empty()
+            && prev_win != self.proc_info.tmux_window
+            && self.effective_category() != SessionCategory::Remote
+        {
+            self.osc_title.clear();
         }
         if self.effective_category() != SessionCategory::Remote
             && !self.proc_info.cwd.is_empty()
@@ -246,20 +259,37 @@ fn apply_tmux_vte_title(s: &mut TermSession, vte: *mut GtkWidget, rest: &str) {
     if s.active_vte() != vte {
         return;
     }
-    let parts: Vec<&str> = rest.splitn(4, '|').collect();
-    if parts.len() == 4 && !parts[0].is_empty() {
-        if let Tab::Remote(remote) = &mut s.tab {
-            if let Some(target) = &mut remote.tmux_session {
-                *target = parts[0].to_owned();
-            }
+    let Some((sess, win, cmd, path)) = crate::tmux_local::parse_tmux_vte_title(rest) else {
+        return;
+    };
+    let switched = s
+        .remote_tmux
+        .as_ref()
+        .is_some_and(|(ps, pw, ..)| (ps.as_str(), pw.as_str()) != (sess.as_str(), win.as_str()));
+    if switched {
+        reset_session_tmux_state(s, vte);
+    } else if s.remote_tmux.as_ref().is_some_and(|(.., pc, _)| pc != &cmd && detect_agent_name(&cmd).is_none()) {
+        s.proc_info.agent.clear();
+    }
+    if let Tab::Remote(remote) = &mut s.tab {
+        if let Some(target) = &mut remote.tmux_session {
+            target.clone_from(&sess);
         }
-        s.remote_tmux = Some((
-            parts[0].to_owned(),
-            parts[1].to_owned(),
-            parts[2].to_owned(),
-            parts[3].to_owned(),
-        ));
-        s.tmux_title_from_vte = true;
+    }
+    s.proc_info.tmux_session.clone_from(&sess);
+    s.proc_info.tmux_window.clone_from(&win);
+    s.remote_tmux = Some((sess, win, cmd, path));
+    s.tmux_title_from_vte = true;
+    update_detected_agent(s);
+}
+
+fn reset_session_tmux_state(s: &mut TermSession, vte: *mut GtkWidget) {
+    s.proc_info.agent.clear();
+    s.osc_title.clear();
+    s.telemetry = SessionTelemetry::default();
+    if let Some(pane) = s.pane_registry.by_vte_mut(vte) {
+        pane.proc_info.agent.clear();
+        pane.telemetry = SessionTelemetry::default();
     }
 }
 
@@ -746,8 +776,11 @@ fn update_detected_agent(s: &mut TermSession) {
     if let Some((_, ref win, ref cmd, _)) = s.remote_tmux {
         if let Some(a) = detect_agent_name(cmd).or_else(|| detect_agent_name(win)) {
             s.proc_info.agent = a.to_string();
-            return;
         }
+        return;
+    }
+    if !s.proc_info.has_tmux.is_empty() && s.proc_info.active_pane_pid > 0 && s.proc_info.ssh_host.is_empty() {
+        return;
     }
     if !s.osc_title.is_empty() {
         if let Some(a) = detect_agent_name(&s.osc_title) {

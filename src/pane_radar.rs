@@ -54,6 +54,7 @@ pub fn sync_pane_proc(
     mut proc_info: ProcInfo,
     remote_tmux: Option<(String, String, String, String)>,
 ) {
+    crate::tmux_local::clear_stale_pane_osc(pane, &proc_info);
     if !proc_info.cwd.is_empty() && proc_info.ssh_host.is_empty() {
         pane.cwd = expand_home(&proc_info.cwd);
     }
@@ -65,7 +66,7 @@ pub fn sync_pane_proc(
 }
 
 fn fill_pane_agent_from_hints(pane: &PaneRecord, proc_info: &mut ProcInfo) {
-    if !proc_info.agent.is_empty() {
+    if !proc_info.agent.is_empty() || crate::tmux_local::is_local_tmux_pane(proc_info) {
         return;
     }
     let tmux_agent = pane
@@ -87,7 +88,7 @@ pub fn sync_registry_procs(reg: &mut PaneRegistry) {
 
 pub fn apply_pane_vte_title(pane: &mut PaneRecord, raw_title: &str, host: &str) {
     if let Some(rest) = raw_title.strip_prefix("AKHTERM_TMUX:") {
-        apply_pane_tmux_title(pane, rest);
+        crate::tmux_local::apply_pane_tmux_title(pane, rest);
         return;
     }
     let clean = raw_title.trim();
@@ -96,13 +97,6 @@ pub fn apply_pane_vte_title(pane: &mut PaneRecord, raw_title: &str, host: &str) 
         return;
     }
     pane.osc_title = clean.chars().take(28).collect();
-}
-
-fn apply_pane_tmux_title(pane: &mut PaneRecord, rest: &str) {
-    let parts: Vec<&str> = rest.splitn(4, '|').collect();
-    if parts.len() == 4 && !parts[0].is_empty() {
-        pane.remote_tmux = Some((parts[0].into(), parts[1].into(), parts[2].into(), parts[3].into()));
-    }
 }
 
 pub fn settle_pane_with_text(
@@ -192,33 +186,19 @@ pub struct PanePollJob {
     pub local_cwd: Option<String>,
     pub has_ssh: bool,
     pub has_tmux: bool,
+    pub tmux_window: Option<String>,
     pub agent: String,
     pub is_daemon: bool,
     pub telemetry: SessionTelemetry,
 }
 
-fn pane_local_cwd(pane: &PaneRecord, is_remote: bool) -> Option<String> {
-    (!is_remote && pane.proc_info.ssh_host.is_empty() && !pane.cwd.is_empty())
-        .then(|| expand_home(&pane.cwd))
-}
-
 impl PanePollJob {
     pub fn from_pane(sid: usize, pane: &PaneRecord, is_daemon: bool, is_remote: bool) -> Self {
-        Self {
-            sid, pane_id: pane.id, root_pid: pane.child_pid, vte: pane.vte,
-            local_cwd: pane_local_cwd(pane, is_remote),
-            has_ssh: is_remote || !pane.proc_info.ssh_host.is_empty(),
-            has_tmux: !pane.proc_info.has_tmux.is_empty() || pane.remote_tmux.is_some(),
-            agent: pane.effective_agent(), is_daemon, telemetry: pane.telemetry.clone(),
-        }
+        crate::tmux_local::pane_poll_job_from_pane(sid, pane, is_daemon, is_remote)
     }
 
     fn into_session_job(self) -> SessionPollJob {
-        SessionPollJob {
-            sid: self.sid, root_pid: self.root_pid, vte: self.vte, local_cwd: self.local_cwd,
-            has_ssh: self.has_ssh, has_tmux: self.has_tmux, agent: self.agent,
-            is_daemon: self.is_daemon, telemetry: self.telemetry,
-        }
+        crate::tmux_local::pane_into_session_job(self)
     }
 }
 
@@ -508,7 +488,7 @@ pub fn run_pane_poll_jobs(
 ) -> Vec<(usize, PaneId, SessionTelemetry)> {
     jobs.into_iter().map(|job| {
         let sid = job.sid;
-        let rt = remote_map.get(&sid).cloned();
+        let rt = crate::tmux_local::matching_remote_tailer(remote_map, sid, &job.tmux_window);
         let (pane_id, telem) = run_pane_poll_job(job, rt, home, now);
         (sid, pane_id, telem)
     }).collect()

@@ -286,7 +286,11 @@ impl RemoteConnection {
     pub fn argv(&self) -> Vec<String> {
         let mut argv = ssh_base_argv(&self.host);
         if let Some(name) = &self.tmux_session {
-            argv.push(format!("tmux new-session -A -s {} \\; set-option -g set-clipboard on", shell_quote(name)));
+            let target = shell_quote(name);
+            let titles = shell_quote(crate::tmux_local::TMUX_TITLE_FORMAT);
+            argv.push(format!(
+                "tmux start-server \\; set-option -g set-titles on \\; set-option -g set-titles-string {titles} \\; set-option -g set-clipboard on \\; new-session -A -s {target}"
+            ));
         }
         argv
     }
@@ -791,9 +795,15 @@ mod tests {
 
         let tmux = RemoteConnection { host: "gpu01".into(), tmux_session: Some("work 'main'".into()) };
         let direct = tmux.argv();
+        let expected_titles = crate::tabs::shell_quote(crate::tmux_local::TMUX_TITLE_FORMAT);
         assert_eq!(
             direct.last().map(String::as_str),
-            Some("tmux new-session -A -s 'work '\\''main'\\''' \\; set-option -g set-clipboard on")
+            Some(
+                format!(
+                    "tmux start-server \\; set-option -g set-titles on \\; set-option -g set-titles-string {expected_titles} \\; set-option -g set-clipboard on \\; new-session -A -s 'work '\\''main'\\'''"
+                )
+                .as_str()
+            )
         );
         assert!(!direct.last().unwrap().contains("mouse"));
         let grouped = tmux.grouped_tmux_argv(3);

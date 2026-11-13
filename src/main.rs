@@ -50,6 +50,7 @@ mod telemetry_agy;
 mod theme;
 mod theme_mode;
 mod tmux_copy;
+mod tmux_local;
 mod topbar;
 mod ui_font;
 mod ui_text;

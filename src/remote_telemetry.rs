@@ -27,7 +27,9 @@ pub struct RemoteSessionTarget {
     pub sid: usize,
     pub host: String,
     pub tmux_session: Option<String>,
+    pub tmux_window: Option<String>,
     pub pane_cwd_hint: String,
+    pub remote_cwd: Option<String>,
     pub agent_hint: String,
 }
 
@@ -35,6 +37,7 @@ pub struct RemoteSessionTarget {
 pub struct RemoteTailer {
     pub host: String,
     pub tmux_session: Option<String>,
+    pub tmux_window: Option<String>,
     pub remote_path: String,
     pub remote_offset: u64,
     pub mtime: u64,
@@ -68,6 +71,7 @@ pub struct RemoteProbeFrame {
 pub struct SessionProbeQuery {
     pub sid: usize,
     pub tmux_session: Option<String>,
+    pub tmux_window: Option<String>,
     pub pane_cwd_hint: String,
     pub agent_hint: String,
     pub prev_path: String,
@@ -78,7 +82,7 @@ pub struct SessionProbeQuery {
 struct SchedulerState {
     targets: Vec<RemoteSessionTarget>,
     tailers: HashMap<usize, RemoteTailer>,
-    host_last_poll: HashMap<String, Instant>,
+    host_next_probe_at: HashMap<String, Instant>,
     generations: HashMap<usize, u64>,
     ttl: Duration,
 }
@@ -99,11 +103,15 @@ impl RemoteSessionTarget {
             return None;
         }
         let (host, tmux_session) = resolve_host_and_tmux(s)?;
+        let cwd_hint = extract_cwd_hint(s);
+        let remote_cwd = (!cwd_hint.is_empty()).then(|| cwd_hint.clone());
         is_ssh_host(&host).then(|| Self {
             sid: s.id,
             host,
             tmux_session,
-            pane_cwd_hint: extract_cwd_hint(s),
+            tmux_window: crate::tmux_local::session_tmux_window(s),
+            pane_cwd_hint: cwd_hint,
+            remote_cwd,
             agent_hint: extract_live_agent_hint(s),
         })
     }
@@ -179,17 +187,20 @@ impl RemoteTailer {
         Self {
             host: target.host.clone(),
             tmux_session: target.tmux_session.clone(),
+            tmux_window: target.tmux_window.clone(),
             ..Default::default()
         }
     }
 
     pub fn matches_target(&self, target: &RemoteSessionTarget) -> bool {
-        self.host == target.host && self.tmux_session == target.tmux_session
+        self.host == target.host
+            && self.tmux_session == target.tmux_session
+            && self.tmux_window == target.tmux_window
     }
 
     pub fn apply_frame(&mut self, frame: &RemoteProbeFrame) -> bool {
         match frame.mode {
-            FrameMode::None => false,
+            FrameMode::None => self.clear_tailer(),
             FrameMode::Unchanged => {
                 self.mtime = frame.mtime;
                 false
@@ -199,6 +210,16 @@ impl RemoteTailer {
             FrameMode::Delta => self.apply_delta(frame),
             FrameMode::TailDelta => self.apply_tail_delta(frame),
         }
+    }
+
+    fn clear_tailer(&mut self) -> bool {
+        let had = self.tailer.path.is_some() || !self.remote_path.is_empty();
+        self.remote_path.clear();
+        self.remote_offset = 0;
+        self.mtime = 0;
+        self.codex_window = None;
+        self.tailer = TranscriptTailer::default();
+        had
     }
 
     fn reset_file(&mut self, path: &str, kind: TelemetrySource, mtime: u64) {
@@ -429,8 +450,9 @@ fn posix_core_helpers() -> [&'static str; 4] {
     ]
 }
 
-fn posix_probe_runners() -> [&'static str; 7] {
+fn posix_probe_runners() -> [&'static str; 8] {
     [
+        posix_pane_rank_fn(),
         posix_pick_pane_fn(),
         posix_tmux_roots_fn(),
         posix_tmux_hint_fn(),
@@ -733,13 +755,29 @@ fn push_emit_delta_tail(out: &mut String) {
     ));
 }
 
+fn posix_pane_rank_fn() -> &'static str {
+    concat!(
+        "pane_rank() {\n",
+        "  _tw=\"$1\"; _wa=\"$2\"; _pa=\"$3\"; _wi=\"$4\"; _wn=\"$5\"; _twi=\"${_tw%%:*}\"; _r=-1\n",
+        "  case \"$_tw\" in\n",
+        "    \"\") ;;\n",
+        "    *:*) if [ -n \"$_wi\" ] && [ \"$_wi:$_wn\" = \"$_tw\" ]; then _r=4; [ \"$_pa\" = \"1\" ] && _r=5\n",
+        "         elif [ -n \"$_wi\" ] && [ \"$_wi\" = \"$_twi\" ]; then _r=2; [ \"$_pa\" = \"1\" ] && _r=3\n",
+        "         elif [ \"$_wn\" = \"$_tw\" ]; then _r=4; [ \"$_pa\" = \"1\" ] && _r=5; fi ;;\n",
+        "    *)   if [ \"$_wn\" = \"$_tw\" ] || [ \"$_wi\" = \"$_tw\" ]; then _r=4; [ \"$_pa\" = \"1\" ] && _r=5; fi ;;\n",
+        "  esac\n",
+        "  [ \"$_r\" -lt 0 ] && { _r=0; [ \"$_pa\" = \"1\" ] && _r=1; [ \"$_wa\" = \"1\" ] && [ \"$_pa\" = \"1\" ] && _r=2; }\n",
+        "  printf '%s' \"$_r\"\n}\n",
+    )
+}
+
 fn posix_pick_pane_fn() -> &'static str {
     concat!(
         "pick_pane() {\n",
-        "  _bp=\"\"; _bc=\"\"; _bd=\"\"; _br=-1\n",
-        "  while IFS='|' read -r _sn _wa _pa _ppid _pcmd _ppath; do\n",
-        "    [ \"$_sn\" = \"$1\" ] || continue\n",
-        "    _r=0; [ \"$_pa\" = \"1\" ] && _r=1; [ \"$_wa\" = \"1\" ] && [ \"$_pa\" = \"1\" ] && _r=2\n",
+        "  _ts=\"$1\"; _tw=\"$2\"; _bp=\"\"; _bc=\"\"; _bd=\"\"; _br=-1\n",
+        "  while IFS='|' read -r _sn _wa _pa _ppid _pcmd _ppath _wi _wn; do\n",
+        "    [ \"$_sn\" = \"$_ts\" ] || continue\n",
+        "    _r=$(pane_rank \"$_tw\" \"$_wa\" \"$_pa\" \"$_wi\" \"$_wn\")\n",
         "    [ \"$_r\" -gt \"$_br\" ] && { _br=\"$_r\"; _bp=\"$_ppid\"; _bc=\"$_pcmd\"; _bd=\"$_ppath\"; }\n",
         "  done\n  [ \"$_br\" -ge 0 ] && printf '%s|%s|%s' \"$_bp\" \"$_bc\" \"$_bd\"\n}\n",
     )
@@ -759,8 +797,8 @@ fn posix_tmux_hint_fn() -> &'static str {
 fn posix_tmux_probe_fn() -> &'static str {
     concat!(
         "probe_tmux() {\n",
-        "  _s=\"$1\"; _ts=\"$2\"; _ch=\"$3\"; _ah=\"$4\"; _pp=\"$5\"; _pk=\"$6\"; _po=\"$7\"\n",
-        "  _fk=\"\"; _ff=\"\"; _rw=$(printf '%s\\n' \"${TMUX_PANES:-}\" | pick_pane \"$_ts\")\n",
+        "  _s=\"$1\"; _ts=\"$2\"; _tw=\"$3\"; _ch=\"$4\"; _ah=\"$5\"; _pp=\"$6\"; _pk=\"$7\"; _po=\"$8\"\n",
+        "  _fk=\"\"; _ff=\"\"; _rw=$(printf '%s\\n' \"${TMUX_PANES:-}\" | pick_pane \"$_ts\" \"$_tw\")\n",
         "  if [ -n \"$_rw\" ]; then\n",
         "    _ppid=\"${_rw%%|*}\"; _rs=\"${_rw#*|}\"; _pcmd=\"${_rs%%|*}\"; _ppath=\"${_rs#*|}\"\n",
         "    _ag=$(find_tree_agent \"$_ppid\")\n",
@@ -771,7 +809,6 @@ fn posix_tmux_probe_fn() -> &'static str {
         "    if [ -z \"$_ff\" ]; then\n",
         "      _hm=$(tmux_hint \"$_pcmd\" \"$_ah\" \"${_ppath:-$_ch}\" \"$_ppid\" || true)\n",
         "      [ -n \"$_hm\" ] && { _fk=\"${_hm%%|*}\"; _ff=\"${_hm#*|}\"; }\n    fi\n  fi\n",
-        "  [ -z \"$_ff\" ] && [ -n \"$_pp\" ] && [ -f \"$_pp\" ] && { _ff=\"$_pp\"; _fk=\"$_pk\"; }\n",
         "  emit_slice \"$_s\" \"$_fk\" \"$_ff\" \"$_pp\" \"$_po\"\n}\n",
     )
 }
@@ -821,7 +858,7 @@ fn posix_plain_probe_fn() -> &'static str {
 }
 
 fn posix_tmux_snapshot_line() -> &'static str {
-    "TMUX_PANES=$(tmux list-panes -a -F '#{session_name}|#{window_active}|#{pane_active}|#{pane_pid}|#{pane_current_command}|#{pane_current_path}' 2>/dev/null || true)\n"
+    "TMUX_PANES=$(tmux list-panes -a -F '#{session_name}|#{window_active}|#{pane_active}|#{pane_pid}|#{pane_current_command}|#{pane_current_path}|#{window_index}|#{window_name}' 2>/dev/null || true)\n"
 }
 
 fn append_query_call(out: &mut String, q: &SessionProbeQuery) {
@@ -832,7 +869,8 @@ fn append_query_call(out: &mut String, q: &SessionProbeQuery) {
     let pkind = posix_quote(source_kind_slug(q.prev_kind));
     if let Some(tmux) = &q.tmux_session {
         let tsess = posix_quote(tmux);
-        out.push_str(&format!("probe_tmux {sid} {tsess} {cwd} {hint} {ppath} {pkind} {poff}\n"));
+        let twin = posix_quote(q.tmux_window.as_deref().unwrap_or(""));
+        out.push_str(&format!("probe_tmux {sid} {tsess} {twin} {cwd} {hint} {ppath} {pkind} {poff}\n"));
     } else {
         out.push_str(&format!("probe_plain {sid} {cwd} {hint} {ppath} {pkind} {poff}\n"));
     }
@@ -897,7 +935,7 @@ impl SchedulerState {
         Self {
             targets: Vec::new(),
             tailers: HashMap::new(),
-            host_last_poll: HashMap::new(),
+            host_next_probe_at: HashMap::new(),
             generations: HashMap::new(),
             ttl,
         }
@@ -910,7 +948,8 @@ impl SchedulerState {
             if self.tailers.get(&target.sid).is_none_or(|rt| !rt.matches_target(target)) {
                 self.bump_generation(target.sid);
                 self.tailers.insert(target.sid, RemoteTailer::for_target(target));
-                wake_now |= !self.host_last_poll.contains_key(&target.host);
+                self.host_next_probe_at.remove(&target.host);
+                wake_now = true;
             }
         }
         self.targets = incoming.to_vec();
@@ -925,15 +964,13 @@ impl SchedulerState {
     fn reset_session(&mut self, sid: usize) {
         self.bump_generation(sid);
         if let Some(prev) = self.tailers.remove(&sid) {
-            self.host_last_poll.remove(&prev.host);
+            self.host_next_probe_at.remove(&prev.host);
         }
         self.targets.retain(|t| t.sid != sid);
     }
 
     fn host_is_due(&self, host: &str, now: Instant) -> bool {
-        self.host_last_poll
-            .get(host)
-            .is_none_or(|&prev| now.saturating_duration_since(prev) >= self.ttl)
+        self.host_next_probe_at.get(host).is_none_or(|&at| now >= at)
     }
 
     fn claim_due_batches(&mut self, now: Instant) -> Vec<HostBatchJob> {
@@ -945,7 +982,7 @@ impl SchedulerState {
         }
         let mut jobs = Vec::with_capacity(hosts.len());
         for host in hosts {
-            self.host_last_poll.insert(host.clone(), now);
+            self.host_next_probe_at.insert(host.clone(), now + self.ttl);
             let queries = self.build_queries_for_host(&host);
             if !queries.is_empty() {
                 jobs.push(HostBatchJob { host, queries });
@@ -967,6 +1004,7 @@ impl SchedulerState {
         SessionProbeQuery {
             sid: target.sid,
             tmux_session: target.tmux_session.clone(),
+            tmux_window: target.tmux_window.clone(),
             pane_cwd_hint: target.pane_cwd_hint.clone(),
             agent_hint: target.agent_hint.clone(),
             prev_path: rt.map_or_else(String::new, |r| r.remote_path.clone()),
@@ -1079,7 +1117,7 @@ impl RemoteTelemetryScheduler {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::ffi::{c_char, c_int, c_void, CStr, CString};
     use std::fs;
@@ -1114,13 +1152,13 @@ mod tests {
         fn gtk_widget_get_name(widget: *mut GtkWidget) -> *const c_char;
     }
 
-    struct MockRemoteEnv {
-        root: PathBuf,
-        home: PathBuf,
-        proc_dir: PathBuf,
-        tmux_panes_file: PathBuf,
-        calls_log: PathBuf,
-        ssh_bin: PathBuf,
+    pub(crate) struct MockRemoteEnv {
+        pub(crate) root: PathBuf,
+        pub(crate) home: PathBuf,
+        pub(crate) proc_dir: PathBuf,
+        pub(crate) tmux_panes_file: PathBuf,
+        pub(crate) calls_log: PathBuf,
+        pub(crate) ssh_bin: PathBuf,
     }
 
     #[test]
@@ -1130,7 +1168,7 @@ mod tests {
     }
 
     impl MockRemoteEnv {
-        fn new(tag: &str) -> Self {
+        pub(crate) fn new(tag: &str) -> Self {
             let root = std::env::temp_dir().join(format!("akhterm_rtel_{tag}_{}", std::process::id()));
             let _ = fs::remove_dir_all(&root);
             let (home, proc_dir, bin_dir) = create_mock_dirs(&root);
@@ -1143,11 +1181,11 @@ mod tests {
             Self { root, home, proc_dir, tmux_panes_file, calls_log, ssh_bin }
         }
 
-        fn call_count(&self) -> usize {
+        pub(crate) fn call_count(&self) -> usize {
             fs::read_to_string(&self.calls_log).map_or(0, |s| s.lines().count())
         }
 
-        fn add_proc(&self, pid: u32, cmdline_nul: &str, cwd: &Path, children: &[u32]) -> PathBuf {
+        pub(crate) fn add_proc(&self, pid: u32, cmdline_nul: &str, cwd: &Path, children: &[u32]) -> PathBuf {
             let pdir = self.proc_dir.join(pid.to_string());
             let task_dir = pdir.join(format!("task/{pid}"));
             fs::create_dir_all(pdir.join("fd")).unwrap();
@@ -1220,7 +1258,7 @@ mod tests {
         write_executable(path, &script);
     }
 
-    fn dummy_session(id: usize, category: SessionCategory, tab: Tab, ssh_host: &str) -> TermSession {
+    pub(crate) fn dummy_session(id: usize, category: SessionCategory, tab: Tab, ssh_host: &str) -> TermSession {
         build_session_with_views(
             id,
             "tab",
@@ -1458,7 +1496,7 @@ mod tests {
         fs::OpenOptions::new().write(true).open(path).unwrap().set_modified(stamp).unwrap();
     }
 
-    fn seed_codex_0167_tmux_fixture(env: &MockRemoteEnv) -> PathBuf {
+    pub(crate) fn seed_codex_0167_tmux_fixture(env: &MockRemoteEnv) -> PathBuf {
         let repo = env.home.join("Development/Akhcheck");
         let day = env.home.join(".codex/sessions/2026/11/03");
         fs::create_dir_all(&repo).unwrap();
