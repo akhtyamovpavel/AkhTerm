@@ -111,8 +111,11 @@ fn assemble_test_app_state(
         sessions: Vec::new(), tab_store: None, stack, tab_strip, mi_btn: btn,
         mi_pop: ptr::null_mut(), mi_pop_label: lbl, mi_refactor_btn: btn, tokens_menu,
         agents_pop: ptr::null_mut(), box_pop: ptr::null_mut(), box_gpu_label: lbl,
-        box_tmux_pop_box: vbox, settings_pop: ptr::null_mut(), ssh_count_label: lbl, git_menu,
+        box_tmux_pop_box: vbox, box_ssh_list_vbox: ptr::null_mut(), box_search_entry: ptr::null_mut(),
+        settings_pop: ptr::null_mut(), settings_list_vbox: ptr::null_mut(),
+        settings_search_entry: ptr::null_mut(), ssh_count_label: lbl, git_menu,
         handoff, footer_status: footer, footer_hold_until: Cell::new(None), ssh_hosts: Vec::new(),
+        ssh_fingerprint: crate::ssh_config::SshConfigFingerprint::default(),
         ssh_toggle_btns: Vec::new(), ssh_rows: Vec::new(), box_ssh_rows: Vec::new(),
         sidebar_filter: String::new(), box_filter: String::new(),
         enabled_hosts_shared: Arc::new(Mutex::new(Vec::new())), tmux_jump_btns: Vec::new(),
@@ -714,6 +717,139 @@ fn headless_broadway_sidebar_drag_and_folder_grouping() {
 #[test]
 fn headless_broadway_v1_e2e_wiring() {
     crate::i18n::with_locale_lock(|| with_headless_gtk(verify_v1_end_to_end_wiring));
+}
+
+struct SshEnvGuard {
+    root: std::path::PathBuf,
+    prev_home: Option<std::ffi::OsString>,
+    prev_state: Option<std::ffi::OsString>,
+}
+
+impl SshEnvGuard {
+    fn new() -> Self {
+        let root = temp_test_path("akhterm_ssh_reload_bway");
+        let ssh_dir = root.join(".ssh/config.d");
+        let state_dir = root.join("state");
+        std::fs::create_dir_all(&ssh_dir).unwrap();
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let prev_home = std::env::var_os("HOME");
+        let prev_state = std::env::var_os("XDG_STATE_HOME");
+        unsafe {
+            std::env::set_var("HOME", &root);
+            std::env::set_var("XDG_STATE_HOME", &state_dir);
+        }
+        Self { root, prev_home, prev_state }
+    }
+
+    fn write_ssh(&self, rel: &str, text: &str) {
+        std::fs::write(self.root.join(".ssh").join(rel), text).unwrap();
+    }
+}
+
+impl Drop for SshEnvGuard {
+    fn drop(&mut self) {
+        restore_env_var("HOME", self.prev_home.take());
+        restore_env_var("XDG_STATE_HOME", self.prev_state.take());
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+fn restore_env_var(key: &str, val: Option<std::ffi::OsString>) {
+    match val {
+        Some(v) => unsafe { std::env::set_var(key, v) },
+        None => unsafe { std::env::remove_var(key) },
+    }
+}
+
+fn install_ssh_popover_window() -> (*mut GtkWidget, *mut GtkWidget) {
+    let (win, _) = install_test_window();
+    let (box_btn, servers_btn) = unsafe { (gtk_button_new(), gtk_button_new()) };
+    APP.with(|c| {
+        let mut borrow = c.borrow_mut();
+        let a = borrow.as_mut().unwrap();
+        unsafe {
+            gtk_box_pack_start(a.box_tmux_pop_box, box_btn, 0, 0, 0);
+            gtk_box_pack_start(a.box_tmux_pop_box, servers_btn, 0, 0, 0);
+        }
+        crate::ssh_ui::mount_popovers_for_test(a, box_btn, servers_btn);
+    });
+    (win, box_btn)
+}
+
+fn set_ssh_filters(query: &str) {
+    let c = std::ffi::CString::new(query).unwrap();
+    APP.with(|cell| {
+        let a = cell.borrow();
+        let app = a.as_ref().unwrap();
+        unsafe {
+            gtk_entry_set_text(app.settings_search_entry, c.as_ptr());
+            gtk_entry_set_text(app.box_search_entry, c.as_ptr());
+        }
+    });
+    pump_gtk_events();
+}
+
+fn row_visible(rows: &[(String, *mut GtkWidget)], alias: &str) -> Option<bool> {
+    rows.iter()
+        .find(|(key, _)| key.split_whitespace().next() == Some(alias))
+        .map(|(_, row)| unsafe { gtk_widget_get_visible(*row) != 0 })
+}
+
+fn assert_reloaded_ssh_popovers() {
+    APP.with(|cell| {
+        let borrow = cell.borrow();
+        let app = borrow.as_ref().unwrap();
+        let new_host = app.ssh_hosts.iter().find(|h| h.alias == "new-gpu-box");
+        assert!(new_host.is_some_and(|h| h.hostname == "10.0.0.99" && h.user == "ml"));
+        assert!(app.ssh_hosts.iter().find(|h| h.alias == "gpu01").unwrap().enabled);
+        assert!(!app.ssh_hosts.iter().find(|h| h.alias == "team-a").unwrap().enabled);
+        assert_eq!(row_visible(&app.box_ssh_rows, "new-gpu-box"), Some(true));
+        assert_eq!(row_visible(&app.box_ssh_rows, "team-a"), Some(false));
+        assert_eq!(row_visible(&app.ssh_rows, "new-gpu-box"), Some(true));
+        assert_eq!(row_visible(&app.ssh_rows, "team-a"), Some(false));
+        let lbl = unsafe { CStr::from_ptr(gtk_label_get_text(app.ssh_count_label)).to_string_lossy() };
+        assert!(lbl.contains("2 из 3"), "unexpected count label: {lbl}");
+    });
+}
+
+fn verify_popover_reload_step(env: &SshEnvGuard, box_btn: *mut GtkWidget) {
+    let gpu_btn = APP.with(|c| c.borrow().as_ref().unwrap().ssh_toggle_btns[1]);
+    unsafe { gtk_button_clicked(gpu_btn.cast()) };
+    set_ssh_filters("gpu");
+    thread::sleep(Duration::from_millis(20));
+    env.write_ssh(
+        "config",
+        "Include config.d/*.conf\nHost gpu01\n  HostName 10.0.0.1\n  User pavel\nHost new-gpu-box\n  HostName 10.0.0.99\n  User ml\n",
+    );
+    unsafe { gtk_button_clicked(box_btn.cast()) };
+    pump_gtk_events();
+    assert_reloaded_ssh_popovers();
+}
+
+fn verify_palette_reload_step(env: &SshEnvGuard) {
+    set_ssh_filters("");
+    thread::sleep(Duration::from_millis(20));
+    env.write_ssh("config.d/extra.conf", "Host palette-gpu-box\n  HostName 10.0.0.77\n");
+    let titles = shortcuts::toggle_palette_for_test().expect("palette opened");
+    assert!(titles.iter().any(|t| t == "ssh palette-gpu-box"));
+    assert!(titles.iter().any(|t| t == "palette-gpu-box · tmux:main"));
+    assert!(titles.iter().any(|t| t == "ssh new-gpu-box"));
+    APP.with(|c| c.borrow().as_ref().unwrap().palette.close());
+}
+
+fn verify_live_ssh_config_reload() {
+    let env = SshEnvGuard::new();
+    env.write_ssh("config", "Include config.d/*.conf\nHost gpu01\n  HostName 10.0.0.1\n  User pavel\n");
+    env.write_ssh("config.d/team.conf", "Host team-a\n  HostName 10.0.0.2\n");
+    let (win, box_btn) = install_ssh_popover_window();
+    verify_popover_reload_step(&env, box_btn);
+    verify_palette_reload_step(&env);
+    cleanup_test_window(win, &[]);
+}
+
+#[test]
+fn headless_broadway_live_ssh_config_reload() {
+    with_headless_gtk(verify_live_ssh_config_reload);
 }
 
 #[test]

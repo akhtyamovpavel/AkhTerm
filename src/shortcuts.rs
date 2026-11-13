@@ -383,15 +383,29 @@ fn build_palette_items(app: &AppState) -> Vec<palette::PaletteItem> {
 }
 
 fn toggle_palette() {
-    let snapshot = app_state::with_app(|app| {
+    let snapshot = app_state::with_app_mut(|app| {
         let pal = app.palette.clone();
         let pin_pop = app.pin_pop.clone();
-        let items = (!pal.is_open()).then(|| build_palette_items(app));
+        let items = (!pal.is_open()).then(|| {
+            crate::ssh_ui::refresh_ssh_hosts_if_changed(app);
+            build_palette_items(app)
+        });
         (pal, pin_pop, items)
     });
     if let Some((pal, pin_pop, maybe_items)) = snapshot {
         apply_palette_toggle(pal, pin_pop, maybe_items);
     }
+}
+
+#[cfg(test)]
+pub(crate) fn toggle_palette_for_test() -> Option<Vec<String>> {
+    toggle_palette();
+    app_state::with_app(|app| {
+        app.palette
+            .is_open()
+            .then(|| build_palette_items(app).into_iter().map(|i| i.title).collect())
+    })
+    .flatten()
 }
 
 fn apply_palette_toggle(

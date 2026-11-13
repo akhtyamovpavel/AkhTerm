@@ -38,6 +38,7 @@ mod shortcuts;
 mod sidebar;
 mod sidebar_folders;
 mod split_pane;
+mod ssh_config;
 mod ssh_detect;
 mod ssh_ui;
 mod swarm_view;
@@ -68,7 +69,7 @@ use ffi::*;
 use git_status::{GitMenu, GitStatusScheduler};
 use handoff::HandoffMenu;
 use mi_watch::MiScheduler;
-use proc_radar::{load_ssh_hosts, query_ssh_servers, BoxTelemetry};
+use proc_radar::{query_ssh_servers, BoxTelemetry};
 use remote_telemetry::RemoteTelemetryScheduler;
 use session::{register_link_cwd_lookup, register_vte_menu_hook};
 
@@ -246,6 +247,7 @@ struct AppAssembly {
     stack: *mut GtkWidget,
     footer_status: *mut GtkWidget,
     ssh_hosts: Vec<proc_radar::SshHostEntry>,
+    ssh_fingerprint: ssh_config::SshConfigFingerprint,
     sched: Schedulers,
 }
 
@@ -284,9 +286,13 @@ fn build_app_state(
         mi_pop_label: a.tb.mi_pop_label, mi_refactor_btn: a.tb.mi_refactor_btn,
         tokens_menu: a.tb.tokens_menu, agents_pop: a.tb.agents_pop, box_pop: a.box_pop.box_pop,
         box_gpu_label: a.box_pop.box_gpu_label, box_tmux_pop_box: a.box_pop.box_tmux_pop_box,
-        settings_pop: a.settings_pop.settings_pop, ssh_count_label: a.settings_pop.ssh_count_label,
+        box_ssh_list_vbox: a.box_pop.box_ssh_list_vbox, box_search_entry: a.box_pop.box_search_entry,
+        settings_pop: a.settings_pop.settings_pop, settings_list_vbox: a.settings_pop.settings_list_vbox,
+        settings_search_entry: a.settings_pop.settings_search_entry,
+        ssh_count_label: a.settings_pop.ssh_count_label,
         git_menu, handoff, footer_status: a.footer_status, footer_hold_until: Cell::new(None),
-        ssh_hosts: a.ssh_hosts, ssh_toggle_btns: a.settings_pop.ssh_toggle_btns,
+        ssh_hosts: a.ssh_hosts, ssh_fingerprint: a.ssh_fingerprint,
+        ssh_toggle_btns: a.settings_pop.ssh_toggle_btns,
         ssh_rows: a.settings_pop.ssh_rows, box_ssh_rows: a.box_pop.box_ssh_rows,
         sidebar_filter: String::new(), box_filter: String::new(),
         enabled_hosts_shared: a.sched.enabled_hosts, tmux_jump_btns: Vec::new(),
@@ -299,7 +305,8 @@ fn build_app_state(
 fn assemble_and_install(config: WorkspaceConfig, initial_theme: theme_mode::ThemeMode) {
     let (win, root_vbox) = create_main_window();
     let tb = topbar::build_topbar_widgets(root_vbox, initial_theme);
-    let ssh_hosts = load_ssh_hosts(&config.watch, &config.startup);
+    let (ssh_hosts, ssh_fingerprint) =
+        ssh_config::load_ssh_hosts_with_fingerprint(&config.watch, &config.startup);
     let settings_pop = ssh_ui::build_settings_popover(tb.settings_btn, &ssh_hosts);
     let box_pop = ssh_ui::build_box_popover(tb.box_btn, &config, &ssh_hosts);
     let (sidebar, search_bar, stack) = build_workspace_area(root_vbox);
@@ -308,16 +315,21 @@ fn assemble_and_install(config: WorkspaceConfig, initial_theme: theme_mode::Them
     spawn_background_workers(&sched);
     install_app_state(AppAssembly {
         config, win, initial_theme, tb, settings_pop, box_pop, sidebar,
-        search_bar, stack, footer_status, ssh_hosts, sched,
+        search_bar, stack, footer_status, ssh_hosts, ssh_fingerprint, sched,
     });
     finish_startup(win);
+}
+
+extern "C" fn on_main_radar_tick(data: *mut c_void) -> c_int {
+    app_state::with_app_mut(ssh_ui::refresh_ssh_hosts_if_changed);
+    (session_ops::radar_tick_cb())(data)
 }
 
 fn finish_startup(win: *mut GtkWidget) {
     session_ops::restore_tabs();
     unsafe {
         gtk_widget_show_all(win);
-        g_timeout_add(900, session_ops::radar_tick_cb(), ptr::null_mut());
+        g_timeout_add(900, on_main_radar_tick, ptr::null_mut());
         gtk_main();
     }
 }

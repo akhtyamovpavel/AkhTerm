@@ -6,12 +6,14 @@ use std::ptr;
 use crate::app_state::{self, AppState, APP};
 use crate::ffi::*;
 use crate::proc_radar::{RemoteTmuxItem, SshHostEntry};
-use crate::{config::WorkspaceConfig, proc_radar, session, session_ops};
-use crate::{tabs::Tab, telemetry::SessionTelemetry, topbar, ui_text as text};
+use crate::{config::WorkspaceConfig, proc_radar, session, session_ops, ssh_config};
+use crate::{tabs::Tab, telemetry::SessionTelemetry, ui_text as text};
 
 pub(crate) struct SettingsPopoverWidgets {
     pub(crate) settings_pop: *mut GtkWidget,
     pub(crate) ssh_count_label: *mut GtkWidget,
+    pub(crate) settings_list_vbox: *mut GtkWidget,
+    pub(crate) settings_search_entry: *mut GtkWidget,
     pub(crate) ssh_toggle_btns: Vec<*mut GtkWidget>,
     pub(crate) ssh_rows: Vec<(String, *mut GtkWidget)>,
 }
@@ -20,6 +22,8 @@ pub(crate) struct BoxPopoverWidgets {
     pub(crate) box_pop: *mut GtkWidget,
     pub(crate) box_gpu_label: *mut GtkWidget,
     pub(crate) box_tmux_pop_box: *mut GtkWidget,
+    pub(crate) box_ssh_list_vbox: *mut GtkWidget,
+    pub(crate) box_search_entry: *mut GtkWidget,
     pub(crate) box_ssh_rows: Vec<(String, *mut GtkWidget)>,
 }
 
@@ -97,7 +101,7 @@ fn make_ssh_count_label(total: usize) -> *mut GtkWidget {
     }
 }
 
-fn make_settings_header_box(ssh_count_label: *mut GtkWidget) -> *mut GtkWidget {
+fn make_settings_header_box(ssh_count_label: *mut GtkWidget) -> (*mut GtkWidget, *mut GtkWidget) {
     unsafe {
         let vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
         add_class(vbox, "popover-box");
@@ -109,7 +113,7 @@ fn make_settings_header_box(ssh_count_label: *mut GtkWidget) -> *mut GtkWidget {
         app_state::connect_entry_changed(search, on_ssh_search_changed);
         gtk_box_pack_start(vbox, search, 0, 1, 0);
         gtk_box_pack_start(vbox, ssh_count_label, 0, 1, 0);
-        vbox
+        (vbox, search)
     }
 }
 
@@ -120,19 +124,22 @@ pub(crate) fn build_settings_popover(
     unsafe {
         let settings_pop = gtk_popover_new(settings_btn);
         let ssh_count_label = make_ssh_count_label(ssh_hosts.len());
-        let vbox = make_settings_header_box(ssh_count_label);
-        let (scroll, ssh_toggle_btns, ssh_rows) = build_settings_host_list(ssh_hosts);
+        let (vbox, settings_search_entry) = make_settings_header_box(ssh_count_label);
+        let (scroll, settings_list_vbox, ssh_toggle_btns, ssh_rows) = build_settings_host_list(ssh_hosts);
         gtk_box_pack_start(vbox, scroll, 1, 1, 0);
         gtk_container_add(settings_pop, vbox);
         gtk_widget_show_all(vbox);
-        topbar::connect_popover(settings_btn, settings_pop);
-        SettingsPopoverWidgets { settings_pop, ssh_count_label, ssh_toggle_btns, ssh_rows }
+        app_state::connect_click(settings_btn, on_open_ssh_popover, settings_pop as *mut c_void);
+        SettingsPopoverWidgets {
+            settings_pop, ssh_count_label, settings_list_vbox,
+            settings_search_entry, ssh_toggle_btns, ssh_rows,
+        }
     }
 }
 
 fn build_settings_host_list(
     ssh_hosts: &[SshHostEntry],
-) -> (*mut GtkWidget, Vec<*mut GtkWidget>, Vec<(String, *mut GtkWidget)>) {
+) -> (*mut GtkWidget, *mut GtkWidget, Vec<*mut GtkWidget>, Vec<(String, *mut GtkWidget)>) {
     unsafe {
         let scroll = make_popover_scroll(520, 420, 460);
         let list_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
@@ -143,7 +150,7 @@ fn build_settings_host_list(
             gtk_box_pack_start(list_vbox, row, 0, 1, 0);
         }
         gtk_container_add(scroll, list_vbox);
-        (scroll, toggle_btns, rows)
+        (scroll, list_vbox, toggle_btns, rows)
     }
 }
 
@@ -179,7 +186,7 @@ fn build_box_ssh_row(
 
 fn build_box_scroll_body(
     ssh_hosts: &[SshHostEntry],
-) -> (*mut GtkWidget, *mut GtkWidget, Vec<(String, *mut GtkWidget)>) {
+) -> (*mut GtkWidget, *mut GtkWidget, *mut GtkWidget, Vec<(String, *mut GtkWidget)>) {
     unsafe {
         let scroll = make_popover_scroll(480, 320, 380);
         let inner = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
@@ -188,9 +195,11 @@ fn build_box_scroll_body(
         let box_tmux_pop_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
         gtk_box_pack_start(inner, box_tmux_pop_box, 0, 1, 0);
         gtk_box_pack_start(inner, app_state::make_section_header("СЕРВЕРЫ SSH И TMUX"), 0, 0, 0);
-        let rows = pack_box_ssh_rows(inner, ssh_hosts);
+        let box_ssh_list_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+        gtk_box_pack_start(inner, box_ssh_list_vbox, 0, 1, 0);
+        let rows = pack_box_ssh_rows(box_ssh_list_vbox, ssh_hosts);
         gtk_container_add(scroll, inner);
-        (scroll, box_tmux_pop_box, rows)
+        (scroll, box_tmux_pop_box, box_ssh_list_vbox, rows)
     }
 }
 
@@ -203,7 +212,7 @@ fn pack_box_ssh_rows(inner: *mut GtkWidget, ssh_hosts: &[SshHostEntry]) -> Vec<(
     rows
 }
 
-fn build_box_header_vbox(config: &WorkspaceConfig) -> (*mut GtkWidget, *mut GtkWidget) {
+fn build_box_header_vbox(config: &WorkspaceConfig) -> (*mut GtkWidget, *mut GtkWidget, *mut GtkWidget) {
     unsafe {
         let vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
         add_class(vbox, "popover-box");
@@ -215,7 +224,7 @@ fn build_box_header_vbox(config: &WorkspaceConfig) -> (*mut GtkWidget, *mut GtkW
         let search = app_state::make_search_entry("🔍 Поиск сессии tmux или сервера из ~/.ssh/config...");
         app_state::connect_entry_changed(search, on_box_search_changed);
         gtk_box_pack_start(vbox, search, 0, 1, 2);
-        (vbox, box_gpu_label)
+        (vbox, box_gpu_label, search)
     }
 }
 
@@ -226,25 +235,40 @@ pub(crate) fn build_box_popover(
 ) -> BoxPopoverWidgets {
     unsafe {
         let box_pop = gtk_popover_new(box_btn);
-        let (vbox, box_gpu_label) = build_box_header_vbox(config);
-        let (scroll, box_tmux_pop_box, box_ssh_rows) = build_box_scroll_body(ssh_hosts);
+        let (vbox, box_gpu_label, box_search_entry) = build_box_header_vbox(config);
+        let (scroll, box_tmux_pop_box, box_ssh_list_vbox, box_ssh_rows) = build_box_scroll_body(ssh_hosts);
         gtk_box_pack_start(vbox, scroll, 1, 1, 0);
         gtk_container_add(box_pop, vbox);
         gtk_widget_show_all(vbox);
-        topbar::connect_popover(box_btn, box_pop);
-        BoxPopoverWidgets { box_pop, box_gpu_label, box_tmux_pop_box, box_ssh_rows }
+        app_state::connect_click(box_btn, on_open_ssh_popover, box_pop as *mut c_void);
+        BoxPopoverWidgets {
+            box_pop, box_gpu_label, box_tmux_pop_box,
+            box_ssh_list_vbox, box_search_entry, box_ssh_rows,
+        }
     }
+}
+
+extern "C" fn on_open_ssh_popover(_btn: *mut GtkWidget, pop_ptr: *mut c_void) {
+    app_state::with_app_mut(refresh_ssh_hosts_if_changed);
+    if !pop_ptr.is_null() {
+        unsafe { gtk_popover_popup(pop_ptr) };
+    }
+}
+
+fn apply_settings_filter(rows: &[(String, *mut GtkWidget)], q: &str) -> usize {
+    let mut shown = 0usize;
+    for (key, row) in rows {
+        let vis = q.is_empty() || key.contains(q);
+        shown += usize::from(vis);
+        unsafe { gtk_widget_set_visible(*row, i32::from(vis)) };
+    }
+    shown
 }
 
 extern "C" fn on_ssh_search_changed(entry: *mut GtkWidget, _data: *mut c_void) {
     let q = app_state::entry_text_lower(entry);
     app_state::with_app(|app| {
-        let mut shown = 0usize;
-        for (key, row) in &app.ssh_rows {
-            let vis = q.is_empty() || key.contains(&q);
-            shown += usize::from(vis);
-            unsafe { gtk_widget_set_visible(*row, i32::from(vis)) };
-        }
+        let shown = apply_settings_filter(&app.ssh_rows, &q);
         set_label_text(app.ssh_count_label, &format_ssh_count_label(shown, app.ssh_rows.len()));
     });
 }
@@ -254,6 +278,84 @@ fn filter_keyed_rows(rows: &[(String, *mut GtkWidget)], q: &str) {
         let vis = q.is_empty() || key.contains(q);
         unsafe { gtk_widget_set_visible(*row, i32::from(vis)) };
     }
+}
+
+fn destroy_row_widgets(rows: &mut Vec<(String, *mut GtkWidget)>) {
+    for (_, row) in rows.drain(..) {
+        if !row.is_null() {
+            unsafe { gtk_widget_destroy(row) };
+        }
+    }
+}
+
+fn pack_and_show_row(parent: *mut GtkWidget, row: *mut GtkWidget) {
+    unsafe {
+        gtk_box_pack_start(parent, row, 0, 1, 0);
+        gtk_widget_show_all(row);
+    }
+}
+
+fn active_search_query(entry: *mut GtkWidget, fallback: &str) -> String {
+    if !entry.is_null() {
+        app_state::entry_text_lower(entry)
+    } else {
+        fallback.to_owned()
+    }
+}
+
+fn rebuild_settings_list(app: &mut AppState) {
+    if app.settings_list_vbox.is_null() {
+        return;
+    }
+    let q = active_search_query(app.settings_search_entry, "");
+    app.ssh_toggle_btns.clear();
+    destroy_row_widgets(&mut app.ssh_rows);
+    for (idx, h) in app.ssh_hosts.iter().enumerate() {
+        let row = build_settings_host_row(idx, h, &mut app.ssh_toggle_btns, &mut app.ssh_rows);
+        pack_and_show_row(app.settings_list_vbox, row);
+    }
+    let shown = apply_settings_filter(&app.ssh_rows, &q);
+    if !app.ssh_count_label.is_null() {
+        set_label_text(app.ssh_count_label, &format_ssh_count_label(shown, app.ssh_rows.len()));
+    }
+}
+
+fn rebuild_box_ssh_list(app: &mut AppState) {
+    if app.box_ssh_list_vbox.is_null() {
+        return;
+    }
+    let q = active_search_query(app.box_search_entry, &app.box_filter);
+    destroy_row_widgets(&mut app.box_ssh_rows);
+    for (idx, h) in app.ssh_hosts.iter().enumerate() {
+        let row = build_box_ssh_row(idx, h, &mut app.box_ssh_rows);
+        pack_and_show_row(app.box_ssh_list_vbox, row);
+    }
+    filter_keyed_rows(&app.box_ssh_rows, &q);
+}
+
+pub(crate) fn refresh_ssh_hosts_if_changed(app: &mut AppState) {
+    if !app.ssh_fingerprint.is_empty() && !ssh_config::has_fingerprint_changed(&app.ssh_fingerprint) {
+        return;
+    }
+    reload_ssh_hosts_now(app);
+}
+
+pub(crate) fn reload_ssh_hosts_now(app: &mut AppState) {
+    let (mut next_hosts, next_fp) =
+        ssh_config::load_ssh_hosts_with_fingerprint(&app.config.watch, &app.config.startup);
+    for entry in &mut next_hosts {
+        if let Some(prev) = app.ssh_hosts.iter().find(|h| h.alias == entry.alias) {
+            entry.enabled = prev.enabled;
+        }
+    }
+    app.ssh_fingerprint = next_fp;
+    if app.ssh_hosts == next_hosts {
+        return;
+    }
+    app.ssh_hosts = next_hosts;
+    rebuild_settings_list(app);
+    rebuild_box_ssh_list(app);
+    sync_enabled_ssh_hosts(app);
 }
 
 extern "C" fn on_box_search_changed(entry: *mut GtkWidget, _data: *mut c_void) {
@@ -470,4 +572,33 @@ extern "C" fn on_spawn_preset(_btn: *mut GtkWidget, index: *mut c_void) {
     if let Some(tab) = tab {
         session_ops::open_tab(tab);
     }
+}
+
+#[cfg(test)]
+pub(crate) fn mount_popovers_for_test(
+    a: &mut AppState,
+    box_btn: *mut GtkWidget,
+    servers_btn: *mut GtkWidget,
+) {
+    a.box_btn = box_btn;
+    a.servers_btn = servers_btn;
+    a.config.watch.clear();
+    a.config.startup.clear();
+    let (hosts, fp) = ssh_config::load_ssh_hosts_with_fingerprint(&a.config.watch, &a.config.startup);
+    let sp = build_settings_popover(servers_btn, &hosts);
+    let bp = build_box_popover(box_btn, &a.config, &hosts);
+    a.ssh_hosts = hosts;
+    a.ssh_fingerprint = fp;
+    a.settings_pop = sp.settings_pop;
+    a.settings_list_vbox = sp.settings_list_vbox;
+    a.settings_search_entry = sp.settings_search_entry;
+    a.ssh_count_label = sp.ssh_count_label;
+    a.ssh_toggle_btns = sp.ssh_toggle_btns;
+    a.ssh_rows = sp.ssh_rows;
+    a.box_pop = bp.box_pop;
+    a.box_gpu_label = bp.box_gpu_label;
+    a.box_tmux_pop_box = bp.box_tmux_pop_box;
+    a.box_ssh_list_vbox = bp.box_ssh_list_vbox;
+    a.box_search_entry = bp.box_search_entry;
+    a.box_ssh_rows = bp.box_ssh_rows;
 }

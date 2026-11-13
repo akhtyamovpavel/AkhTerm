@@ -11,7 +11,7 @@ use std::thread;
 use crate::ffi::*;
 use crate::paths::{expand_home, home_dir, shorten_home, state_dir, write_state_file};
 use crate::ssh_detect::{detect_active_ssh, exe_basename, ProcEntry};
-use crate::tabs::{is_ssh_host, Tab};
+use crate::tabs::Tab;
 
 #[derive(Clone, Debug, Default)]
 pub struct ProcInfo {
@@ -25,7 +25,7 @@ pub struct ProcInfo {
     pub cwd: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SshHostEntry {
     pub alias: String,
     pub hostname: String,
@@ -48,96 +48,9 @@ pub struct BoxTelemetry {
     pub active_by_host: Vec<(String, String, String, String, String)>, // (host, sess, win, cmd, path)
 }
 
+#[allow(dead_code)]
 pub fn load_ssh_hosts(watch: &[String], startup: &[Tab]) -> Vec<SshHostEntry> {
-    let home = home_dir();
-    let ssh_cfg = format!("{home}/.ssh/config");
-    let conf_path = state_dir().join("servers.conf");
-
-    let saved_enabled: Option<HashSet<String>> = fs::read_to_string(&conf_path).ok().map(|txt| {
-        txt.lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty() && !l.starts_with('#'))
-            .map(String::from)
-            .collect()
-    });
-
-    let watched = saved_enabled.unwrap_or_else(|| watch.iter().cloned().collect());
-    let mut entries: Vec<SshHostEntry> = Vec::new();
-    let mut cur_aliases: Vec<String> = Vec::new();
-    let mut cur_hostname = String::new();
-    let mut cur_user = String::new();
-
-    let flush_entry = |aliases: &mut Vec<String>,
-                       hname: &mut String,
-                       usr: &mut String,
-                       out: &mut Vec<SshHostEntry>| {
-        for alias in aliases.drain(..) {
-            if !is_ssh_host(&alias)
-                || alias.starts_with('!')
-                || alias.contains('*')
-                || alias.contains('?')
-                || alias == "github.com"
-                || alias == "gitlab.com"
-                || alias == "bitbucket.org"
-            {
-                continue;
-            }
-            if out.iter().any(|e| e.alias == alias) {
-                continue;
-            }
-            let enabled = watched.contains(&alias);
-            out.push(SshHostEntry {
-                alias,
-                hostname: hname.clone(),
-                user: usr.clone(),
-                enabled,
-            });
-        }
-        hname.clear();
-        usr.clear();
-    };
-
-    if let Ok(content) = fs::read_to_string(&ssh_cfg) {
-        for raw_line in content.lines() {
-            let line = raw_line.split('#').next().unwrap_or_default();
-            let mut parts = line.split_whitespace();
-            let Some(key) = parts.next() else {
-                continue;
-            };
-            if key.eq_ignore_ascii_case("Host") {
-                flush_entry(&mut cur_aliases, &mut cur_hostname, &mut cur_user, &mut entries);
-                for pat in parts {
-                    cur_aliases.push(pat.to_string());
-                }
-            } else if key.eq_ignore_ascii_case("HostName") {
-                if let Some(val) = parts.next() {
-                    cur_hostname = val.to_string();
-                }
-            } else if key.eq_ignore_ascii_case("User") {
-                if let Some(val) = parts.next() {
-                    cur_user = val.to_string();
-                }
-            }
-        }
-        flush_entry(&mut cur_aliases, &mut cur_hostname, &mut cur_user, &mut entries);
-    }
-
-    for alias in watch.iter().chain(startup.iter().filter_map(|tab| match tab {
-        Tab::Remote(remote) => Some(&remote.host),
-        Tab::Local { .. } => None,
-    })) {
-        if entries.iter().any(|entry| entry.alias == *alias) {
-            continue;
-        }
-        entries.push(SshHostEntry {
-            alias: alias.clone(),
-            hostname: String::new(),
-            user: String::new(),
-            enabled: watched.contains(alias),
-        });
-    }
-
-    entries
+    crate::ssh_config::load_ssh_hosts(watch, startup)
 }
 
 pub fn save_ssh_hosts(hosts: &[SshHostEntry]) {
