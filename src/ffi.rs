@@ -209,6 +209,12 @@ extern "C" {
 
     pub fn gtk_scrolled_window_new(hadj: *mut c_void, vadj: *mut c_void) -> *mut GtkWidget;
     pub fn gtk_scrolled_window_set_policy(sw: *mut GtkWidget, hpol: c_int, vpol: c_int);
+    pub fn gtk_scrolled_window_set_kinetic_scrolling(
+        scrolled_window: *mut GtkWidget,
+        kinetic_scrolling: c_int,
+    );
+    #[cfg(test)]
+    pub fn gtk_scrolled_window_get_kinetic_scrolling(scrolled_window: *mut GtkWidget) -> c_int;
     pub fn gtk_scrolled_window_get_hadjustment(sw: *mut GtkWidget) -> *mut GtkAdjustment;
     pub fn gtk_scrolled_window_get_vadjustment(sw: *mut GtkWidget) -> *mut GtkAdjustment;
     pub fn gtk_scrolled_window_set_min_content_width(sw: *mut GtkWidget, width: c_int);

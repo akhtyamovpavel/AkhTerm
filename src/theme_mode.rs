@@ -25,6 +25,8 @@ pub const LIGHT_ZINC_TOKENS: &str = "\
 @define-color border #e4e4e7;\n\
 @define-color border_strong #d4d4d8;\n\
 @define-color selected_border #a1a1aa;\n\
+@define-color drag_bg #e4e4ec;\n\
+@define-color drag_border #7c3aed;\n\
 @define-color text #18181b;\n\
 @define-color text_strong #09090b;\n\
 @define-color text_secondary #27272a;\n\

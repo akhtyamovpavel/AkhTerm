@@ -4,23 +4,44 @@ use std::cell::Cell;
 use std::ffi::{c_int, c_uint, c_void, CStr, CString};
 use std::ptr;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use crate::ffi::*;
 use crate::session::sanitize_pinned_title;
 use crate::ui_text as text;
 
 pub const TAB_STRIP_SPACING: i32 = 4;
+pub const SIDEBAR_ROW_SPACING: i32 = 2;
 pub const DRAG_THRESHOLD_PX: f64 = 6.0;
+const DRAG_SETTLE_TIMEOUT_MS: u64 = 80;
+const CLICK_SUPPRESS_TIMEOUT_MS: u64 = 250;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DragAxis {
+    Horizontal,
+    Vertical,
+}
 
 #[derive(Clone, Copy, Debug)]
 struct TabDragState {
     sid: usize,
-    start_strip_x: f64,
+    axis: DragAxis,
+    start_coord: f64,
     dragging: bool,
+    settling_old_origin: Option<f64>,
+    settling_deadline: Option<Instant>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SuppressedClick {
+    sid: usize,
+    axis: DragAxis,
+    until: Instant,
 }
 
 thread_local! {
     static TAB_DRAG: Cell<Option<TabDragState>> = const { Cell::new(None) };
+    static SUPPRESSED_CLICK: Cell<Option<SuppressedClick>> = const { Cell::new(None) };
 }
 
 pub fn tab_reorder_delta(keyval: c_uint, state: c_uint, keycode: u16) -> Option<isize> {
@@ -82,6 +103,10 @@ pub fn drag_target_index(widths: &[i32], spacing: i32, cur_idx: usize, strip_x: 
     target
 }
 
+pub fn vertical_drag_target_index(heights: &[i32], spacing: i32, cur_idx: usize, y: f64) -> usize {
+    drag_target_index(heights, spacing, cur_idx, y)
+}
+
 pub fn allocated_widths(widgets: &[*mut GtkWidget]) -> Vec<i32> {
     widgets
         .iter()
@@ -89,35 +114,132 @@ pub fn allocated_widths(widgets: &[*mut GtkWidget]) -> Vec<i32> {
         .collect()
 }
 
-pub fn begin_tab_drag(sid: usize, start_strip_x: f64) {
+pub fn allocated_heights(widgets: &[*mut GtkWidget]) -> Vec<i32> {
+    widgets
+        .iter()
+        .map(|&w| if w.is_null() { 0 } else { unsafe { gtk_widget_get_allocated_height(w) } })
+        .collect()
+}
+
+pub fn begin_drag(sid: usize, axis: DragAxis, start_coord: f64) {
+    SUPPRESSED_CLICK.with(|slot| slot.set(None));
     TAB_DRAG.with(|slot| {
         slot.set(Some(TabDragState {
             sid,
-            start_strip_x,
+            axis,
+            start_coord,
             dragging: false,
+            settling_old_origin: None,
+            settling_deadline: None,
         }));
     });
 }
 
-pub fn is_tab_drag_pending() -> bool {
-    TAB_DRAG.with(|slot| slot.get().is_some())
+pub fn begin_tab_drag(sid: usize, start_strip_x: f64) {
+    begin_drag(sid, DragAxis::Horizontal, start_strip_x);
 }
 
-pub fn update_tab_drag(cur_strip_x: f64) -> Option<(usize, f64, bool)> {
+pub fn begin_sidebar_drag(sid: usize, start_y: f64) {
+    begin_drag(sid, DragAxis::Vertical, start_y);
+}
+
+pub fn is_tab_drag_pending() -> bool {
+    is_drag_pending(DragAxis::Horizontal)
+}
+
+pub fn is_drag_pending(axis: DragAxis) -> bool {
+    TAB_DRAG.with(|slot| slot.get().is_some_and(|st| st.axis == axis))
+}
+
+pub fn update_drag(axis: DragAxis, cur_coord: f64) -> Option<(usize, f64, bool)> {
     TAB_DRAG.with(|slot| {
-        let mut st = slot.get()?;
-        let dx = cur_strip_x - st.start_strip_x;
-        let started_now = !st.dragging && dx.abs() >= DRAG_THRESHOLD_PX;
+        let mut st = slot.get().filter(|s| s.axis == axis)?;
+        let delta = cur_coord - st.start_coord;
+        let started_now = !st.dragging && delta.abs() >= DRAG_THRESHOLD_PX;
         if started_now {
             st.dragging = true;
             slot.set(Some(st));
         }
-        st.dragging.then_some((st.sid, cur_strip_x, started_now))
+        st.dragging.then_some((st.sid, cur_coord, started_now))
     })
 }
 
+pub fn update_tab_drag(cur_strip_x: f64) -> Option<(usize, f64, bool)> {
+    update_drag(DragAxis::Horizontal, cur_strip_x)
+}
+
+pub fn update_sidebar_drag(cur_y: f64) -> Option<(usize, f64, bool)> {
+    update_drag(DragAxis::Vertical, cur_y)
+}
+
+pub fn mark_drag_reordered(old_origin: Option<f64>) {
+    TAB_DRAG.with(|slot| {
+        let Some(mut st) = slot.get() else {
+            return;
+        };
+        st.settling_old_origin = old_origin;
+        st.settling_deadline = Some(Instant::now() + Duration::from_millis(DRAG_SETTLE_TIMEOUT_MS));
+        slot.set(Some(st));
+    });
+}
+
+pub fn is_drag_settling(cur_origin: Option<f64>) -> bool {
+    TAB_DRAG.with(|slot| {
+        let Some(mut st) = slot.get() else {
+            return false;
+        };
+        let (Some(old), Some(deadline)) = (st.settling_old_origin, st.settling_deadline) else {
+            return false;
+        };
+        let unchanged = cur_origin.is_some_and(|cur| (cur - old).abs() < 0.5);
+        if unchanged && Instant::now() < deadline {
+            return true;
+        }
+        st.settling_old_origin = None;
+        st.settling_deadline = None;
+        slot.set(Some(st));
+        false
+    })
+}
+
+pub fn end_drag_details() -> Option<(usize, DragAxis, bool)> {
+    let st = TAB_DRAG.with(|slot| slot.take())?;
+    if st.dragging {
+        let until = Instant::now() + Duration::from_millis(CLICK_SUPPRESS_TIMEOUT_MS);
+        SUPPRESSED_CLICK.with(|slot| {
+            slot.set(Some(SuppressedClick {
+                sid: st.sid,
+                axis: st.axis,
+                until,
+            }));
+        });
+    }
+    Some((st.sid, st.axis, st.dragging))
+}
+
 pub fn end_tab_drag() -> bool {
-    TAB_DRAG.with(|slot| slot.take().is_some_and(|st| st.dragging))
+    end_drag_details().is_some_and(|(_, _, dragged)| dragged)
+}
+
+pub fn should_suppress_click(sid: usize, axis: DragAxis) -> bool {
+    let active = TAB_DRAG.with(|slot| {
+        slot.get()
+            .is_some_and(|st| st.sid == sid && st.axis == axis && st.dragging)
+    });
+    if active {
+        return true;
+    }
+    SUPPRESSED_CLICK.with(|slot| {
+        let Some(sup) = slot.get() else {
+            return false;
+        };
+        if sup.sid == sid && sup.axis == axis && Instant::now() <= sup.until {
+            slot.set(None);
+            true
+        } else {
+            false
+        }
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -521,6 +643,8 @@ mod tests {
         assert_eq!(drag_target_index(&[160, 80], 4, 0, 210.0), 1);
         assert_eq!(drag_target_index(&[80, 160], 4, 1, 210.0), 1);
         assert_eq!(drag_target_index(&[80, 160], 4, 1, 35.0), 0);
+        assert_eq!(vertical_drag_target_index(&[44, 44, 44], SIDEBAR_ROW_SPACING, 0, 75.0), 1);
+        assert_eq!(vertical_drag_target_index(&[44, 44, 44], SIDEBAR_ROW_SPACING, 2, 18.0), 0);
     }
 
     #[test]
@@ -528,9 +652,30 @@ mod tests {
         begin_tab_drag(7, 40.0);
         assert!(is_tab_drag_pending() && update_tab_drag(43.0).is_none());
         assert_eq!(update_tab_drag(170.0), Some((7, 170.0, true)));
+        mark_drag_reordered(Some(10.0));
+        assert!(is_drag_settling(Some(10.0)));
+        assert!(!is_drag_settling(Some(120.0)));
         assert_eq!(update_tab_drag(190.0), Some((7, 190.0, false)));
         assert_eq!(update_tab_drag(40.0), Some((7, 40.0, false)));
         assert!(end_tab_drag() && !is_tab_drag_pending() && !end_tab_drag());
+        assert!(should_suppress_click(7, DragAxis::Horizontal));
+        assert!(!should_suppress_click(7, DragAxis::Horizontal));
+    }
+
+    #[test]
+    fn tracks_vertical_sidebar_drag_and_plain_click_passthrough() {
+        begin_sidebar_drag(9, 24.0);
+        assert!(is_drag_pending(DragAxis::Vertical));
+        assert!(!is_tab_drag_pending());
+        assert!(update_sidebar_drag(27.0).is_none());
+        assert!(!end_drag_details().is_some_and(|(_, _, d)| d));
+        assert!(!should_suppress_click(9, DragAxis::Vertical));
+
+        begin_sidebar_drag(9, 24.0);
+        assert_eq!(update_sidebar_drag(40.0), Some((9, 40.0, true)));
+        assert_eq!(end_drag_details(), Some((9, DragAxis::Vertical, true)));
+        assert!(should_suppress_click(9, DragAxis::Vertical));
+        assert!(!should_suppress_click(9, DragAxis::Vertical));
     }
 
     #[test]

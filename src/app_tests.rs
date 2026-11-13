@@ -79,6 +79,7 @@ fn build_test_app_state(
     let (tokens_menu, git_menu, handoff) = make_test_menus(vbox, btn);
     let (palette, search_bar, pin_pop) = make_test_overlays(vbox);
     let side = sidebar::Sidebar::new(vbox, session_ops::sidebar_search_cb());
+    side.set_new_folder_tab_handler(session_ops::new_tab_in_folder_cb());
     let strip = tab_strip::TabStrip::new(vbox, session_ops::new_tab_cb());
     assemble_test_app_state(win, vbox, btn, lbl, footer, stack, side, strip, tokens_menu, git_menu, handoff, palette, search_bar, pin_pop)
 }
@@ -250,7 +251,23 @@ fn assert_initial_drag_reorder(
     assert_eq!(current_session_ids(), vec![sid1, sid2]);
     set_raw_btn_event(motion, 300.0, 0);
     assert_eq!((session_ops::tab_motion_cb())(btn1, motion, sid1 as *mut c_void), 1);
+    let tab_w = APP.with(|c| c.borrow().as_ref().unwrap().sessions[1].top_tab.tab_widget());
+    assert!(has_css_class(tab_w, "tab-dragging"), "tab-dragging missing during drag");
     assert_eq!(current_session_ids(), vec![sid2, sid1]);
+}
+
+fn has_css_class(widget: *mut GtkWidget, class_name: &str) -> bool {
+    let cstr = std::ffi::CString::new(class_name).expect("cstr");
+    unsafe { gtk_style_context_has_class(gtk_widget_get_style_context(widget), cstr.as_ptr()) != 0 }
+}
+
+fn set_raw_btn_coords(ev: *mut GdkEvent, x: f64, y: f64, button: c_uint) {
+    unsafe {
+        let raw = &mut *(ev as *mut RawTestEventButton);
+        raw.x = x;
+        raw.y = y;
+        raw.button = button;
+    }
 }
 
 fn assert_post_drag_shift(
@@ -281,6 +298,15 @@ fn drive_tab_drag_events(
         assert_initial_drag_reorder(btn1, press, motion, sid1, sid2);
         assert_post_drag_shift(btn1, tabs_box, motion, sid1, sid2);
         (session_ops::tab_button_release_cb())(btn1, press, sid1 as *mut c_void);
+        let tab_w = APP.with(|c| {
+            c.borrow().as_ref().unwrap().sessions.iter().find(|s| s.id == sid1).unwrap().top_tab.tab_widget()
+        });
+        assert!(!has_css_class(tab_w, "tab-dragging"), "tab-dragging persisted after release");
+        app_state::with_app_mut(|a| a.active_id = sid2);
+        (session_ops::select_session_cb())(btn1, sid1 as *mut c_void);
+        assert_eq!(app_state::active_session_id(), sid2, "post-drag click must be suppressed");
+        (session_ops::select_session_cb())(btn1, sid1 as *mut c_void);
+        assert_eq!(app_state::active_session_id(), sid1, "plain click must switch active tab");
         gdk_event_free(press);
         gdk_event_free(motion);
     }
@@ -289,7 +315,13 @@ fn drive_tab_drag_events(
 fn verify_wayland_safe_mouse_tab_drag_without_root_coords() {
     let (win, _) = install_test_window();
     unsafe { gtk_window_set_default_size(win, 640, 320) };
-    let tabs_box = APP.with(|c| c.borrow().as_ref().unwrap().tab_strip.tabs_box());
+    let (tabs_box, strip_scroll, side_scroll) = APP.with(|c| {
+        let a = c.borrow();
+        let app = a.as_ref().unwrap();
+        (app.tab_strip.tabs_box(), app.tab_strip.scroll_widget(), app.sidebar.scroll_widget())
+    });
+    assert_eq!(unsafe { gtk_scrolled_window_get_kinetic_scrolling(strip_scroll) }, 0);
+    assert_eq!(unsafe { gtk_scrolled_window_get_kinetic_scrolling(side_scroll) }, 0);
     let sid1 = session_ops::add_tab("Длинная вкладка ЦУ", "", "/tmp", SessionCategory::Project, &["sh"], Tab::local("shell"));
     let sid2 = session_ops::add_tab("Кратко", "", "/tmp", SessionCategory::Project, &["sh"], Tab::local("shell"));
     unsafe { gtk_widget_show_all(win) };
@@ -405,7 +437,8 @@ fn check_module_mi_gates(name: &str, score: f64, failures: &mut Vec<String>) {
         ("osc_parser.rs", 60.0), ("palette.rs", 58.85), ("pane_actions.rs", 60.0),
         ("pane_header.rs", 60.0), ("pane_radar.rs", 60.0), ("pane_registry.rs", 60.0),
         ("pty_tap.rs", 60.0), ("session_ops.rs", 60.0), ("settings_dialog.rs", 60.0),
-        ("shortcuts.rs", 60.0), ("ssh_ui.rs", 60.0), ("swarm_view.rs", 60.0),
+        ("shortcuts.rs", 60.0), ("sidebar.rs", 60.0), ("sidebar_folders.rs", 60.0),
+        ("ssh_ui.rs", 60.0), ("swarm_view.rs", 60.0),
         ("task_dispatch.rs", 60.0), ("topbar.rs", 60.0),
     ];
     check_min_targets(name, score, core_and_v04, failures);
@@ -548,6 +581,134 @@ fn verify_v1_end_to_end_wiring() {
     cleanup_test_window(win, &[sid]);
     crate::pty_tap::set_osc52_enabled(prev_osc);
     crate::i18n::set_locale(prev_loc);
+}
+
+fn make_folder_drag_repos() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let base = temp_test_path("akhterm_sf_e2e");
+    let (repo_a, wt_a, repo_b) = (base.join("AlphaRepo"), base.join(".AlphaRepo-wt/feat-55"), base.join("BetaRepo"));
+    let wt_gitdir = repo_a.join(".git/worktrees/feat-55");
+    std::fs::create_dir_all(&wt_gitdir).unwrap();
+    std::fs::create_dir_all(&wt_a).unwrap();
+    std::fs::create_dir_all(repo_b.join(".git")).unwrap();
+    std::fs::write(repo_a.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    std::fs::write(wt_gitdir.join("commondir"), "../..\n").unwrap();
+    std::fs::write(wt_gitdir.join("HEAD"), "ref: refs/heads/feat-55\n").unwrap();
+    std::fs::write(wt_a.join(".git"), format!("gitdir: {}\n", wt_gitdir.display())).unwrap();
+    std::fs::write(repo_b.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    (base.clone(), repo_a, wt_a, base.join("tabs-v2.tsv"))
+}
+
+fn assert_saved_tab_order(state_path: &Path, first_cwd: &Path, second_cwd: &Path) {
+    let saved = std::fs::read_to_string(state_path).unwrap_or_default();
+    let fields: Vec<&str> = saved.split('\0').collect();
+    let p1 = fields.iter().position(|&f| f == first_cwd.to_string_lossy()).expect("first cwd saved");
+    let p2 = fields.iter().position(|&f| f == second_cwd.to_string_lossy()).expect("second cwd saved");
+    assert!(saved.starts_with("akhterm-tabs-v2\0") && p1 < p2, "unexpected tabs-v2 order: {saved:?}");
+}
+
+fn assert_sidebar_click_suppression(row1: *mut GtkWidget, sid1: usize, sid2: usize) {
+    app_state::with_app_mut(|a| a.active_id = sid2);
+    (session_ops::select_sidebar_row_cb())(row1, sid1 as *mut c_void);
+    assert_eq!(app_state::active_session_id(), sid2, "sidebar post-drag click suppressed");
+    (session_ops::select_sidebar_row_cb())(row1, sid1 as *mut c_void);
+    assert_eq!(app_state::active_session_id(), sid1, "sidebar plain click selects");
+}
+
+fn assert_sidebar_drag_reorders(row1: *mut GtkWidget, sid1: usize, sid2: usize) {
+    unsafe {
+        let (press, motion) = (gdk_event_new(GDK_BUTTON_PRESS), gdk_event_new(GDK_MOTION_NOTIFY));
+        set_raw_btn_coords(press, 10.0, 12.0, 1);
+        (session_ops::sidebar_button_press_cb())(row1, press, sid1 as *mut c_void);
+        set_raw_btn_coords(motion, 10.0, 90.0, 0);
+        assert_eq!((session_ops::sidebar_motion_cb())(row1, motion, sid1 as *mut c_void), 1);
+        assert!(has_css_class(row1, "sidebar-row-dragging"));
+        assert_alt_slot_and_order(sid1, sid2);
+        (session_ops::sidebar_button_release_cb())(row1, press, sid1 as *mut c_void);
+        assert!(!has_css_class(row1, "sidebar-row-dragging"));
+        gdk_event_free(press);
+        gdk_event_free(motion);
+    }
+}
+
+fn assert_alt_slot_and_order(sid1: usize, sid2: usize) {
+    assert_eq!(&current_session_ids()[..2], &[sid2, sid1]);
+    let alt1 = tab_order::alt_tab_index(b'1' as u32, GDK_MOD1_MASK).unwrap();
+    let alt2 = tab_order::alt_tab_index(b'2' as u32, GDK_MOD1_MASK).unwrap();
+    APP.with(|c| {
+        let a = c.borrow();
+        let sessions = &a.as_ref().unwrap().sessions;
+        assert_eq!((sessions[alt1].id, sessions[alt2].id), (sid2, sid1));
+    });
+}
+
+fn apply_test_sidebar_filter(query: &str) {
+    APP.with(|c| {
+        let a = c.borrow();
+        let app = a.as_ref().unwrap();
+        app.sidebar.filter(query, &app.sessions, std::iter::empty());
+    });
+}
+
+fn assert_folder_collapse_and_search(toggle_a: *mut GtkWidget, rows_a: *mut GtkWidget, root_b: *mut GtkWidget) {
+    unsafe { gtk_button_clicked(toggle_a) };
+    pump_gtk_events();
+    assert_eq!(unsafe { gtk_widget_get_visible(rows_a) }, 0, "folder A should collapse");
+    apply_test_sidebar_filter("feat-55");
+    assert_eq!(unsafe { gtk_widget_get_visible(rows_a) }, 1, "search auto-expands matching folder");
+    assert_eq!(unsafe { gtk_widget_get_visible(root_b) }, 0, "search hides 0-match folder");
+    apply_test_sidebar_filter("");
+    assert_eq!(unsafe { gtk_widget_get_visible(rows_a) }, 0, "collapsed state restored after search");
+}
+
+fn verify_folder_grouping_collapse_add_and_search(repo_a: &Path, repo_b: &Path) -> usize {
+    let (key_a, key_b) = (repo_a.to_string_lossy().into_owned(), repo_b.to_string_lossy().into_owned());
+    assert_eq!(APP.with(|c| c.borrow().as_ref().unwrap().sidebar.folder_keys()), vec![key_a.clone(), key_b.clone()]);
+    let (_, toggle_a, add_a, rows_a) = APP.with(|c| c.borrow().as_ref().unwrap().sidebar.folder_widgets(&key_a).unwrap());
+    let (root_b, _, _, _) = APP.with(|c| c.borrow().as_ref().unwrap().sidebar.folder_widgets(&key_b).unwrap());
+    assert_folder_collapse_and_search(toggle_a, rows_a, root_b);
+    unsafe { gtk_button_clicked(add_a) };
+    pump_gtk_events();
+    assert_eq!(unsafe { gtk_widget_get_visible(rows_a) }, 1, "+ button expands folder");
+    APP.with(|c| {
+        let a = c.borrow();
+        let last = a.as_ref().unwrap().sessions.last().unwrap();
+        assert_eq!(last.cwd, key_a);
+        last.id
+    })
+}
+
+fn setup_sidebar_drag_sessions(repo_a: &Path, wt_a: &Path, repo_b: &Path, state_path: &Path) -> (*mut GtkWidget, usize, usize, usize) {
+    let (win, _) = install_test_window();
+    unsafe { gtk_window_set_default_size(win, 640, 480) };
+    APP.with(|c| c.borrow_mut().as_mut().unwrap().tab_store = Some(TabStore::new_for_test(state_path.to_path_buf())));
+    let sid1 = session_ops::add_tab("Alpha", "", &repo_a.to_string_lossy(), SessionCategory::Project, &["sh"], Tab::local("shell"));
+    let sid2 = session_ops::add_tab("Alpha WT", "", &wt_a.to_string_lossy(), SessionCategory::Project, &["sh"], Tab::local("shell"));
+    let sid3 = session_ops::add_tab("Beta", "", &repo_b.to_string_lossy(), SessionCategory::Project, &["sh"], Tab::local("shell"));
+    topbar::refresh_ui();
+    unsafe { gtk_widget_show_all(win) };
+    thread::sleep(Duration::from_millis(25));
+    pump_gtk_events();
+    (win, sid1, sid2, sid3)
+}
+
+fn verify_sidebar_drag_and_folder_grouping() {
+    let (base, repo_a, wt_a, state_path) = make_folder_drag_repos();
+    let repo_b = base.join("BetaRepo");
+    let (win, sid1, sid2, sid3) = setup_sidebar_drag_sessions(&repo_a, &wt_a, &repo_b, &state_path);
+    let row1 = APP.with(|c| c.borrow().as_ref().unwrap().sessions[0].sidebar_row.row_widget());
+    let detail2 = APP.with(|c| c.borrow().as_ref().unwrap().sessions[1].sidebar_row.detail_text_for_test());
+    assert!(detail2.contains("[wt]"), "linked worktree row must preserve [wt] detail, got {detail2:?}");
+    assert_sidebar_drag_reorders(row1, sid1, sid2);
+    assert_sidebar_click_suppression(row1, sid1, sid2);
+    assert_saved_tab_order(&state_path, &wt_a, &repo_a);
+    let sid4 = verify_folder_grouping_collapse_add_and_search(&repo_a, &repo_b);
+    cleanup_test_window(win, &[sid1, sid2, sid3, sid4]);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn headless_broadway_sidebar_drag_and_folder_grouping() {
+    with_headless_gtk(verify_sidebar_drag_and_folder_grouping);
 }
 
 #[test]

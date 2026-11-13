@@ -10,6 +10,8 @@
 @define-color border #27272a;
 @define-color border_strong #3f3f46;
 @define-color selected_border #52525b;
+@define-color drag_bg #2e2e36;
+@define-color drag_border #8b5cf6;
 @define-color text #fafafa;
 @define-color text_strong #ffffff;
 @define-color text_secondary #e4e4e7;

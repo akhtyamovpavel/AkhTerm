@@ -367,6 +367,25 @@ pub mod i18n_text {
     pub fn about_copied_btn() -> &'static CStr { ABOUT_COPIED_BTN.cstr() }
     pub const ABOUT_CLOSE_BTN: UiText = UiText::new(c"Закрыть", c"Close");
     pub fn about_close_btn() -> &'static CStr { ABOUT_CLOSE_BTN.cstr() }
+
+    pub const SIDEBAR_TITLE: UiText = UiText::new(c"ПРОЕКТЫ И СЕССИИ", c"PROJECTS & SESSIONS");
+    pub fn sidebar_title() -> &'static CStr { SIDEBAR_TITLE.cstr() }
+    pub const SIDEBAR_SEARCH_PLACEHOLDER: UiText = UiText::new(c"Поиск вкладки, каталога, tmux...", c"Search tab, folder, tmux...");
+    pub fn sidebar_search_placeholder() -> &'static CStr { SIDEBAR_SEARCH_PLACEHOLDER.cstr() }
+    pub const SIDEBAR_GROUP_LOCAL: UiText = UiText::new(c"Локальные", c"Local");
+    pub fn sidebar_group_local() -> &'static CStr { SIDEBAR_GROUP_LOCAL.cstr() }
+    pub const SIDEBAR_GROUP_SSH: UiText = UiText::new(c"SSH", c"SSH");
+    pub fn sidebar_group_ssh() -> &'static CStr { SIDEBAR_GROUP_SSH.cstr() }
+    pub const SIDEBAR_GROUP_MONITOR: UiText = UiText::new(c"Мониторинг", c"Monitoring");
+    pub fn sidebar_group_monitor() -> &'static CStr { SIDEBAR_GROUP_MONITOR.cstr() }
+    pub const SIDEBAR_EMPTY_TABS: UiText = UiText::new(c"Нет открытых вкладок", c"No open tabs");
+    pub fn sidebar_empty_tabs() -> &'static CStr { SIDEBAR_EMPTY_TABS.cstr() }
+    pub const SIDEBAR_EMPTY_SEARCH: UiText = UiText::new(c"Ничего не найдено", c"Nothing found");
+    pub fn sidebar_empty_search() -> &'static CStr { SIDEBAR_EMPTY_SEARCH.cstr() }
+    pub const SIDEBAR_TMUX_PREFIX: UiText = UiText::new(c"tmux на сервере:", c"tmux on server:");
+    pub fn sidebar_tmux_prefix() -> &'static str { SIDEBAR_TMUX_PREFIX.as_str() }
+    pub const SIDEBAR_FOLDER_NEW_TAB_TIP: UiText = UiText::new(c"Новая локальная вкладка в этой папке", c"New local tab in this folder");
+    pub fn sidebar_folder_new_tab_tip() -> &'static CStr { SIDEBAR_FOLDER_NEW_TAB_TIP.cstr() }
 }
 
 pub use i18n_text::*;
@@ -452,6 +471,11 @@ mod tests {
             i18n_text::SETTINGS_NOTIFY_SECS, i18n_text::SETTINGS_ABOUT_BTN, i18n_text::SETTINGS_CLOSE_BTN,
             i18n_text::ABOUT_TITLE, i18n_text::ABOUT_SUBTITLE, i18n_text::ABOUT_COPY_BTN,
             i18n_text::ABOUT_COPIED_BTN, i18n_text::ABOUT_CLOSE_BTN,
+            i18n_text::SIDEBAR_TITLE, i18n_text::SIDEBAR_SEARCH_PLACEHOLDER,
+            i18n_text::SIDEBAR_GROUP_LOCAL, i18n_text::SIDEBAR_GROUP_SSH,
+            i18n_text::SIDEBAR_GROUP_MONITOR, i18n_text::SIDEBAR_EMPTY_TABS,
+            i18n_text::SIDEBAR_EMPTY_SEARCH, i18n_text::SIDEBAR_TMUX_PREFIX,
+            i18n_text::SIDEBAR_FOLDER_NEW_TAB_TIP,
         ] {
             assert_pair_valid(entry);
         }

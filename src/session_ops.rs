@@ -218,7 +218,7 @@ fn read_vte_window_title(vte: *mut GtkWidget) -> Option<String> {
     }
 }
 
-extern "C" fn on_select_session(_btn: *mut GtkWidget, user_data: *mut c_void) {
+fn select_session_from_click(sid: usize) {
     if context_menu::is_rename_open() {
         return;
     }
@@ -228,7 +228,33 @@ extern "C" fn on_select_session(_btn: *mut GtkWidget, user_data: *mut c_void) {
         pin_pop.focus_entry();
         return;
     }
-    select_session(user_data as usize);
+    select_session(sid);
+}
+
+#[cfg(test)]
+pub(crate) fn select_session_cb() -> extern "C" fn(*mut GtkWidget, *mut c_void) {
+    on_select_session
+}
+
+#[cfg(test)]
+pub(crate) fn select_sidebar_row_cb() -> extern "C" fn(*mut GtkWidget, *mut c_void) {
+    on_select_sidebar_row
+}
+
+extern "C" fn on_select_session(_btn: *mut GtkWidget, user_data: *mut c_void) {
+    let sid = user_data as usize;
+    if tab_order::should_suppress_click(sid, tab_order::DragAxis::Horizontal) {
+        return;
+    }
+    select_session_from_click(sid);
+}
+
+extern "C" fn on_select_sidebar_row(_btn: *mut GtkWidget, user_data: *mut c_void) {
+    let sid = user_data as usize;
+    if tab_order::should_suppress_click(sid, tab_order::DragAxis::Vertical) {
+        return;
+    }
+    select_session_from_click(sid);
 }
 
 pub(crate) fn tab_strip_handlers() -> tab_strip::TabHandlers {
@@ -238,6 +264,15 @@ pub(crate) fn tab_strip_handlers() -> tab_strip::TabHandlers {
         on_press: on_tab_button_press,
         on_motion: on_tab_motion,
         on_release: on_tab_button_release,
+    }
+}
+
+pub(crate) fn sidebar_row_handlers() -> sidebar::SidebarRowHandlers {
+    sidebar::SidebarRowHandlers {
+        on_select: on_select_sidebar_row,
+        on_press: on_sidebar_button_press,
+        on_motion: on_sidebar_motion,
+        on_release: on_sidebar_button_release,
     }
 }
 
@@ -351,6 +386,27 @@ extern "C" fn on_tab_button_press(
     dispatch_tab_press(btn, event, data, button, ev_type)
 }
 
+fn set_drag_class_for_sid(sid: usize, axis: tab_order::DragAxis, active: bool) {
+    app_state::with_app(|app| {
+        let Some(session) = app.sessions.iter().find(|s| s.id == sid) else {
+            return;
+        };
+        let (widget, class) = match axis {
+            tab_order::DragAxis::Horizontal => (session.top_tab.tab_widget(), "tab-dragging"),
+            tab_order::DragAxis::Vertical => (session.sidebar_row.row_widget(), "sidebar-row-dragging"),
+        };
+        set_class(widget, class, active);
+    });
+}
+
+fn finish_drag_interaction(axis: tab_order::DragAxis) {
+    if let Some((sid, done_axis, true)) = tab_order::end_drag_details() {
+        set_drag_class_for_sid(sid, done_axis, false);
+    } else if tab_order::is_drag_pending(axis) {
+        let _ = tab_order::end_drag_details();
+    }
+}
+
 fn dispatch_tab_press(
     btn: *mut GtkWidget,
     event: *const GdkEvent,
@@ -359,11 +415,11 @@ fn dispatch_tab_press(
     ev_type: c_int,
 ) -> c_int {
     if button == 3 && ev_type == GDK_BUTTON_PRESS {
-        let _ = tab_order::end_tab_drag();
+        finish_drag_interaction(tab_order::DragAxis::Horizontal);
         return (pane_actions::tab_context_menu_cb())(btn, event, data);
     }
     if button == 1 && ev_type == GDK_2BUTTON_PRESS {
-        let _ = tab_order::end_tab_drag();
+        finish_drag_interaction(tab_order::DragAxis::Horizontal);
         open_tab_pin_popover(data as usize);
         return 1;
     }
@@ -386,22 +442,41 @@ extern "C" fn on_tab_motion(
     if !tab_order::is_tab_drag_pending() {
         return 0;
     }
-    let Some((sid, strip_x, started_now)) = read_tab_drag_step(btn, event) else {
+    let Some((sid, strip_x, started_now, tabs_box, tab_widget)) = read_tab_drag_step(btn, event) else {
         return 0;
     };
-    if started_now && app_state::active_session_id() != sid {
-        select_session(sid);
+    if started_now {
+        set_drag_class_for_sid(sid, tab_order::DragAxis::Horizontal, true);
+        if app_state::active_session_id() != sid {
+            select_session(sid);
+        }
     }
-    if let Some(target) = compute_drag_reorder(sid, strip_x) {
-        reorder_session_to(sid, target);
+    app_state::with_app(|app| app.tab_strip.reveal_drag_x(strip_x));
+    let cur_origin = platform::translate_widget_x_to_ancestor(tab_widget, tabs_box, 0.0);
+    if !tab_order::is_drag_settling(cur_origin) {
+        if let Some(target) = compute_drag_reorder(sid, strip_x) {
+            tab_order::mark_drag_reordered(cur_origin);
+            reorder_session_to(sid, target);
+        }
     }
     1
 }
 
-fn read_tab_drag_step(btn: *mut GtkWidget, event: *const GdkEvent) -> Option<(usize, f64, bool)> {
+fn read_tab_drag_step(
+    btn: *mut GtkWidget,
+    event: *const GdkEvent,
+) -> Option<(usize, f64, bool, *mut GtkWidget, *mut GtkWidget)> {
     let tabs_box = app_state::lookup_tabs_box()?;
     let cur_x = platform::translate_event_x_to_ancestor(btn, tabs_box, event)?;
-    tab_order::update_tab_drag(cur_x)
+    let (sid, strip_x, started_now) = tab_order::update_tab_drag(cur_x)?;
+    let tab_widget = app_state::with_app(|app| {
+        app.sessions
+            .iter()
+            .find(|s| s.id == sid)
+            .map(|s| s.top_tab.tab_widget())
+    })
+    .flatten()?;
+    Some((sid, strip_x, started_now, tabs_box, tab_widget))
 }
 
 #[cfg(test)]
@@ -414,7 +489,110 @@ extern "C" fn on_tab_button_release(
     _event: *const GdkEvent,
     _data: *mut c_void,
 ) -> c_int {
-    let _ = tab_order::end_tab_drag();
+    finish_drag_interaction(tab_order::DragAxis::Horizontal);
+    0
+}
+
+#[cfg(test)]
+pub(crate) fn sidebar_button_press_cb() -> extern "C" fn(*mut GtkWidget, *const GdkEvent, *mut c_void) -> c_int {
+    on_sidebar_button_press
+}
+
+#[cfg(test)]
+pub(crate) fn sidebar_motion_cb() -> extern "C" fn(*mut GtkWidget, *const GdkEvent, *mut c_void) -> c_int {
+    on_sidebar_motion
+}
+
+#[cfg(test)]
+pub(crate) fn sidebar_button_release_cb() -> extern "C" fn(*mut GtkWidget, *const GdkEvent, *mut c_void) -> c_int {
+    on_sidebar_button_release
+}
+
+extern "C" fn on_sidebar_button_press(
+    btn: *mut GtkWidget,
+    event: *const GdkEvent,
+    data: *mut c_void,
+) -> c_int {
+    let mut button: c_uint = 0;
+    let ev_type = unsafe { gdk_event_get_event_type(event) };
+    if unsafe { gdk_event_get_button(event, &mut button) } == 0 {
+        return 0;
+    }
+    if button == 3 && ev_type == GDK_BUTTON_PRESS {
+        finish_drag_interaction(tab_order::DragAxis::Vertical);
+        return (pane_actions::tab_context_menu_cb())(btn, event, data);
+    }
+    if button == 1 && ev_type == GDK_BUTTON_PRESS {
+        let parent = unsafe { gtk_widget_get_parent(btn) };
+        if let Some(y) = platform::translate_event_y_to_ancestor(btn, parent, event) {
+            tab_order::begin_sidebar_drag(data as usize, y);
+        }
+    }
+    0
+}
+
+fn compute_sidebar_drag_reorder(sid: usize, parent: *mut GtkWidget, y: f64) -> Option<usize> {
+    let (cur_pos, siblings) = app_state::with_app(|app| {
+        let siblings: Vec<(usize, *mut GtkWidget)> = app
+            .sessions
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, s)| {
+                let row = s.sidebar_row.row_widget();
+                let same_parent = !row.is_null() && unsafe { gtk_widget_get_parent(row) } == parent;
+                let visible = !row.is_null() && unsafe { gtk_widget_get_visible(row) } != 0;
+                (same_parent && visible).then_some((idx, row))
+            })
+            .collect();
+        let cur_pos = siblings.iter().position(|(idx, _)| app.sessions[*idx].id == sid)?;
+        Some((cur_pos, siblings))
+    })
+    .flatten()?;
+    let widgets: Vec<*mut GtkWidget> = siblings.iter().map(|(_, w)| *w).collect();
+    let heights = tab_order::allocated_heights(&widgets);
+    let target_pos =
+        tab_order::vertical_drag_target_index(&heights, tab_order::SIDEBAR_ROW_SPACING, cur_pos, y);
+    (target_pos != cur_pos).then_some(siblings[target_pos].0)
+}
+
+extern "C" fn on_sidebar_motion(
+    btn: *mut GtkWidget,
+    event: *const GdkEvent,
+    _data: *mut c_void,
+) -> c_int {
+    if !tab_order::is_drag_pending(tab_order::DragAxis::Vertical) {
+        return 0;
+    }
+    let parent = unsafe { gtk_widget_get_parent(btn) };
+    let Some(cur_y) = platform::translate_event_y_to_ancestor(btn, parent, event) else {
+        return 0;
+    };
+    let Some((sid, drag_y, started_now)) = tab_order::update_sidebar_drag(cur_y) else {
+        return 0;
+    };
+    if started_now {
+        set_drag_class_for_sid(sid, tab_order::DragAxis::Vertical, true);
+        if app_state::active_session_id() != sid {
+            select_session(sid);
+        }
+    }
+    app_state::with_app(|app| app.sidebar.reveal_drag_y(parent, drag_y));
+    let cur_origin = platform::translate_widget_y_to_ancestor(btn, parent, 0.0);
+    if !tab_order::is_drag_settling(cur_origin) {
+        if let Some(target) = compute_sidebar_drag_reorder(sid, parent, drag_y) {
+            tab_order::mark_drag_reordered(cur_origin);
+            reorder_session_to(sid, target);
+        }
+    }
+    1
+}
+
+extern "C" fn on_sidebar_button_release(
+    _btn: *mut GtkWidget,
+    _event: *const GdkEvent,
+    _data: *mut c_void,
+) -> c_int {
+    finish_drag_interaction(tab_order::DragAxis::Vertical);
     0
 }
 
@@ -518,6 +696,24 @@ pub(crate) fn open_default_tab() {
     if let Some(tab) = app_state::with_app(|app| app.config.new_tab()) {
         open_tab(tab);
     }
+}
+
+pub(crate) fn open_local_tab_in_folder(dir: &str) -> usize {
+    ssh_ui::dismiss_tab_menu();
+    let profile = app_state::with_app(|app| match app.config.new_tab() {
+        Tab::Local { profile, .. } => profile,
+        Tab::Remote(_) => "shell".to_owned(),
+    })
+    .unwrap_or_else(|| "shell".to_owned());
+    open_local_tab(profile, dir)
+}
+
+pub(crate) fn new_tab_in_folder_cb() -> sidebar::FolderNewTabHandler {
+    open_local_tab_in_folder_action
+}
+
+fn open_local_tab_in_folder_action(dir: &str) {
+    let _ = open_local_tab_in_folder(dir);
 }
 
 pub(crate) fn new_tab_cb() -> extern "C" fn(*mut GtkWidget, *mut c_void) {
@@ -625,7 +821,7 @@ fn reserve_tab_slot() -> Option<(usize, f64, *mut GtkWidget, sidebar::Sidebar, t
     app_state::with_app_mut(|app| {
         let sid = app.next_id;
         app.next_id += 1;
-        (sid, app.font_scale, app.stack, app.sidebar, app.tab_strip)
+        (sid, app.font_scale, app.stack, app.sidebar.clone(), app.tab_strip)
     })
 }
 
@@ -641,8 +837,7 @@ pub(crate) fn add_tab(
         return 0;
     };
     let (vte, scroll_wrap, panes, child_pid) = spawn_tab_widgets(sid, cwd, argv, scale, stack);
-    let sidebar_row =
-        sidebar.append_tab(category, sid, on_select_session, pane_actions::tab_context_menu_cb());
+    let sidebar_row = sidebar.append_tab_with_handlers(category, sid, sidebar_row_handlers());
     let top_tab = tab_strip.append(sid, category, tab_strip_handlers());
     let session = build_term_session(SessionInit {
         sid, title: title.to_owned(), profile_cwd: profile_cwd.to_owned(), cwd: cwd.to_owned(),

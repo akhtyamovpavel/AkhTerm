@@ -59,6 +59,15 @@ button.tab-close {
     font-weight: 600;
 }
 
+.terminal-tab.tab-dragging {
+    background-color: @drag_bg;
+    border-color: @drag_border;
+}
+
+.terminal-tab.tab-dragging button.tab-select {
+    color: @text;
+}
+
 button.tab-close {
     min-width: 26px;
     padding: 0;

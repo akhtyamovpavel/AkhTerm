@@ -27,6 +27,7 @@ pub struct TabHandlers {
 
 #[derive(Clone, Copy)]
 pub struct TabStrip {
+    scroll: *mut GtkWidget,
     tabs: *mut GtkWidget,
     adjustment: *mut GtkAdjustment,
 }
@@ -40,6 +41,7 @@ impl TabStrip {
 
             let scroll = gtk_scrolled_window_new(ptr::null_mut(), ptr::null_mut());
             gtk_scrolled_window_set_policy(scroll, GTK_POLICY_AUTOMATIC, GTK_POLICY_NEVER);
+            gtk_scrolled_window_set_kinetic_scrolling(scroll, 0);
             let viewport = gtk_viewport_new(ptr::null_mut(), ptr::null_mut());
             gtk_scrollable_set_hscroll_policy(viewport, GTK_SCROLL_NATURAL);
             let tabs = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
@@ -56,7 +58,7 @@ impl TabStrip {
             connect_click(new_tab, on_new_tab, ptr::null_mut());
             gtk_box_pack_start(row, new_tab, 0, 0, 0);
 
-            Self { tabs, adjustment }
+            Self { scroll, tabs, adjustment }
         }
     }
 
@@ -81,6 +83,11 @@ impl TabStrip {
         self.tabs
     }
 
+    #[cfg(test)]
+    pub fn scroll_widget(&self) -> *mut GtkWidget {
+        self.scroll
+    }
+
     pub fn reveal_widget(&self, tab_widget: *mut GtkWidget) {
         let Some(x) = crate::platform::translate_widget_x_to_ancestor(tab_widget, self.tabs, 0.0) else {
             return;
@@ -88,6 +95,15 @@ impl TabStrip {
         unsafe {
             let width = f64::from(gtk_widget_get_allocated_width(tab_widget));
             gtk_adjustment_clamp_page(self.adjustment, x, x + width);
+        }
+    }
+
+    pub fn reveal_drag_x(&self, strip_x: f64) {
+        unsafe {
+            let max_x = f64::from(gtk_widget_get_allocated_width(self.tabs)).max(1.0);
+            let lo = (strip_x - 36.0).clamp(0.0, max_x);
+            let hi = (strip_x + 36.0).clamp(lo, max_x);
+            gtk_adjustment_clamp_page(self.adjustment, lo, hi);
         }
     }
 }

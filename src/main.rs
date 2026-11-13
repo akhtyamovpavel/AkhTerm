@@ -36,6 +36,7 @@ mod session_ops;
 mod settings_dialog;
 mod shortcuts;
 mod sidebar;
+mod sidebar_folders;
 mod split_pane;
 mod ssh_detect;
 mod ssh_ui;
@@ -153,6 +154,7 @@ fn build_workspace_area(root_vbox: *mut GtkWidget) -> (sidebar::Sidebar, search_
         let hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
         gtk_box_pack_start(root_vbox, hbox, 1, 1, 0);
         let sidebar = sidebar::Sidebar::new(hbox, session_ops::sidebar_search_cb());
+        sidebar.set_new_folder_tab_handler(session_ops::new_tab_in_folder_cb());
         let term_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
         gtk_box_pack_start(hbox, term_vbox, 1, 1, 0);
         let search_bar = search_bar::SearchBar::new(shortcuts::active_search_vte, shortcuts::collect_close_search_vtes);

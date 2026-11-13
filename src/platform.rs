@@ -275,11 +275,10 @@ pub fn configure_window_identity(
     apply_window_platform_classes(win, backend, desktop);
 }
 
-pub fn translate_widget_x_to_ancestor(
+fn translate_widget_origin(
     source_widget: *mut GtkWidget,
     ancestor_widget: *mut GtkWidget,
-    local_x: f64,
-) -> Option<f64> {
+) -> Option<(i32, i32)> {
     if source_widget.is_null() || ancestor_widget.is_null() {
         return None;
     }
@@ -287,7 +286,31 @@ pub fn translate_widget_x_to_ancestor(
     let ok = unsafe {
         gtk_widget_translate_coordinates(source_widget, ancestor_widget, 0, 0, &mut ox, &mut oy)
     };
-    (ok != 0).then(|| f64::from(ox) + local_x)
+    (ok != 0).then_some((ox, oy))
+}
+
+fn read_event_coords(event: *const GdkEvent) -> Option<(f64, f64)> {
+    if event.is_null() {
+        return None;
+    }
+    let (mut ex, mut ey) = (0.0, 0.0);
+    (unsafe { gdk_event_get_coords(event, &mut ex, &mut ey) } != 0).then_some((ex, ey))
+}
+
+pub fn translate_widget_x_to_ancestor(
+    source_widget: *mut GtkWidget,
+    ancestor_widget: *mut GtkWidget,
+    local_x: f64,
+) -> Option<f64> {
+    translate_widget_origin(source_widget, ancestor_widget).map(|(ox, _)| f64::from(ox) + local_x)
+}
+
+pub fn translate_widget_y_to_ancestor(
+    source_widget: *mut GtkWidget,
+    ancestor_widget: *mut GtkWidget,
+    local_y: f64,
+) -> Option<f64> {
+    translate_widget_origin(source_widget, ancestor_widget).map(|(_, oy)| f64::from(oy) + local_y)
 }
 
 pub fn translate_event_x_to_ancestor(
@@ -295,14 +318,17 @@ pub fn translate_event_x_to_ancestor(
     ancestor_widget: *mut GtkWidget,
     event: *const GdkEvent,
 ) -> Option<f64> {
-    if event.is_null() {
-        return None;
-    }
-    let (mut ex, mut ey) = (0.0, 0.0);
-    if unsafe { gdk_event_get_coords(event, &mut ex, &mut ey) } == 0 {
-        return None;
-    }
+    let (ex, _) = read_event_coords(event)?;
     translate_widget_x_to_ancestor(source_widget, ancestor_widget, ex)
+}
+
+pub fn translate_event_y_to_ancestor(
+    source_widget: *mut GtkWidget,
+    ancestor_widget: *mut GtkWidget,
+    event: *const GdkEvent,
+) -> Option<f64> {
+    let (_, ey) = read_event_coords(event)?;
+    translate_widget_y_to_ancestor(source_widget, ancestor_widget, ey)
 }
 
 pub fn category_icon_candidates(category: SessionCategory) -> &'static [&'static CStr] {
@@ -697,9 +723,15 @@ mod tests {
     fn verify_broadway_coordinate_translation() {
         let (win, strip, b2) = build_two_button_strip();
         let ev = unsafe { gdk_event_new(GDK_MOTION_NOTIFY) };
-        unsafe { (*(ev as *mut RawGdkEventCoords)).x = 18.5 };
+        unsafe {
+            let coords = &mut *(ev as *mut RawGdkEventCoords);
+            coords.x = 18.5;
+            coords.y = 9.0;
+        }
         let b2_x = translate_event_x_to_ancestor(b2, strip, ev).expect("translated x");
         assert!((b2_x - 162.5).abs() < 1.0, "expected ~162.5, got {b2_x}");
+        let b2_y = translate_event_y_to_ancestor(b2, strip, ev).expect("translated y");
+        assert!((b2_y - 9.0).abs() < 1.0, "expected ~9.0, got {b2_y}");
         unsafe { gtk_box_reorder_child(strip, b2, 0) };
         flush_gtk_layout();
         let b2_after = translate_event_x_to_ancestor(b2, strip, ev).expect("reordered x");

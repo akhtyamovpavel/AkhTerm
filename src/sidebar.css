@@ -159,3 +159,73 @@ button.sidebar-action.sidebar-tmux-current {
     color: @text;
     background-color: @hover;
 }
+
+button.sidebar-row.sidebar-row-dragging {
+    background-color: @drag_bg;
+    border-color: @drag_border;
+    color: @text;
+}
+
+.sidebar-folder {
+    margin-bottom: 2px;
+}
+
+.sidebar-folder-header {
+    padding: 0 2px;
+}
+
+button.sidebar-folder-toggle,
+button.sidebar-folder-add {
+    background-image: none;
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    box-shadow: none;
+    color: @text_secondary;
+    padding: 4px 6px;
+    min-height: 24px;
+}
+
+button.sidebar-folder-toggle:hover,
+button.sidebar-folder-add:hover {
+    background-image: none;
+    background-color: @hover;
+    color: @text;
+}
+
+button.sidebar-folder-toggle:focus,
+button.sidebar-folder-add:focus {
+    outline: 1px solid @focus;
+    outline-offset: -1px;
+}
+
+button.sidebar-folder-add {
+    padding: 4px 7px;
+    min-width: 24px;
+    font-weight: 600;
+}
+
+.sidebar-folder-chevron {
+    color: @muted;
+    font-size: 11px;
+    min-width: 10px;
+}
+
+.sidebar-folder-icon {
+    color: @text_secondary;
+}
+
+.sidebar-folder-name {
+    color: @text;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.sidebar-folder-count {
+    color: @muted;
+    font-size: 11px;
+}
+
+.sidebar-folder-rows {
+    margin-left: 10px;
+}
