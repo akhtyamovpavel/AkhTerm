@@ -253,32 +253,10 @@ pub fn foreground_cwd(root_pid: i32) -> Option<String> {
     resolve_foreground_cwd(root_pid, None)
 }
 
-fn detect_proc_agent(exe: &str, low: &str) -> Option<&'static str> {
-    if matches!(exe, "deepseek" | "deepseek-cli") {
-        Some("DeepSeek")
-    } else if exe == "agy" || low.contains("/agy") || low.contains("antigravity") {
-        Some("AGY")
-    } else if exe == "codex" || low.contains("codex") {
-        Some("Codex")
-    } else if exe == "dsh" || low.contains("/dsh") {
-        Some("DSH")
-    } else if exe == "kimi" || low.contains("kimi") {
-        Some("Kimi")
-    } else if exe == "claude" || low.contains("claude") {
-        Some("Claude")
-    } else {
-        None
-    }
-}
-
 fn apply_proc_cmd(info: &mut ProcInfo, parts: &[String]) {
-    let low = parts.join(" ").to_lowercase();
     let exe = exe_basename(&parts[0]);
-    if exe != "ssh" && (exe == "tmux" || low.contains("tmux ")) {
+    if exe == "tmux" {
         info.has_tmux = "tmux".to_string();
-    }
-    if let Some(agent) = detect_proc_agent(&exe, &low) {
-        info.agent = agent.to_string();
     }
     if !matches!(exe.as_str(), "zsh" | "bash" | "sh") {
         info.fg_cmd = exe;
@@ -296,6 +274,9 @@ pub fn inspect_proc_tree(root_pid: i32) -> ProcInfo {
     }
     let tpgid = read_proc_groups(root_pid).map_or(0, |(_, tp)| tp);
     info.ssh_host = detect_active_ssh(root_pid, tpgid, &procs).unwrap_or_default();
+    if let Some(agent) = crate::agent_detect::select_tree_agent(root_pid, tpgid, &procs) {
+        info.agent = agent.to_owned();
+    }
     for entry in &procs {
         if entry.pid != root_pid {
             apply_proc_cmd(&mut info, &entry.argv);
@@ -308,12 +289,7 @@ pub fn detect_local_agent(root_pid: i32) -> Option<String> {
     if root_pid <= 0 {
         return None;
     }
-    let mut info = inspect_proc_tree(root_pid);
-    if info.agent.is_empty() {
-        if let Some(parts) = read_proc_cmdline(root_pid) {
-            apply_proc_cmd(&mut info, &parts);
-        }
-    }
+    let info = inspect_proc_tree(root_pid);
     (!info.agent.is_empty()).then_some(info.agent)
 }
 

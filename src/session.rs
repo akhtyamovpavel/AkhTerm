@@ -676,23 +676,7 @@ pub fn resolve_settled_turn_secs(
 }
 
 pub fn detect_agent_name(raw: &str) -> Option<&'static str> {
-    let low = raw.to_lowercase();
-    let first_word = low.split_whitespace().next().map(|word| word.trim_end_matches(':'));
-    if matches!(first_word, Some("deepseek" | "deepseek-cli")) {
-        Some("DeepSeek")
-    } else if low.contains("agy") || low.contains("antigravity") {
-        Some("AGY")
-    } else if low.contains("codex") {
-        Some("Codex")
-    } else if low.contains("dsh") {
-        Some("DSH")
-    } else if low.contains("kimi") {
-        Some("Kimi")
-    } else if low.contains("claude") {
-        Some("Claude")
-    } else {
-        None
-    }
+    crate::agent_detect::detect_title_agent(raw)
 }
 
 fn folder_name(path: &str) -> &str {

@@ -1,6 +1,7 @@
 //! AkhTerm binary entry point and GTK application bootstrap.
 
 mod about;
+mod agent_detect;
 mod app_state;
 #[cfg(test)]
 #[path = "app_tests.rs"]
