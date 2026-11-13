@@ -568,7 +568,7 @@ mod tests {
         if std::env::var_os("AKHTERM_HANDOFF_VTE_CHILD").is_none() {
             let exe = std::env::current_exe().unwrap();
             let status = Command::new(exe)
-                .args(["--exact", "handoff::tests::extract_vte_text_preserves_screen_below_cursor_after_scrollback"])
+                .args(["--exact", "swarm::handoff::tests::extract_vte_text_preserves_screen_below_cursor_after_scrollback"])
                 .env("AKHTERM_HANDOFF_VTE_CHILD", "1")
                 .status()
                 .unwrap();
@@ -653,7 +653,7 @@ mod tests {
     #[test]
     fn module_maintainability_index_stays_high() {
         let (_, _, handoff_mi) = crate::mi::compute_file_mi(include_str!("handoff.rs"));
-        let (_, _, main_mi) = crate::mi::compute_file_mi(include_str!("main.rs"));
+        let (_, _, main_mi) = crate::mi::compute_file_mi(include_str!("../main.rs"));
         assert!(handoff_mi >= 58.0, "handoff.rs MI too low: {handoff_mi:.2}");
         assert!(main_mi >= 54.78, "main.rs MI regressed: {main_mi:.2}");
     }

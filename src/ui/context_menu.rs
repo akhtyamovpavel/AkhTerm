@@ -674,7 +674,7 @@ mod tests {
     fn context_menu_module_meets_grade_b_mi_target() {
         let (_, _, ctx_mi) = crate::mi::compute_file_mi(include_str!("context_menu.rs"));
         assert!(ctx_mi >= 58.0, "context_menu.rs MI {ctx_mi:.2} < 58.0");
-        let (_, _, main_mi) = crate::mi::compute_file_mi(include_str!("main.rs"));
+        let (_, _, main_mi) = crate::mi::compute_file_mi(include_str!("../main.rs"));
         assert!(main_mi >= 54.87, "main.rs MI {main_mi:.2} < 54.87");
     }
 

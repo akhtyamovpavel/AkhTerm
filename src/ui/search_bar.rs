@@ -840,7 +840,7 @@ mod tests {
         let status = Command::new(exe)
             .args([
                 "--exact",
-                "search_bar::tests::headless_broadway_vte_scrollback_search_toggles_and_escape_focus",
+                "ui::search_bar::tests::headless_broadway_vte_scrollback_search_toggles_and_escape_focus",
             ])
             .env("AKHTERM_SEARCH_BWAY_CHILD", "1")
             .status()

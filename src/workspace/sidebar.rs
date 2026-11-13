@@ -29,6 +29,7 @@ pub type FolderNewTabHandler = fn(&str);
 
 fn noop_folder_action(_path: &str) {}
 
+#[cfg(test)]
 extern "C" fn noop_row_event(_w: *mut GtkWidget, _e: *const GdkEvent, _d: *mut c_void) -> c_int {
     0
 }
@@ -121,6 +122,7 @@ impl FolderCallbackData {
 #[derive(Clone)]
 pub struct Sidebar {
     panel: *mut GtkWidget,
+    #[cfg_attr(not(test), allow(dead_code))]
     scroll: *mut GtkWidget,
     vadj: *mut GtkAdjustment,
     title_lbl: *mut GtkWidget,
@@ -267,6 +269,7 @@ impl Sidebar {
         self.groups[group_index(category)].list
     }
 
+    #[cfg(test)]
     pub fn append_tab(
         &self,
         category: SessionCategory,

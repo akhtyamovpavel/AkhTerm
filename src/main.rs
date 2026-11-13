@@ -1,60 +1,31 @@
 //! AkhTerm binary entry point and GTK application bootstrap.
 
-mod about;
-mod agent_detect;
-mod app_state;
-#[cfg(test)]
-#[path = "app_tests.rs"]
-mod tests;
-mod approval;
-mod config;
-mod context_menu;
-mod ffi;
-mod file_drop;
-mod git_review;
-mod git_status;
-mod git_wt;
-mod handoff;
-mod i18n;
-mod mi;
-mod mi_watch;
-mod osc_parser;
-mod palette;
-mod pane_actions;
-mod pane_header;
-mod pane_radar;
-mod pane_registry;
-mod paste_route;
-mod paths;
-mod platform;
-mod proc_radar;
-mod pty_tap;
-mod remote_telemetry;
-mod search_bar;
-mod session;
-mod session_ops;
-mod settings_dialog;
-mod shortcuts;
-mod sidebar;
-mod sidebar_folders;
-mod split_pane;
-mod ssh_config;
-mod ssh_detect;
-mod ssh_ui;
-mod swarm_view;
-mod tab_order;
-mod tab_strip;
-mod tabs;
-mod task_dispatch;
+mod app;
+mod swarm;
+mod sys;
 mod telemetry;
-mod telemetry_agy;
-mod theme;
-mod theme_mode;
-mod tmux_copy;
-mod tmux_local;
-mod topbar;
-mod ui_font;
-mod ui_text;
+mod terminal;
+mod ui;
+mod workspace;
+
+pub(crate) use app::{app_state, session_ops, shortcuts};
+#[cfg(test)]
+pub(crate) use app::app_tests as tests;
+pub(crate) use swarm::{git_review, git_status, git_wt, handoff, swarm_view, task_dispatch};
+pub(crate) use sys::{config, ffi, paths, platform, ssh_config};
+pub(crate) use telemetry::{
+    agent_detect, approval, mi, mi_watch, pane_radar, proc_radar, remote_telemetry, ssh_detect,
+    telemetry_agy, tmux_local,
+};
+pub(crate) use terminal::{
+    file_drop, osc_parser, pane_actions, pane_header, pane_registry, paste_route, pty_tap, session,
+    split_pane, tmux_copy,
+};
+pub(crate) use ui::{
+    about, context_menu, i18n, palette, search_bar, settings_dialog, ssh_ui, theme, theme_mode,
+    topbar, ui_font, ui_text,
+};
+pub(crate) use workspace::{sidebar, sidebar_folders, tab_order, tab_strip, tabs};
 
 use std::cell::Cell;
 use std::ffi::{c_int, c_void, CString};

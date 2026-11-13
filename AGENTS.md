@@ -14,14 +14,14 @@ cargo build --release --offline --locked
 
 The [package workflow](.github/workflows/build-deb.yml) builds on Ubuntu 24.04 and checks installation in clean Ubuntu 24.04 and 26.04 containers. Check the rebuilt package whenever you change assets or native dependencies. Keep the application license and third-party notices in the installer.
 
-Keep changes small and reuse the existing modules. Aim for a Maintainability Index of at least 75. Use the same calculation as `src/mi.rs` when comparing touched modules. For modules already below the target, record the before and after scores and explain any decline.
+Keep changes small and reuse the existing modules. Aim for a Maintainability Index of at least 75. Use the same calculation as `src/telemetry/mi.rs` when comparing touched modules. For modules already below the target, record the before and after scores and explain any decline.
 
 ## Interface
 
-- Use GTK widgets and the Zinc palette in `src/theme.css`, `src/tab_strip.css` and `src/sidebar.css`. Keep the dark preference and native header bar together so the top of the window follows the application theme.
+- Use GTK widgets and the Zinc palette in `src/ui/theme.css`, `src/workspace/tab_strip.css` and `src/workspace/sidebar.css`. Keep the dark preference and native header bar together so the top of the window follows the application theme.
 - Use the bundled Geist font for interface text. Register it inside the process before GTK starts. Terminal cells use a monospace font and have their own zoom controls.
-- Keep static button labels and tooltips as named `&CStr` constants in `src/ui_text.rs`. Build tab names, connection labels and numeric values from live state. Give truncated titles a tooltip with the full text.
-- Keep each agent menu label with its shell command in `AGENT_ACTIONS`. Check local process detection in `src/proc_radar.rs` and tmux title detection in `src/session.rs` when adding an agent.
+- Keep static button labels and tooltips as named `&CStr` constants in `src/ui/ui_text.rs`. Build tab names, connection labels and numeric values from live state. Give truncated titles a tooltip with the full text.
+- Keep each agent menu label with its shell command in `AGENT_ACTIONS`. Check local process detection in `src/telemetry/proc_radar.rs` and tmux title detection in `src/terminal/session.rs` when adding an agent.
 - Check interface changes in GTK with Cyrillic labels. Try opening and closing tabs by mouse and keyboard, narrowing the window, and switching to and from fullscreen.
 
 ## Configuration and sessions

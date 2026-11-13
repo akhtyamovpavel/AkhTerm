@@ -1876,7 +1876,7 @@ mod tests {
         if std::env::var_os("AKHTERM_TELEMETRY_BWAY_CHILD").is_none() {
             let exe = std::env::current_exe().unwrap();
             let st = Command::new(exe)
-                .args(["--exact", "telemetry::tests::headless_broadway_tokens_menu_and_vte_fallback"])
+                .args(["--exact", "telemetry::telemetry::tests::headless_broadway_tokens_menu_and_vte_fallback"])
                 .env("AKHTERM_TELEMETRY_BWAY_CHILD", "1")
                 .status()
                 .unwrap();
@@ -2328,7 +2328,7 @@ mod tests {
     fn maintainability_index_stays_above_targets() {
         let (_, _, tel_mi) = crate::mi::compute_file_mi(include_str!("telemetry.rs"));
         let (_, _, agy_mi) = crate::mi::compute_file_mi(include_str!("telemetry_agy.rs"));
-        let (_, _, main_mi) = crate::mi::compute_file_mi(include_str!("main.rs"));
+        let (_, _, main_mi) = crate::mi::compute_file_mi(include_str!("../main.rs"));
         assert!(tel_mi >= 58.5, "telemetry.rs MI {tel_mi:.2} must be >= 58.5");
         assert!(agy_mi >= 62.0, "telemetry_agy.rs MI {agy_mi:.2} must be >= 62.0");
         assert!(main_mi >= 55.0, "main.rs MI {main_mi:.2} must be >= 55.0");

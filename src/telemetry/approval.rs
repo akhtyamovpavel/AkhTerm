@@ -655,7 +655,7 @@ mod tests {
         }
         let exe = std::env::current_exe().expect("test binary path");
         let status = Command::new(exe)
-            .args(["--exact", "approval::tests::headless_broadway_vte_reads_and_classifies_prompts", "--nocapture"])
+            .args(["--exact", "telemetry::approval::tests::headless_broadway_vte_reads_and_classifies_prompts", "--nocapture"])
             .env("AKHTERM_APPROVAL_BWAY_CHILD", "1")
             .status()
             .expect("spawn isolated broadway test");

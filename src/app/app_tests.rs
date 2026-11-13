@@ -405,23 +405,31 @@ fn app_routes_local_and_remote_drops_and_ignores_closed_vte_on_idle() {
     });
 }
 
-fn collect_src_mi_rows() -> Vec<(String, usize, usize, f64, &'static str)> {
-    let mut rows = Vec::new();
-    for entry in std::fs::read_dir("src").expect("src dir") {
+fn walk_rs_files(dir: &Path, root: &Path, rows: &mut Vec<(String, usize, usize, f64, &'static str)>) {
+    for entry in std::fs::read_dir(dir).expect("src dir") {
         let path = entry.expect("dir entry").path();
-        if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if path.is_dir() {
+            walk_rs_files(&path, root, rows);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            let rel = path.strip_prefix(root).unwrap_or(&path);
+            let name = rel.to_string_lossy().replace('\\', "/");
             let (sloc, cc, score) = mi::compute_file_mi(&std::fs::read_to_string(&path).expect("rs"));
             rows.push((name, sloc, cc, score, mi::grade_for_mi(score)));
         }
     }
+}
+
+fn collect_src_mi_rows() -> Vec<(String, usize, usize, f64, &'static str)> {
+    let mut rows = Vec::new();
+    let root = Path::new("src");
+    walk_rs_files(root, root, &mut rows);
     rows.sort_by(|a, b| a.0.cmp(&b.0));
     rows
 }
 
-fn check_min_targets(name: &str, score: f64, targets: &[(&str, f64)], failures: &mut Vec<String>) {
+fn check_min_targets(name: &str, file: &str, score: f64, targets: &[(&str, f64)], failures: &mut Vec<String>) {
     for &(target, min_mi) in targets {
-        if name == target && score < min_mi {
+        if file == target && score < min_mi {
             failures.push(format!("{name} MI {score:.2} < {min_mi:.1}"));
         }
     }
@@ -444,8 +452,12 @@ fn check_module_mi_gates(name: &str, score: f64, failures: &mut Vec<String>) {
         ("ssh_ui.rs", 60.0), ("swarm_view.rs", 60.0),
         ("task_dispatch.rs", 60.0), ("topbar.rs", 60.0),
     ];
-    check_min_targets(name, score, core_and_v04, failures);
-    check_min_targets(name, score, wave0_and_1, failures);
+    let file = Path::new(name).file_name().and_then(|s| s.to_str()).unwrap_or(name);
+    if file == "mod.rs" && score < 60.0 {
+        failures.push(format!("{name} MI {score:.2} < 60.0"));
+    }
+    check_min_targets(name, file, score, core_and_v04, failures);
+    check_min_targets(name, file, score, wave0_and_1, failures);
 }
 
 fn assert_remote_split_buttons_enabled() {
@@ -872,7 +884,7 @@ fn k8_full_stack_maintainability_index_targets() {
         failures.push(format!("src/main.rs has {main_lines} lines (must be < 900)"));
     }
     for (name, sloc, cc, score, grade) in collect_src_mi_rows() {
-        println!("{name:<19} | SLOC {sloc:>4} | CC {cc:>2} | MI {score:>6.2} | Grade {grade}");
+        println!("{name:<30} | SLOC {sloc:>4} | CC {cc:>2} | MI {score:>6.2} | Grade {grade}");
         check_module_mi_gates(&name, score, &mut failures);
     }
     assert!(failures.is_empty(), "MI gate failures:\n{}", failures.join("\n"));

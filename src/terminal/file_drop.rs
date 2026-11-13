@@ -567,7 +567,7 @@ mod tests {
     #[test]
     fn maintainability_index_meets_file_drop_and_main_targets() {
         let (_, _, drop_mi) = crate::mi::compute_file_mi(include_str!("file_drop.rs"));
-        let (_, _, main_mi) = crate::mi::compute_file_mi(include_str!("main.rs"));
+        let (_, _, main_mi) = crate::mi::compute_file_mi(include_str!("../main.rs"));
         assert!(drop_mi >= 58.0, "file_drop.rs MI too low: {drop_mi:.2}");
         assert!(main_mi >= 54.87, "main.rs MI regressed: {main_mi:.2}");
     }

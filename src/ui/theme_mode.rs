@@ -382,8 +382,8 @@ mod tests {
         let rules = format!(
             "{}\n{}\n{}\n{}",
             strip_define_colors(dark_css),
-            include_str!("tab_strip.css"),
-            include_str!("sidebar.css"),
+            include_str!("../workspace/tab_strip.css"),
+            include_str!("../workspace/sidebar.css"),
             include_str!("palette.css"),
         );
         for line in rules.lines() {
@@ -555,8 +555,8 @@ mod tests {
 
     fn full_stylesheet(mode: ThemeMode) -> String {
         let extra = concat!(
-            include_str!("tab_strip.css"),
-            include_str!("sidebar.css"),
+            include_str!("../workspace/tab_strip.css"),
+            include_str!("../workspace/sidebar.css"),
             include_str!("palette.css"),
         );
         build_stylesheet(mode, include_str!("theme.css"), extra)
@@ -872,7 +872,7 @@ mod tests {
         assert!(mode_mi >= 60.0, "theme_mode.rs MI {mode_mi:.2} < 60.0");
         let (_, _, theme_mi) = crate::mi::compute_file_mi(include_str!("theme.rs"));
         assert!(theme_mi >= 58.0, "theme.rs MI {theme_mi:.2} < 58.0");
-        let (_, _, main_mi) = crate::mi::compute_file_mi(include_str!("main.rs"));
+        let (_, _, main_mi) = crate::mi::compute_file_mi(include_str!("../main.rs"));
         assert!(main_mi >= 54.87, "main.rs MI {main_mi:.2} < 54.87");
     }
 }

@@ -1268,13 +1268,13 @@ mod tests {
     fn split_pane_mi_meets_grade_b_target() {
         let (_, _, split_mi) = crate::mi::compute_file_mi(include_str!("split_pane.rs"));
         assert!(split_mi >= 58.25, "split_pane.rs MI {split_mi:.2} < 58.25");
-        let (_, _, main_mi) = crate::mi::compute_file_mi(include_str!("main.rs"));
+        let (_, _, main_mi) = crate::mi::compute_file_mi(include_str!("../main.rs"));
         assert!(main_mi >= 54.87, "main.rs MI {main_mi:.2} < 54.87");
         let (_, _, session_mi) = crate::mi::compute_file_mi(include_str!("session.rs"));
         assert!(session_mi >= 55.69, "session.rs MI {session_mi:.2} < 55.69");
-        let (_, _, radar_mi) = crate::mi::compute_file_mi(include_str!("proc_radar.rs"));
+        let (_, _, radar_mi) = crate::mi::compute_file_mi(include_str!("../telemetry/proc_radar.rs"));
         assert!(radar_mi >= 55.92, "proc_radar.rs MI {radar_mi:.2} < 55.92");
-        let (_, _, ffi_mi) = crate::mi::compute_file_mi(include_str!("ffi.rs"));
+        let (_, _, ffi_mi) = crate::mi::compute_file_mi(include_str!("../sys/ffi.rs"));
         assert!(ffi_mi >= 64.76, "ffi.rs MI {ffi_mi:.2} < 64.76");
     }
 

@@ -27,6 +27,7 @@ pub struct TabHandlers {
 
 #[derive(Clone, Copy)]
 pub struct TabStrip {
+    #[cfg_attr(not(test), allow(dead_code))]
     scroll: *mut GtkWidget,
     tabs: *mut GtkWidget,
     adjustment: *mut GtkAdjustment,

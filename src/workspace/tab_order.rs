@@ -217,6 +217,7 @@ pub fn end_drag_details() -> Option<(usize, DragAxis, bool)> {
     Some((st.sid, st.axis, st.dragging))
 }
 
+#[cfg(test)]
 pub fn end_tab_drag() -> bool {
     end_drag_details().is_some_and(|(_, _, dragged)| dragged)
 }

@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 
-const GEIST: &[u8] = include_bytes!("../assets/fonts/Geist-Variable.ttf");
+const GEIST: &[u8] = include_bytes!("../../assets/fonts/Geist-Variable.ttf");
 const MFD_CLOEXEC: c_uint = 1;
 
 extern "C" {

@@ -1159,10 +1159,10 @@ mod tests {
     #[test]
     fn git_status_and_touched_modules_meet_maintainability_targets() {
         let (_, _, git_mi) = crate::mi::compute_file_mi(include_str!("git_status.rs"));
-        let (_, _, main_mi) = crate::mi::compute_file_mi(include_str!("main.rs"));
+        let (_, _, main_mi) = crate::mi::compute_file_mi(include_str!("../main.rs"));
         let (_, _, wt_mi) = crate::mi::compute_file_mi(include_str!("git_wt.rs"));
-        let (_, _, side_mi) = crate::mi::compute_file_mi(include_str!("sidebar.rs"));
-        let (_, _, pal_mi) = crate::mi::compute_file_mi(include_str!("palette.rs"));
+        let (_, _, side_mi) = crate::mi::compute_file_mi(include_str!("../workspace/sidebar.rs"));
+        let (_, _, pal_mi) = crate::mi::compute_file_mi(include_str!("../ui/palette.rs"));
         assert!(git_mi >= 58.0, "git_status.rs MI {git_mi:.2} must be >= 58.0");
         assert!(main_mi >= 54.87, "main.rs MI {main_mi:.2} must be >= 54.87");
         assert!(wt_mi >= 58.0, "git_wt.rs MI {wt_mi:.2} must be >= 58.0");

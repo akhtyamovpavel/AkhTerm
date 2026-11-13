@@ -1193,7 +1193,7 @@ mod tests {
         }
         let exe = std::env::current_exe().expect("test exe");
         let st = Command::new(exe)
-            .args(["--exact", "task_dispatch::tests::headless_broadway_task_dispatch_modal_auto_slug_and_fanout_submit"])
+            .args(["--exact", "swarm::task_dispatch::tests::headless_broadway_task_dispatch_modal_auto_slug_and_fanout_submit"])
             .env("AKHTERM_DISPATCH_BWAY_CHILD", "1")
             .status()
             .expect("spawn dispatch broadway test");

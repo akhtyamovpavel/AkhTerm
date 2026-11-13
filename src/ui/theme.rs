@@ -15,8 +15,8 @@ use crate::theme_mode::{build_stylesheet, ThemeMode};
 
 const DARK_THEME_CSS: &str = include_str!("theme.css");
 const EXTRA_COMPONENTS_CSS: &str = concat!(
-    include_str!("tab_strip.css"),
-    include_str!("sidebar.css"),
+    include_str!("../workspace/tab_strip.css"),
+    include_str!("../workspace/sidebar.css"),
     include_str!("palette.css"),
 );
 

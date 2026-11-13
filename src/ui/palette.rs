@@ -1184,7 +1184,7 @@ mod tests {
         }
         let exe = std::env::current_exe().expect("test binary path");
         let status = Command::new(exe)
-            .args(["--exact", "palette::tests::headless_broadway_palette_widget_and_keyboard_navigation"])
+            .args(["--exact", "ui::palette::tests::headless_broadway_palette_widget_and_keyboard_navigation"])
             .env("AKHTERM_PALETTE_BWAY_CHILD", "1")
             .status()
             .expect("spawn broadway palette test");
