@@ -652,6 +652,7 @@ pub fn create_vte_widget(cwd: &str, argv_strs: &[&str]) -> (*mut GtkWidget, i32)
             drop_vte_link_ctx as *const c_void,
             0,
         );
+        crate::tmux_copy::attach_vte_handlers(vte);
         g_signal_connect_data(
             vte,
             c"current-directory-uri-changed".as_ptr(),

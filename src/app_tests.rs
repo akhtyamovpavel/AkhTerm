@@ -26,7 +26,7 @@ fn make_test_widgets(vbox: *mut GtkWidget) -> [*mut GtkWidget; 4] {
     }
 }
 
-fn install_test_window() -> (*mut GtkWidget, *mut GtkWidget) {
+pub(crate) fn install_test_window() -> (*mut GtkWidget, *mut GtkWidget) {
     let win = unsafe { gtk_window_new(GTK_WINDOW_TOPLEVEL) };
     let app = make_test_app(win);
     let footer = app.footer_status;
@@ -186,7 +186,7 @@ fn verify_mid_upload_close_footer(rem_sid: usize, rem_vte: *mut GtkWidget, foote
     assert_eq!(txt, "📎 Загружено после закрытия");
 }
 
-fn cleanup_test_window(win: *mut GtkWidget, sids: &[usize]) {
+pub(crate) fn cleanup_test_window(win: *mut GtkWidget, sids: &[usize]) {
     for &sid in sids {
         session_ops::close_session(sid);
     }

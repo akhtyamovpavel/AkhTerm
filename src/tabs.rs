@@ -286,8 +286,7 @@ impl RemoteConnection {
     pub fn argv(&self) -> Vec<String> {
         let mut argv = ssh_base_argv(&self.host);
         if let Some(name) = &self.tmux_session {
-            let target = shell_quote(name);
-            argv.push(format!("tmux new-session -A -s {target}"));
+            argv.push(format!("tmux new-session -A -s {} \\; set-option -g set-clipboard on", shell_quote(name)));
         }
         argv
     }
@@ -295,12 +294,9 @@ impl RemoteConnection {
     pub fn grouped_tmux_argv(&self, pane_seq: usize) -> Vec<String> {
         let mut argv = ssh_base_argv(&self.host);
         if let Some(base) = &self.tmux_session {
-            let pane_name = format!("{base}-pane-{pane_seq}");
-            let q_pane = shell_quote(&pane_name);
-            let q_base = shell_quote(base);
-            argv.push(format!(
-                "tmux new-session -A -s {q_pane} -t {q_base} \\; set-option destroy-unattached on"
-            ));
+            let pane = shell_quote(&format!("{base}-pane-{pane_seq}"));
+            let root = shell_quote(base);
+            argv.push(format!("tmux new-session -A -s {pane} -t {root} \\; set-option destroy-unattached on \\; set-option -g set-clipboard on"));
         }
         argv
     }
@@ -794,13 +790,19 @@ mod tests {
         assert_eq!(plain_argv.last().map(String::as_str), Some("devbox"));
 
         let tmux = RemoteConnection { host: "gpu01".into(), tmux_session: Some("work 'main'".into()) };
+        let direct = tmux.argv();
+        assert_eq!(
+            direct.last().map(String::as_str),
+            Some("tmux new-session -A -s 'work '\\''main'\\''' \\; set-option -g set-clipboard on")
+        );
+        assert!(!direct.last().unwrap().contains("mouse"));
         let grouped = tmux.grouped_tmux_argv(3);
         assert_eq!(grouped[0], "ssh");
         assert!(grouped.contains(&"-t".to_owned()));
         assert_eq!(grouped[grouped.len() - 2], "gpu01");
         assert_eq!(
             grouped[grouped.len() - 1],
-            "tmux new-session -A -s 'work '\\''main'\\''-pane-3' -t 'work '\\''main'\\''' \\; set-option destroy-unattached on"
+            "tmux new-session -A -s 'work '\\''main'\\''-pane-3' -t 'work '\\''main'\\''' \\; set-option destroy-unattached on \\; set-option -g set-clipboard on"
         );
     }
 

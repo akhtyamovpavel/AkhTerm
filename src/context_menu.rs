@@ -111,16 +111,31 @@ pub fn is_right_button_press(event: *const GdkEvent) -> bool {
     }
 }
 
+pub fn has_vte_selection(vte: *mut GtkWidget) -> bool {
+    if vte.is_null() {
+        return false;
+    }
+    crate::tmux_copy::has_selection(vte)
+        || unsafe { vte_terminal_get_has_selection(vte) != 0 }
+}
+
 pub fn read_vte_selection(vte: *mut GtkWidget) -> Option<String> {
-    if vte.is_null() || unsafe { vte_terminal_get_has_selection(vte) } == 0 {
+    if vte.is_null() {
+        return None;
+    }
+    if let Some(tmux_sel) = crate::tmux_copy::read_selection(vte) {
+        return Some(tmux_sel);
+    }
+    if unsafe { vte_terminal_get_has_selection(vte) } == 0 {
         return None;
     }
     let ptr = unsafe { vte_terminal_get_text_selected(vte, VTE_FORMAT_TEXT) };
     if ptr.is_null() {
         return None;
     }
-    let selected = unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() };
+    let raw = unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() };
     unsafe { g_free(ptr as *mut c_void) };
+    let selected = crate::tmux_copy::slice_native_selection_if_tmux(vte, &raw);
     (!selected.is_empty()).then_some(selected)
 }
 
@@ -137,7 +152,17 @@ pub fn copy_text_to_clipboard(value: &str) {
 }
 
 pub fn copy_vte_selection_to_clipboard(vte: *mut GtkWidget, clear_after: bool) -> bool {
-    if vte.is_null() || unsafe { vte_terminal_get_has_selection(vte) } == 0 {
+    if vte.is_null() {
+        return false;
+    }
+    if let Some(sel) = crate::tmux_copy::read_selection(vte) {
+        copy_text_to_clipboard(&sel);
+        if clear_after {
+            crate::tmux_copy::clear_selection(vte);
+        }
+        return true;
+    }
+    if unsafe { vte_terminal_get_has_selection(vte) } == 0 {
         return false;
     }
     let Some(sel) = read_vte_selection(vte) else {

@@ -961,7 +961,7 @@ fn build_vte_menu_spec(
     vte: *mut GtkWidget,
     link_target: Option<String>,
 ) -> Option<context_menu::VteMenuSpec> {
-    let has_selection = !vte.is_null() && unsafe { vte_terminal_get_has_selection(vte) != 0 };
+    let has_selection = context_menu::has_vte_selection(vte);
     let selected_text = has_selection.then(|| context_menu::read_vte_selection(vte)).flatten();
     app_state::with_app_mut(|app| {
         let idx = app.sessions.iter().position(|s| s.has_vte(vte))?;

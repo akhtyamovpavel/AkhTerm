@@ -31,8 +31,13 @@ pub type GdkAtom = *mut c_void;
 pub type VteTerminal = c_void;
 pub type VteRegex = c_void;
 pub type PangoFontDescription = c_void;
+#[allow(non_camel_case_types)]
+pub type cairo_t = c_void;
 
+pub const GDK_SELECTION_PRIMARY: GdkAtom = 1usize as GdkAtom;
 pub const GDK_SELECTION_CLIPBOARD: GdkAtom = 69usize as GdkAtom;
+pub const G_CONNECT_AFTER: c_int = 1;
+pub const GTK_STATE_FLAG_NORMAL: c_uint = 0;
 
 pub const PCRE2_CASELESS: c_uint = 0x0000_0008;
 pub const PCRE2_MULTILINE_UTF: c_uint = 0x0008_0400; // PCRE2_UTF (0x80000) | PCRE2_MULTILINE (0x400)
@@ -57,7 +62,9 @@ pub const VTE_FORMAT_TEXT: c_int = 1;
 pub const GDK_MOTION_NOTIFY: c_int = 3;
 pub const GDK_BUTTON_PRESS: c_int = 4;
 pub const GDK_2BUTTON_PRESS: c_int = 5;
+pub const GDK_3BUTTON_PRESS: c_int = 6;
 pub const GDK_BUTTON_RELEASE: c_int = 7;
+pub const GDK_KEY_PRESS: c_int = 8;
 pub const GDK_BUTTON1_MOTION_MASK: c_int = 1 << 5;
 pub const GDK_BUTTON_PRESS_MASK: c_int = 1 << 8;
 pub const GDK_BUTTON_RELEASE_MASK: c_int = 1 << 9;
@@ -67,6 +74,15 @@ pub const GDK_MOD1_MASK: c_uint = 1 << 3; // Alt
 pub const GTK_DEST_DEFAULT_ALL: c_uint = 0x07;
 pub const DEST_DEFAULT_ALL: c_uint = GTK_DEST_DEFAULT_ALL;
 pub const GDK_ACTION_COPY: c_uint = 1 << 1;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct GtkBorder {
+    pub left: i16,
+    pub right: i16,
+    pub top: i16,
+    pub bottom: i16,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -462,6 +478,19 @@ extern "C" {
     );
     pub fn vte_terminal_get_row_count(terminal: *mut VteTerminal) -> isize;
     pub fn vte_terminal_get_column_count(terminal: *mut VteTerminal) -> isize;
+    pub fn vte_terminal_get_char_width(terminal: *mut VteTerminal) -> std::ffi::c_long;
+    pub fn vte_terminal_get_char_height(terminal: *mut VteTerminal) -> std::ffi::c_long;
+    pub fn gtk_style_context_get_padding(
+        context: *mut GtkStyleContext,
+        state: c_uint,
+        padding: *mut GtkBorder,
+    );
+    pub fn gtk_widget_queue_draw(widget: *mut GtkWidget);
+    pub fn cairo_save(cr: *mut cairo_t);
+    pub fn cairo_restore(cr: *mut cairo_t);
+    pub fn cairo_set_source_rgba(cr: *mut cairo_t, red: f64, green: f64, blue: f64, alpha: f64);
+    pub fn cairo_rectangle(cr: *mut cairo_t, x: f64, y: f64, width: f64, height: f64);
+    pub fn cairo_fill(cr: *mut cairo_t);
 }
 
 pub fn add_class(widget: *mut GtkWidget, cls: &str) {

@@ -328,6 +328,7 @@ pub fn query_ssh_servers(hosts: &[String]) -> BoxTelemetry {
     }
     let remote_cmd = concat!(
         "tmux set -g set-titles on 2>/dev/null; ",
+        "tmux set-option -g set-clipboard on 2>/dev/null; ",
         "tmux set -g set-titles-string 'AKHTERM_TMUX:#{session_name}|#{window_name}|#{pane_current_command}|#{pane_current_path}' 2>/dev/null; ",
         "tmux list-sessions -F '#{session_name} (#{session_windows} окн.)' 2>/dev/null; ",
         "echo '---CLIENTS---'; ",
