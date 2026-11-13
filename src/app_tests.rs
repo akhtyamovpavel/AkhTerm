@@ -663,6 +663,15 @@ fn assert_folder_collapse_and_search(toggle_a: *mut GtkWidget, rows_a: *mut GtkW
     assert_eq!(unsafe { gtk_widget_get_visible(rows_a) }, 0, "collapsed state restored after search");
 }
 
+fn last_session_in_cwd(expected_cwd: &str) -> usize {
+    APP.with(|c| {
+        let a = c.borrow();
+        let last = a.as_ref().unwrap().sessions.last().unwrap();
+        assert_eq!(last.cwd, expected_cwd);
+        last.id
+    })
+}
+
 fn verify_folder_grouping_collapse_add_and_search(repo_a: &Path, repo_b: &Path) -> usize {
     let (key_a, key_b) = (repo_a.to_string_lossy().into_owned(), repo_b.to_string_lossy().into_owned());
     assert_eq!(APP.with(|c| c.borrow().as_ref().unwrap().sidebar.folder_keys()), vec![key_a.clone(), key_b.clone()]);
@@ -672,12 +681,7 @@ fn verify_folder_grouping_collapse_add_and_search(repo_a: &Path, repo_b: &Path) 
     unsafe { gtk_button_clicked(add_a) };
     pump_gtk_events();
     assert_eq!(unsafe { gtk_widget_get_visible(rows_a) }, 1, "+ button expands folder");
-    APP.with(|c| {
-        let a = c.borrow();
-        let last = a.as_ref().unwrap().sessions.last().unwrap();
-        assert_eq!(last.cwd, key_a);
-        last.id
-    })
+    last_session_in_cwd(&key_a)
 }
 
 fn setup_sidebar_drag_sessions(repo_a: &Path, wt_a: &Path, repo_b: &Path, state_path: &Path) -> (*mut GtkWidget, usize, usize, usize) {
@@ -795,20 +799,28 @@ fn row_visible(rows: &[(String, *mut GtkWidget)], alias: &str) -> Option<bool> {
         .map(|(_, row)| unsafe { gtk_widget_get_visible(*row) != 0 })
 }
 
+fn assert_reloaded_ssh_hosts(app: &AppState) {
+    let new_host = app.ssh_hosts.iter().find(|h| h.alias == "new-gpu-box");
+    assert!(new_host.is_some_and(|h| h.hostname == "10.0.0.99" && h.user == "ml"));
+    assert!(app.ssh_hosts.iter().find(|h| h.alias == "gpu01").unwrap().enabled);
+    assert!(!app.ssh_hosts.iter().find(|h| h.alias == "team-a").unwrap().enabled);
+}
+
+fn assert_reloaded_ssh_rows(app: &AppState) {
+    assert_eq!(row_visible(&app.box_ssh_rows, "new-gpu-box"), Some(true));
+    assert_eq!(row_visible(&app.box_ssh_rows, "team-a"), Some(false));
+    assert_eq!(row_visible(&app.ssh_rows, "new-gpu-box"), Some(true));
+    assert_eq!(row_visible(&app.ssh_rows, "team-a"), Some(false));
+    let lbl = unsafe { CStr::from_ptr(gtk_label_get_text(app.ssh_count_label)).to_string_lossy() };
+    assert!(lbl.contains("2 из 3"), "unexpected count label: {lbl}");
+}
+
 fn assert_reloaded_ssh_popovers() {
     APP.with(|cell| {
         let borrow = cell.borrow();
         let app = borrow.as_ref().unwrap();
-        let new_host = app.ssh_hosts.iter().find(|h| h.alias == "new-gpu-box");
-        assert!(new_host.is_some_and(|h| h.hostname == "10.0.0.99" && h.user == "ml"));
-        assert!(app.ssh_hosts.iter().find(|h| h.alias == "gpu01").unwrap().enabled);
-        assert!(!app.ssh_hosts.iter().find(|h| h.alias == "team-a").unwrap().enabled);
-        assert_eq!(row_visible(&app.box_ssh_rows, "new-gpu-box"), Some(true));
-        assert_eq!(row_visible(&app.box_ssh_rows, "team-a"), Some(false));
-        assert_eq!(row_visible(&app.ssh_rows, "new-gpu-box"), Some(true));
-        assert_eq!(row_visible(&app.ssh_rows, "team-a"), Some(false));
-        let lbl = unsafe { CStr::from_ptr(gtk_label_get_text(app.ssh_count_label)).to_string_lossy() };
-        assert!(lbl.contains("2 из 3"), "unexpected count label: {lbl}");
+        assert_reloaded_ssh_hosts(app);
+        assert_reloaded_ssh_rows(app);
     });
 }
 

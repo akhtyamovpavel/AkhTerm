@@ -273,6 +273,14 @@ fn ssh_base_argv(host: &str) -> Vec<String> {
     argv
 }
 
+fn remote_tmux_attach_cmd(name: &str) -> String {
+    let target = shell_quote(name);
+    let titles = shell_quote(crate::tmux_local::TMUX_TITLE_FORMAT);
+    format!(
+        "tmux start-server \\; set-option -g set-titles on \\; set-option -g set-titles-string {titles} \\; set-option -g set-clipboard on \\; new-session -A -s {target}"
+    )
+}
+
 impl RemoteConnection {
     pub fn sanitized(&self) -> Self {
         let tmux_session = self
@@ -286,11 +294,7 @@ impl RemoteConnection {
     pub fn argv(&self) -> Vec<String> {
         let mut argv = ssh_base_argv(&self.host);
         if let Some(name) = &self.tmux_session {
-            let target = shell_quote(name);
-            let titles = shell_quote(crate::tmux_local::TMUX_TITLE_FORMAT);
-            argv.push(format!(
-                "tmux start-server \\; set-option -g set-titles on \\; set-option -g set-titles-string {titles} \\; set-option -g set-clipboard on \\; new-session -A -s {target}"
-            ));
+            argv.push(remote_tmux_attach_cmd(name));
         }
         argv
     }
@@ -787,6 +791,16 @@ mod tests {
         );
     }
 
+    fn assert_direct_remote_argv(tmux: &RemoteConnection) {
+        let direct = tmux.argv();
+        let expected_titles = crate::tabs::shell_quote(crate::tmux_local::TMUX_TITLE_FORMAT);
+        let expected = format!(
+            "tmux start-server \\; set-option -g set-titles on \\; set-option -g set-titles-string {expected_titles} \\; set-option -g set-clipboard on \\; new-session -A -s 'work '\\''main'\\'''"
+        );
+        assert_eq!(direct.last().map(String::as_str), Some(expected.as_str()));
+        assert!(!direct.last().unwrap().contains("mouse"));
+    }
+
     #[test]
     fn remote_grouped_tmux_and_plain_ssh_split_argv() {
         let plain = RemoteConnection { host: "devbox".into(), tmux_session: None };
@@ -794,18 +808,7 @@ mod tests {
         assert_eq!(plain_argv.last().map(String::as_str), Some("devbox"));
 
         let tmux = RemoteConnection { host: "gpu01".into(), tmux_session: Some("work 'main'".into()) };
-        let direct = tmux.argv();
-        let expected_titles = crate::tabs::shell_quote(crate::tmux_local::TMUX_TITLE_FORMAT);
-        assert_eq!(
-            direct.last().map(String::as_str),
-            Some(
-                format!(
-                    "tmux start-server \\; set-option -g set-titles on \\; set-option -g set-titles-string {expected_titles} \\; set-option -g set-clipboard on \\; new-session -A -s 'work '\\''main'\\'''"
-                )
-                .as_str()
-            )
-        );
-        assert!(!direct.last().unwrap().contains("mouse"));
+        assert_direct_remote_argv(&tmux);
         let grouped = tmux.grouped_tmux_argv(3);
         assert_eq!(grouped[0], "ssh");
         assert!(grouped.contains(&"-t".to_owned()));
