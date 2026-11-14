@@ -367,6 +367,47 @@ pub mod i18n_text {
     pub fn about_copied_btn() -> &'static CStr { ABOUT_COPIED_BTN.cstr() }
     pub const ABOUT_CLOSE_BTN: UiText = UiText::new(c"Закрыть", c"Close");
     pub fn about_close_btn() -> &'static CStr { ABOUT_CLOSE_BTN.cstr() }
+    pub const ABOUT_CHECK_UPDATES_BTN: UiText = UiText::new(c"Проверить обновления", c"Check for updates");
+    pub fn about_check_updates_btn() -> &'static CStr { ABOUT_CHECK_UPDATES_BTN.cstr() }
+
+    pub const UPDATE_ICON_TEXT: &CStr = c">_";
+    pub const UPDATE_BADGE: UiText = UiText::new(c"ОБНОВЛЕНИЕ", c"UPDATE");
+    pub fn update_badge() -> &'static CStr { UPDATE_BADGE.cstr() }
+    pub const UPDATE_AUTHOR: UiText = UiText::new(c"by Pavel Akhtyamov", c"by Pavel Akhtyamov");
+    pub fn update_author() -> &'static CStr { UPDATE_AUTHOR.cstr() }
+    pub const UPDATE_CLOSE_BTN: &CStr = c"×";
+    pub const UPDATE_CLOSE_TIP: UiText = UiText::new(c"Скрыть уведомление об обновлении", c"Dismiss update notice");
+    pub fn update_close_tip() -> &'static CStr { UPDATE_CLOSE_TIP.cstr() }
+    pub const UPDATE_STATUS_AVAILABLE: UiText = UiText::new(
+        c"Доступна новая версия AkhTerm",
+        c"A new version of AkhTerm is ready to install",
+    );
+    pub fn update_status_available() -> &'static CStr { UPDATE_STATUS_AVAILABLE.cstr() }
+    pub const UPDATE_STATUS_DOWNLOADING: UiText = UiText::new(
+        c"Скачивание и проверка SHA-256...",
+        c"Downloading and verifying update...",
+    );
+    pub fn update_status_downloading() -> &'static CStr { UPDATE_STATUS_DOWNLOADING.cstr() }
+    pub const UPDATE_STATUS_INSTALLING: UiText = UiText::new(
+        c"Установка обновления...",
+        c"Installing update...",
+    );
+    pub fn update_status_installing() -> &'static CStr { UPDATE_STATUS_INSTALLING.cstr() }
+    pub const UPDATE_STATUS_READY: UiText = UiText::new(
+        c"✓ Обновление установлено. Перезапустите для применения.",
+        c"✓ Update installed. Restart AkhTerm to apply.",
+    );
+    pub fn update_status_ready() -> &'static CStr { UPDATE_STATUS_READY.cstr() }
+    pub const UPDATE_WHATS_NEW: UiText = UiText::new(c"Что нового", c"What's new");
+    pub fn update_whats_new() -> &'static CStr { UPDATE_WHATS_NEW.cstr() }
+    pub const UPDATE_DISMISS: UiText = UiText::new(c"Позже", c"DISMISS");
+    pub fn update_dismiss() -> &'static CStr { UPDATE_DISMISS.cstr() }
+    pub const UPDATE_BTN_UPDATE: UiText = UiText::new(c"Обновить", c"UPDATE");
+    pub fn update_btn_update() -> &'static CStr { UPDATE_BTN_UPDATE.cstr() }
+    pub const UPDATE_BTN_RESTART: UiText = UiText::new(c"Перезапустить", c"RESTART");
+    pub fn update_btn_restart() -> &'static CStr { UPDATE_BTN_RESTART.cstr() }
+    pub const UPDATE_BTN_RETRY: UiText = UiText::new(c"Повторить", c"RETRY");
+    pub fn update_btn_retry() -> &'static CStr { UPDATE_BTN_RETRY.cstr() }
 
     pub const SIDEBAR_TITLE: UiText = UiText::new(c"ПРОЕКТЫ И СЕССИИ", c"PROJECTS & SESSIONS");
     pub fn sidebar_title() -> &'static CStr { SIDEBAR_TITLE.cstr() }
@@ -470,7 +511,12 @@ mod tests {
             i18n_text::SETTINGS_FONT, i18n_text::SETTINGS_SCROLLBACK, i18n_text::SETTINGS_OSC52,
             i18n_text::SETTINGS_NOTIFY_SECS, i18n_text::SETTINGS_ABOUT_BTN, i18n_text::SETTINGS_CLOSE_BTN,
             i18n_text::ABOUT_TITLE, i18n_text::ABOUT_SUBTITLE, i18n_text::ABOUT_COPY_BTN,
-            i18n_text::ABOUT_COPIED_BTN, i18n_text::ABOUT_CLOSE_BTN,
+            i18n_text::ABOUT_COPIED_BTN, i18n_text::ABOUT_CLOSE_BTN, i18n_text::ABOUT_CHECK_UPDATES_BTN,
+            i18n_text::UPDATE_BADGE, i18n_text::UPDATE_AUTHOR, i18n_text::UPDATE_CLOSE_TIP,
+            i18n_text::UPDATE_STATUS_AVAILABLE, i18n_text::UPDATE_STATUS_DOWNLOADING,
+            i18n_text::UPDATE_STATUS_INSTALLING, i18n_text::UPDATE_STATUS_READY,
+            i18n_text::UPDATE_WHATS_NEW, i18n_text::UPDATE_DISMISS, i18n_text::UPDATE_BTN_UPDATE,
+            i18n_text::UPDATE_BTN_RESTART, i18n_text::UPDATE_BTN_RETRY,
             i18n_text::SIDEBAR_TITLE, i18n_text::SIDEBAR_SEARCH_PLACEHOLDER,
             i18n_text::SIDEBAR_GROUP_LOCAL, i18n_text::SIDEBAR_GROUP_SSH,
             i18n_text::SIDEBAR_GROUP_MONITOR, i18n_text::SIDEBAR_EMPTY_TABS,

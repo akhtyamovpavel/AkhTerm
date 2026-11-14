@@ -3,6 +3,7 @@
 use std::ffi::{c_int, c_uint, c_void, CStr, CString};
 use std::ptr;
 use std::rc::Rc;
+use std::sync::RwLock;
 
 use crate::context_menu::copy_text_to_clipboard;
 use crate::ffi::*;
@@ -38,6 +39,22 @@ extern "C" {
     fn gtk_window_set_transient_for(window: *mut GtkWindow, parent: *mut GtkWindow);
     fn gtk_window_set_destroy_with_parent(window: *mut GtkWindow, setting: c_int);
     fn gtk_window_set_position(window: *mut GtkWindow, position: c_int);
+}
+
+static CHECK_UPDATES_HOOK: RwLock<Option<fn()>> = RwLock::new(None);
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn register_check_updates_hook(hook: fn()) {
+    if let Ok(mut guard) = CHECK_UPDATES_HOOK.write() {
+        *guard = Some(hook);
+    }
+}
+
+pub(crate) fn trigger_check_updates() {
+    let hook = CHECK_UPDATES_HOOK.read().ok().and_then(|guard| *guard);
+    if let Some(cb) = hook {
+        cb();
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -139,6 +156,8 @@ pub struct AboutDialog {
     #[cfg(test)]
     copy_btn: *mut GtkWidget,
     #[cfg(test)]
+    updates_btn: *mut GtkWidget,
+    #[cfg(test)]
     close_btn: *mut GtkWidget,
     #[cfg(test)]
     diagnostic_text: String,
@@ -152,6 +171,11 @@ impl AboutDialog {
     #[cfg(test)]
     pub fn copy_button(&self) -> *mut GtkWidget {
         self.copy_btn
+    }
+
+    #[cfg(test)]
+    pub fn check_updates_button(&self) -> *mut GtkWidget {
+        self.updates_btn
     }
 
     #[cfg(test)]
@@ -196,6 +220,10 @@ extern "C" fn on_close_clicked(_btn: *mut GtkWidget, data: *mut c_void) {
     if !payload.window.is_null() {
         unsafe { gtk_widget_destroy(payload.window) };
     }
+}
+
+extern "C" fn on_check_updates_clicked(_btn: *mut GtkWidget, _data: *mut c_void) {
+    trigger_check_updates();
 }
 
 extern "C" fn drop_close_payload(data: *mut c_void, _closure: *mut c_void) {
@@ -316,16 +344,39 @@ fn wire_close_button(close_btn: *mut GtkWidget, win: *mut GtkWidget) {
     }
 }
 
-fn build_about_footer(win: *mut GtkWidget, diagnostic: &str) -> (*mut GtkWidget, *mut GtkWidget, *mut GtkWidget) {
+fn wire_check_updates_button(btn: *mut GtkWidget) {
+    unsafe {
+        g_signal_connect_data(
+            btn,
+            c"clicked".as_ptr(),
+            on_check_updates_clicked as *const c_void,
+            ptr::null_mut(),
+            ptr::null(),
+            0,
+        );
+    }
+}
+
+struct AboutFooterWidgets {
+    row: *mut GtkWidget,
+    copy_btn: *mut GtkWidget,
+    updates_btn: *mut GtkWidget,
+    close_btn: *mut GtkWidget,
+}
+
+fn build_about_footer(win: *mut GtkWidget, diagnostic: &str) -> AboutFooterWidgets {
     unsafe {
         let row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         let copy_btn = gtk_button_new_with_label(text::about_copy_btn().as_ptr());
+        let updates_btn = gtk_button_new_with_label(text::about_check_updates_btn().as_ptr());
         let close_btn = gtk_button_new_with_label(text::about_close_btn().as_ptr());
         wire_copy_button(copy_btn, diagnostic);
+        wire_check_updates_button(updates_btn);
         wire_close_button(close_btn, win);
         gtk_box_pack_start(row, copy_btn, 0, 0, 0);
+        gtk_box_pack_start(row, updates_btn, 0, 0, 0);
         gtk_box_pack_end(row, close_btn, 0, 0, 0);
-        (row, copy_btn, close_btn)
+        AboutFooterWidgets { row, copy_btn, updates_btn, close_btn }
     }
 }
 
@@ -361,19 +412,25 @@ pub fn open_about_dialog(parent: *mut GtkWidget) -> AboutDialog {
     let vbox = unsafe { gtk_box_new(GTK_ORIENTATION_VERTICAL, 12) };
     let header = build_about_header(&info);
     let grid = build_info_grid(&info);
-    let (footer, copy_btn, close_btn) = build_about_footer(win, &diagnostic_text);
+    let footer = build_about_footer(win, &diagnostic_text);
     unsafe {
         gtk_box_pack_start(vbox, header, 0, 0, 6);
         gtk_box_pack_start(vbox, grid, 0, 1, 0);
-        gtk_box_pack_start(vbox, footer, 0, 1, 4);
+        gtk_box_pack_start(vbox, footer.row, 0, 1, 4);
         gtk_container_add(win, vbox);
         gtk_widget_show_all(win);
     }
     #[cfg(test)]
-    return AboutDialog { window: win, copy_btn, close_btn, diagnostic_text };
+    return AboutDialog {
+        window: win,
+        copy_btn: footer.copy_btn,
+        updates_btn: footer.updates_btn,
+        close_btn: footer.close_btn,
+        diagnostic_text,
+    };
     #[cfg(not(test))]
     {
-        let _ = (copy_btn, close_btn);
+        let _ = (footer.copy_btn, footer.updates_btn, footer.close_btn);
         AboutDialog { window: win }
     }
 }
@@ -437,8 +494,16 @@ mod tests {
 
     #[test]
     fn headless_broadway_about_dialog_renders_and_copies_build_info() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static HOOK_CALLS: AtomicUsize = AtomicUsize::new(0);
+        fn record_check_updates() {
+            HOOK_CALLS.fetch_add(1, Ordering::SeqCst);
+        }
+
         with_locale_lock(|| {
             set_locale(UiLocale::Ru);
+            register_check_updates_hook(record_check_updates);
+            HOOK_CALLS.store(0, Ordering::SeqCst);
             with_headless_gtk(|| unsafe {
                 let parent = gtk_window_new(GTK_WINDOW_TOPLEVEL);
                 let dlg = open_about_dialog(parent);
@@ -446,6 +511,12 @@ mod tests {
                 assert!(has_class(dlg.window(), "about-dialog"));
                 let copy_lbl = CStr::from_ptr(gtk_button_get_label(dlg.copy_button())).to_str().unwrap();
                 assert_eq!(copy_lbl, "Скопировать данные сборки");
+                let upd_lbl = CStr::from_ptr(gtk_button_get_label(dlg.check_updates_button())).to_str().unwrap();
+                assert_eq!(upd_lbl, "Проверить обновления");
+                gtk_button_clicked(dlg.check_updates_button());
+                pump_gtk_events();
+                assert_eq!(HOOK_CALLS.load(Ordering::SeqCst), 1);
+
                 gtk_button_clicked(dlg.copy_button());
                 pump_gtk_events();
                 let copied_lbl = CStr::from_ptr(gtk_button_get_label(dlg.copy_button())).to_str().unwrap();

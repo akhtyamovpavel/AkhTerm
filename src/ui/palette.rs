@@ -39,9 +39,10 @@ pub enum PaletteKind {
     Settings = 12,
     About = 13,
     Locale = 14,
+    Updates = 15,
 }
 
-const KIND_BADGES: [UiText; 15] = [
+const KIND_BADGES: [UiText; 16] = [
     UiText::new(text::PALETTE_BADGE_TAB, c"Tab"),
     UiText::new(text::PALETTE_BADGE_TMUX, c"tmux"),
     UiText::new(text::PALETTE_BADGE_PROFILE, c"Profile"),
@@ -57,13 +58,14 @@ const KIND_BADGES: [UiText; 15] = [
     UiText::new(c"Настройки", c"Settings"),
     UiText::new(c"Справка", c"About"),
     UiText::new(c"Язык", c"Language"),
+    UiText::new(c"Обновление", c"Updates"),
 ];
 
-const KIND_CLASSES: [&str; 15] = [
+const KIND_CLASSES: [&str; 16] = [
     "palette-badge-tab", "palette-badge-tmux", "palette-badge", "palette-badge-ssh",
     "palette-badge-ssh", "palette-badge-agent", "palette-badge-handoff", "palette-badge",
     "palette-badge", "palette-badge-git", "palette-badge-agent", "palette-badge-tmux",
-    "palette-badge", "palette-badge", "palette-badge-tab",
+    "palette-badge", "palette-badge", "palette-badge-tab", "palette-badge-tab",
 ];
 
 impl PaletteKind {
@@ -98,6 +100,7 @@ pub enum PaletteAction {
     OpenSettings,
     OpenAbout,
     SwitchLocale,
+    CheckUpdates,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -443,12 +446,23 @@ fn make_locale_item(locale: UiLocale) -> PaletteItem {
     new_ui_item(PaletteKind::Locale, title, detail, kw, PaletteAction::SwitchLocale, locale)
 }
 
+fn make_check_updates_item(locale: UiLocale) -> PaletteItem {
+    let title = UiText::new(c"Проверить обновления", c"Check for Updates");
+    let detail = UiText::new(
+        c"Проверить наличие новой версии AkhTerm на GitHub Releases",
+        c"Check GitHub Releases for a newer version of AkhTerm",
+    );
+    let kw = "update upgrade release обновить проверить обновления версия";
+    new_ui_item(PaletteKind::Updates, title, detail, kw, PaletteAction::CheckUpdates, locale)
+}
+
 fn push_v1_command_items(out: &mut Vec<PaletteItem>, locale: UiLocale) {
     out.push(make_dispatch_item(locale));
     out.push(make_swarm_item(locale));
     out.push(make_settings_item(locale));
     out.push(make_about_item(locale));
     out.push(make_locale_item(locale));
+    out.push(make_check_updates_item(locale));
 }
 
 pub fn collect_items_for_locale(src: &PaletteSource<'_>, locale: UiLocale) -> Vec<PaletteItem> {
@@ -1059,6 +1073,14 @@ mod tests {
         assert!(en.iter().any(|i| i.action == PaletteAction::OpenSettings && i.title.contains("Settings")));
         assert!(en.iter().any(|i| i.action == PaletteAction::OpenAbout && i.title.contains("About AkhTerm")));
         assert!(ru.iter().any(|i| i.action == PaletteAction::SwitchLocale && i.title.contains("RU / EN")));
+        assert_eq!(PaletteKind::Updates.badge_text().for_locale(UiLocale::Ru), c"Обновление");
+        assert_eq!(PaletteKind::Updates.badge_text().for_locale(UiLocale::En), c"Updates");
+        assert!(ru.iter().any(|i| i.action == PaletteAction::CheckUpdates && i.title == "Проверить обновления"));
+        assert!(en.iter().any(|i| i.action == PaletteAction::CheckUpdates && i.title == "Check for Updates"));
+        let upd_hits = filter_items(&en, "check updates");
+        assert_eq!(en[upd_hits[0]].action, PaletteAction::CheckUpdates);
+        let ru_upd_hits = filter_items(&ru, "проверить обновления");
+        assert_eq!(ru[ru_upd_hits[0]].action, PaletteAction::CheckUpdates);
         let hits = filter_items(&en, "swarm broadcast");
         assert_eq!(en[hits[0]].action, PaletteAction::ToggleSwarmDashboard);
     }

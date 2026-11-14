@@ -75,7 +75,13 @@ pub const LIGHT_ZINC_TOKENS: &str = "\
 @define-color search_err_border #e11d48;\n\
 @define-color danger #be123c;\n\
 @define-color danger_bg rgba(225, 29, 72, 0.12);\n\
-@define-color danger_border rgba(225, 29, 72, 0.38);\n";
+@define-color danger_border rgba(225, 29, 72, 0.38);\n\
+@define-color update_card_bg #ffffff;\n\
+@define-color update_accent #2563eb;\n\
+@define-color update_accent_hover #1d4ed8;\n\
+@define-color update_accent_fg #ffffff;\n\
+@define-color update_link #1d4ed8;\n\
+@define-color update_shadow rgba(9, 9, 11, 0.14);\n";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ThemeMode {

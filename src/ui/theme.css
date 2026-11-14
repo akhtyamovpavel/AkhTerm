@@ -61,6 +61,12 @@
 @define-color danger #fda4af;
 @define-color danger_bg rgba(244, 63, 94, 0.18);
 @define-color danger_border rgba(244, 63, 94, 0.45);
+@define-color update_card_bg #18181b;
+@define-color update_accent #3b66f5;
+@define-color update_accent_hover #4f77ff;
+@define-color update_accent_fg #ffffff;
+@define-color update_link #60a5fa;
+@define-color update_shadow rgba(0, 0, 0, 0.48);
 
 .tab-icon,
 .sidebar-icon {
@@ -950,4 +956,157 @@ button.settings-preset-btn:hover {
     border-radius: 6px;
     color: @text;
     padding: 4px 10px;
+}
+
+.update-card {
+    background-image: none;
+    background-color: @update_card_bg;
+    border: 1px solid @border_strong;
+    border-radius: 10px;
+    box-shadow: 0 8px 24px @update_shadow;
+    color: @text;
+    font-family: "Geist", sans-serif;
+    padding: 16px 18px 14px 18px;
+}
+
+.update-card-icon {
+    background-image: none;
+    background-color: @update_accent;
+    border-radius: 8px;
+    color: @update_accent_fg;
+    font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+    font-size: 15px;
+    font-weight: 700;
+    min-width: 38px;
+    min-height: 38px;
+}
+
+.update-card-title {
+    color: @text_strong;
+    font-size: 15px;
+    font-weight: 600;
+}
+
+.update-card-author {
+    color: @muted;
+    font-size: 12px;
+}
+
+.update-card-pill {
+    background-image: none;
+    background-color: @update_accent;
+    border-radius: 4px;
+    color: @update_accent_fg;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 6px;
+}
+
+.update-card-version {
+    color: @muted;
+    font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+    font-size: 12px;
+}
+
+button.update-card-close {
+    background-image: none;
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    box-shadow: none;
+    color: @muted;
+    font-size: 16px;
+    min-width: 24px;
+    min-height: 24px;
+    padding: 0 4px;
+}
+
+button.update-card-close:hover {
+    background-color: @hover;
+    border-color: @border;
+    color: @text_strong;
+}
+
+.update-card-spinner {
+    color: @text_secondary;
+    min-width: 18px;
+    min-height: 18px;
+}
+
+.update-card-status {
+    color: @text;
+    font-size: 13px;
+}
+
+.update-card-status.update-card-status-error {
+    color: @danger;
+}
+
+.update-card-status.update-card-status-ready {
+    color: @ready;
+    font-weight: 500;
+}
+
+.update-card-divider {
+    background-image: none;
+    background-color: @border;
+    min-height: 1px;
+}
+
+button.update-card-link {
+    background-image: none;
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+    color: @update_link;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 4px 2px;
+}
+
+button.update-card-link label {
+    text-decoration-line: underline;
+}
+
+button.update-card-link:hover {
+    background-color: transparent;
+    color: @update_accent_hover;
+}
+
+button.update-card-dismiss {
+    background-image: none;
+    background-color: @control_bg;
+    border: 1px solid @border_strong;
+    border-radius: 6px;
+    box-shadow: none;
+    color: @muted;
+    font-size: 11px;
+    font-weight: 600;
+    min-height: 28px;
+    padding: 4px 12px;
+}
+
+button.update-card-dismiss:hover {
+    background-color: @hover;
+    border-color: @selected_border;
+    color: @text_strong;
+}
+
+button.update-card-primary {
+    background-image: none;
+    background-color: @update_accent;
+    border: 1px solid @update_accent;
+    border-radius: 6px;
+    box-shadow: none;
+    color: @update_accent_fg;
+    font-size: 11px;
+    font-weight: 600;
+    min-height: 28px;
+    padding: 4px 12px;
+}
+
+button.update-card-primary:hover {
+    background-color: @update_accent_hover;
+    border-color: @update_accent_hover;
+    color: @update_accent_fg;
 }
