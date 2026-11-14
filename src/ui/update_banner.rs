@@ -373,6 +373,16 @@ impl UpdateBanner {
         let model = self.inner.last_model.borrow().clone();
         self.apply_model(&model);
     }
+
+    #[cfg(test)]
+    pub(crate) fn primary_button_for_test(&self) -> *mut GtkWidget {
+        self.inner.primary_btn
+    }
+
+    #[cfg(test)]
+    pub(crate) fn model_for_test(&self) -> UpdateBannerModel {
+        self.inner.last_model.borrow().clone()
+    }
 }
 
 #[cfg(test)]

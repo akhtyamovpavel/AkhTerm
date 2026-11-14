@@ -21,7 +21,7 @@ fn make_test_widgets(vbox: *mut GtkWidget) -> [*mut GtkWidget; 4] {
         let footer = gtk_label_new(c"".as_ptr());
         gtk_box_pack_start(vbox, footer, 0, 0, 0);
         let stack = gtk_stack_new();
-        gtk_box_pack_start(vbox, stack, 1, 1, 0);
+        let _overlay = crate::updater_wire::wrap_stack_overlay(vbox, stack);
         [btn, lbl, footer, stack]
     }
 }
@@ -97,6 +97,8 @@ fn assemble_test_app_state(
     let swarm_pop = crate::swarm_view::SwarmPopover::new(btn, swarm_cb.clone(), crate::i18n::UiLocale::Ru);
     let swarm_view = crate::swarm_view::SwarmView::new(swarm_cb, crate::i18n::UiLocale::Ru);
     swarm_view.mount_in_stack(stack.cast());
+    let update_banner = crate::updater_wire::build_update_banner();
+    update_banner.mount_in_overlay(unsafe { gtk_widget_get_parent(stack) });
     let split_v = unsafe { gtk_button_new() };
     let split_h = unsafe { gtk_button_new() };
     unsafe {
@@ -124,6 +126,8 @@ fn assemble_test_app_state(
         remote_telemetry: remote_telemetry::RemoteTelemetryScheduler::default(),
         box_state: Arc::new(Mutex::new(proc_radar::BoxTelemetry::default())),
         palette, search_bar, pin_pop, swarm_pop, swarm_view,
+        update_scheduler: crate::updater::UpdateScheduler::new(),
+        update_banner,
     }
 }
 

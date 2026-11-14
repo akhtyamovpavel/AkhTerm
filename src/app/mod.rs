@@ -3,3 +3,4 @@ pub mod app_state;
 pub mod app_tests;
 pub mod session_ops;
 pub mod shortcuts;
+pub mod updater_wire;

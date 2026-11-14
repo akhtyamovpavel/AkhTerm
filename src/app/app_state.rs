@@ -22,6 +22,8 @@ use crate::tab_strip::TabStrip;
 use crate::tabs::TabStore;
 use crate::telemetry::TokensMenu;
 use crate::theme_mode;
+use crate::update_banner::UpdateBanner;
+use crate::updater::UpdateScheduler;
 
 pub(crate) struct AppState {
     pub(crate) config: WorkspaceConfig,
@@ -86,6 +88,8 @@ pub(crate) struct AppState {
     pub(crate) pin_pop: tab_order::TabPinPopover,
     pub(crate) swarm_pop: crate::swarm_view::SwarmPopover,
     pub(crate) swarm_view: crate::swarm_view::SwarmView,
+    pub(crate) update_scheduler: UpdateScheduler,
+    pub(crate) update_banner: UpdateBanner,
 }
 
 thread_local! {

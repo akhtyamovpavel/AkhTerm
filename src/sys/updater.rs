@@ -752,6 +752,20 @@ pub fn take_pending_restart_exe() -> Option<PathBuf> {
     PENDING_RESTART_EXE.lock().unwrap_or_else(|e| e.into_inner()).take()
 }
 
+#[cfg(test)]
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn with_test_env_lock<R>(f: impl FnOnce() -> R) -> R {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    f()
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_state_dir(dir: Option<PathBuf>) {
+    *TEST_STATE_DIR.lock().unwrap_or_else(|e| e.into_inner()) = dir;
+}
+
 pub fn exec_replace_process(exe: &Path) -> io::Error {
     let Ok(c_exe) = CString::new(exe.as_os_str().as_bytes()) else {
         return io::Error::new(io::ErrorKind::InvalidInput, "executable path contains NUL");
@@ -767,8 +781,6 @@ pub fn exec_replace_process(exe: &Path) -> io::Error {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
         ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())

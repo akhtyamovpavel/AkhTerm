@@ -8,11 +8,11 @@ mod terminal;
 mod ui;
 mod workspace;
 
-pub(crate) use app::{app_state, session_ops, shortcuts};
+pub(crate) use app::{app_state, session_ops, shortcuts, updater_wire};
 #[cfg(test)]
 pub(crate) use app::app_tests as tests;
 pub(crate) use swarm::{git_review, git_status, git_wt, handoff, swarm_view, task_dispatch};
-pub(crate) use sys::{config, ffi, paths, platform, ssh_config};
+pub(crate) use sys::{config, ffi, paths, platform, ssh_config, updater};
 pub(crate) use telemetry::{
     agent_detect, approval, mi, mi_watch, pane_radar, proc_radar, remote_telemetry, ssh_detect,
     telemetry_agy, tmux_local,
@@ -23,7 +23,7 @@ pub(crate) use terminal::{
 };
 pub(crate) use ui::{
     about, context_menu, i18n, palette, search_bar, settings_dialog, ssh_ui, theme, theme_mode,
-    topbar, ui_font, ui_text,
+    topbar, ui_font, ui_text, update_banner,
 };
 pub(crate) use workspace::{sidebar, sidebar_folders, tab_order, tab_strip, tabs};
 
@@ -57,7 +57,7 @@ fn main() -> std::process::ExitCode {
         println!("{version_line}");
         return std::process::ExitCode::SUCCESS;
     }
-    let _workspace = match tabs::lock_workspace() {
+    let workspace = match tabs::lock_workspace() {
         Ok(file) => file,
         Err(error) => {
             eprintln!("AkhTerm: cannot lock workspace: {error}");
@@ -65,7 +65,8 @@ fn main() -> std::process::ExitCode {
         }
     };
     run_app();
-    std::process::ExitCode::SUCCESS
+    drop(workspace);
+    updater_wire::finish_pending_restart()
 }
 
 fn init_app_hooks() -> Option<std::fs::File> {
@@ -75,6 +76,7 @@ fn init_app_hooks() -> Option<std::fs::File> {
     install_file_drop_hooks();
     register_vte_menu_hook(pane_actions::open_vte_context_menu);
     pane_header::register_pane_close_hook(pane_actions::close_pane_by_vte);
+    updater_wire::init_hooks();
     ui_font
 }
 
@@ -123,7 +125,9 @@ fn connect_window_signals(win: *mut GtkWidget) {
     }
 }
 
-fn build_workspace_area(root_vbox: *mut GtkWidget) -> (sidebar::Sidebar, search_bar::SearchBar, *mut GtkWidget) {
+fn build_workspace_area(
+    root_vbox: *mut GtkWidget,
+) -> (sidebar::Sidebar, search_bar::SearchBar, *mut GtkWidget, *mut GtkWidget) {
     unsafe {
         let hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
         gtk_box_pack_start(root_vbox, hbox, 1, 1, 0);
@@ -134,8 +138,8 @@ fn build_workspace_area(root_vbox: *mut GtkWidget) -> (sidebar::Sidebar, search_
         let search_bar = search_bar::SearchBar::new(shortcuts::active_search_vte, shortcuts::collect_close_search_vtes);
         gtk_box_pack_start(term_vbox, search_bar.widget(), 0, 1, 0);
         let stack = gtk_stack_new();
-        gtk_box_pack_start(term_vbox, stack, 1, 1, 0);
-        (sidebar, search_bar, stack)
+        let overlay = updater_wire::wrap_stack_overlay(term_vbox, stack);
+        (sidebar, search_bar, overlay, stack)
     }
 }
 
@@ -215,6 +219,7 @@ struct AppAssembly {
     box_pop: ssh_ui::BoxPopoverWidgets,
     sidebar: sidebar::Sidebar,
     search_bar: search_bar::SearchBar,
+    overlay: *mut GtkWidget,
     stack: *mut GtkWidget,
     footer_status: *mut GtkWidget,
     ssh_hosts: Vec<proc_radar::SshHostEntry>,
@@ -231,8 +236,10 @@ fn install_app_state(a: AppAssembly) {
     let swarm_pop = swarm_view::SwarmPopover::new(a.tb.swarm_btn, swarm_cb.clone(), i18n::current_locale());
     let swarm_view = swarm_view::SwarmView::new(swarm_cb, i18n::current_locale());
     swarm_view.mount_in_stack(a.stack.cast());
+    let update_banner = updater_wire::build_update_banner();
+    update_banner.mount_in_overlay(a.overlay);
     APP.with(|cell| *cell.borrow_mut() = Some(build_app_state(
-        a, git_menu, handoff, palette, pin_pop, swarm_pop, swarm_view,
+        a, git_menu, handoff, palette, pin_pop, swarm_pop, swarm_view, update_banner,
     )));
 }
 
@@ -244,6 +251,7 @@ fn build_app_state(
     pin_pop: tab_order::TabPinPopover,
     swarm_pop: swarm_view::SwarmPopover,
     swarm_view: swarm_view::SwarmView,
+    update_banner: update_banner::UpdateBanner,
 ) -> AppState {
     AppState {
         config: a.config, win: a.win, is_fullscreen: false, sidebar: a.sidebar,
@@ -270,6 +278,7 @@ fn build_app_state(
         last_tmux_keys: Vec::new(), mi_scheduler: a.sched.mi, git_scheduler: a.sched.git,
         remote_telemetry: a.sched.remote, box_state: a.sched.box_state,
         palette, search_bar: a.search_bar, pin_pop, swarm_pop, swarm_view,
+        update_scheduler: updater::UpdateScheduler::new(), update_banner,
     }
 }
 
@@ -280,13 +289,13 @@ fn assemble_and_install(config: WorkspaceConfig, initial_theme: theme_mode::Them
         ssh_config::load_ssh_hosts_with_fingerprint(&config.watch, &config.startup);
     let settings_pop = ssh_ui::build_settings_popover(tb.settings_btn, &ssh_hosts);
     let box_pop = ssh_ui::build_box_popover(tb.box_btn, &config, &ssh_hosts);
-    let (sidebar, search_bar, stack) = build_workspace_area(root_vbox);
+    let (sidebar, search_bar, overlay, stack) = build_workspace_area(root_vbox);
     let footer_status = build_footer_bar(root_vbox);
     let sched = make_schedulers(&config, &ssh_hosts);
     spawn_background_workers(&sched);
     install_app_state(AppAssembly {
         config, win, initial_theme, tb, settings_pop, box_pop, sidebar,
-        search_bar, stack, footer_status, ssh_hosts, ssh_fingerprint, sched,
+        search_bar, overlay, stack, footer_status, ssh_hosts, ssh_fingerprint, sched,
     });
     finish_startup(win);
 }
@@ -298,6 +307,7 @@ extern "C" fn on_main_radar_tick(data: *mut c_void) -> c_int {
 
 fn finish_startup(win: *mut GtkWidget) {
     session_ops::restore_tabs();
+    updater_wire::trigger_startup_check();
     unsafe {
         gtk_widget_show_all(win);
         g_timeout_add(900, on_main_radar_tick, ptr::null_mut());
