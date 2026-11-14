@@ -74,6 +74,27 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Build portable Linux tarball
+        id: tarball_package
+        run: |
+          ./packaging/build-tarball.sh
+          tarballs=(target/tarball/akhterm_*_linux_*.tar.gz)
+          test "${#tarballs[@]}" -eq 1
+          test -f "${tarballs[0]}"
+          extract_dir="$(mktemp -d)"
+          tar -xzf "${tarballs[0]}" -C "$extract_dir"
+          stage_dirs=("$extract_dir"/akhterm-*-linux-*)
+          test "${#stage_dirs[@]}" -eq 1
+          cmp -s "${stage_dirs[0]}/OFL-Geist.txt" assets/fonts/OFL-Geist.txt
+          cmp -s "${stage_dirs[0]}/LICENSE" LICENSE
+          cmp -s "${stage_dirs[0]}/NOTICE" packaging/NOTICE
+          cmp -s "${stage_dirs[0]}/config.example.conf" config.example.conf
+          test -s "${stage_dirs[0]}/org.akhterm.AkhTerm.desktop"
+          test -s "${stage_dirs[0]}/org.akhterm.AkhTerm.svg"
+          "${stage_dirs[0]}/akhterm" --version
+          rm -r -f -- "$extract_dir"
+          echo "path=${tarballs[0]}" >> "$GITHUB_OUTPUT"
+
       - name: Build x86_64 Fedora RPM package
         id: rpm_package
         run: |
@@ -170,20 +191,29 @@ jobs:
           archive: false
           if-no-files-found: error
 
+      - name: Upload portable Linux tarball
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-tarball
+          path: ${{ steps.tarball_package.outputs.path }}
+          archive: false
+          if-no-files-found: error
+
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dist
-          cp target/deb/akhterm_*_amd64.deb target/rpm/akhterm-*-1.x86_64.rpm dist/
+          cp target/deb/akhterm_*_amd64.deb target/rpm/akhterm-*-1.x86_64.rpm target/tarball/akhterm_*_linux_*.tar.gz dist/
           (
             cd dist
-            sha256sum akhterm_*_amd64.deb akhterm-*-1.x86_64.rpm > SHA256SUMS
+            sha256sum akhterm_*_amd64.deb akhterm-*-1.x86_64.rpm akhterm_*_linux_*.tar.gz > SHA256SUMS
           )
           gh release create "$GITHUB_REF_NAME" \
             dist/akhterm_*_amd64.deb \
             dist/akhterm-*-1.x86_64.rpm \
+            dist/akhterm_*_linux_*.tar.gz \
             dist/SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
