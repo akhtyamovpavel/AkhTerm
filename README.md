@@ -27,7 +27,7 @@ AkhTerm is a native Linux terminal built with **Rust**, **GTK 3**, and **VTE 2.9
 - **Per-Pane Status Headers:** Multi-pane tabs show a compact `22 px` header on each pane with agent/process state, exit code, live elapsed turn timer (`⏱`), and context usage (`ctx`) alongside the project Maintainability Index (`MI`).
 - **Attention Jump & Notifications:** `Ctrl+Shift+U` jumps straight to the next pane waiting for confirmation or holding unread output. When unfocused, AkhTerm highlights the tab and sends a desktop notification (`notify-send`) on approval prompts or long commands (`>= notify-secs`).
 - **Deduplicated Token Accounting (`Токены ▾` / `Tokens ▾`):** Per-tab and window-total `input · cache · output` breakdown read from local and remote SSH `AGY`, `Claude Code`, and `Codex CLI` JSONL transcripts or remote `tmux` status lines, automatically recounting when switching `tmux` windows.
-- **Transparent `OSC 52` / `OSC 7` / `OSC 133` PTY Bridge:** User-space PTY tap over `VTE 2.91` enabling write-only `OSC 52` clipboard copy across `SSH` and `tmux` (`?` clipboard read queries are strictly blocked), `OSC 7` working-directory tracking, and `OSC 133` command completion notifications.
+- **Transparent `OSC 52` / `OSC 8` / `OSC 7` / `OSC 133` PTY Bridge:** User-space PTY tap over `VTE 2.91` enabling write-only `OSC 52` clipboard copy across `SSH` and `tmux` (`?` clipboard read queries are strictly blocked), streaming percent-encoding of non-ASCII UTF-8 `OSC 8` hyperlinks and `OSC 7` directory URIs (preventing C1 `0x9C` `ST` truncation on Cyrillic paths), and `OSC 133` command completion notifications.
 
 ### Splits, Tabs & Remote Sessions
 - **Local & Remote Splits:** Split panes vertically (`Ctrl+Shift+D`) or horizontally (`Ctrl+Shift+E`) in the foreground directory across local shells, plain `SSH` tabs, and remote `tmux` tabs (attaching grouped `tmux` sessions so splits share server windows with independent focus).
@@ -88,7 +88,7 @@ Prebuilt `.deb`, `.rpm`, and portable Linux `.tar.gz` archives are attached to [
 Tested on Ubuntu 24.04 and 26.04 (`amd64`):
 
 ```sh
-sudo apt install ./akhterm_1.1.0-1_amd64.deb
+sudo apt install ./akhterm_1.1.1-1_amd64.deb
 ```
 
 Launch **AkhTerm** from your application menu or run `akhterm` (`akhterm --version` prints version and build metadata). Remove with `sudo apt remove akhterm` (your configuration and saved state in `~` are preserved). See [.github/workflows/build-deb.yml](.github/workflows/build-deb.yml) and [.github/workflows/release.yml](.github/workflows/release.yml).
@@ -98,14 +98,14 @@ Launch **AkhTerm** from your application menu or run `akhterm` (`akhterm --versi
 Tested on Fedora 41 and 42 (`x86_64`), including KDE Breeze GTK 3 and icon packages:
 
 ```sh
-sudo dnf install ./akhterm-1.1.0-1.x86_64.rpm
+sudo dnf install ./akhterm-1.1.1-1.x86_64.rpm
 ```
 
 Launch **AkhTerm** from your application menu or run `akhterm`. Remove with `sudo dnf remove akhterm`. See [.github/workflows/build-rpm.yml](.github/workflows/build-rpm.yml).
 
 ### Portable Linux Tarball (`.tar.gz`)
 
-Extract `akhterm_1.1.0_linux_x86_64.tar.gz` to a user-writable directory (such as `~/.local/bin`) to run `akhterm` without root privileges and receive one-click atomic in-app self-updates.
+Extract `akhterm_1.1.1_linux_x86_64.tar.gz` to a user-writable directory (such as `~/.local/bin`) to run `akhterm` without root privileges and receive one-click atomic in-app self-updates.
 
 AkhTerm runs natively under **Wayland** and **X11** on **GNOME** and **KDE Plasma** (`StartupWMClass=AkhTerm` in `org.akhterm.AkhTerm.desktop`).
 
