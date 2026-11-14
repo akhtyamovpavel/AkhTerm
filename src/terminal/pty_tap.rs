@@ -762,29 +762,21 @@ mod tests {
         assert_eq!(format_osc133_status(Some(130), 72), "✗ 130 · 1m 12s");
     }
 
-    fn read_clipboard_text_blocking() -> Option<String> {
-        unsafe {
-            let clip = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
-            let ptr = gtk_clipboard_wait_for_text(clip);
-            if ptr.is_null() {
-                return None;
-            }
-            let text = CStr::from_ptr(ptr).to_string_lossy().into_owned();
-            g_free(ptr.cast());
-            Some(text)
+    fn take_glib_text(ptr: *mut c_char) -> Option<String> {
+        if ptr.is_null() {
+            return None;
         }
+        let text = unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() };
+        unsafe { g_free(ptr.cast()) };
+        Some(text)
+    }
+
+    fn read_clipboard_text_blocking() -> Option<String> {
+        unsafe { take_glib_text(gtk_clipboard_wait_for_text(gtk_clipboard_get(GDK_SELECTION_CLIPBOARD))) }
     }
 
     fn read_vte_screen_text(vte: *mut GtkWidget) -> String {
-        unsafe {
-            let ptr = vte_terminal_get_text_format(vte, VTE_FORMAT_TEXT);
-            if ptr.is_null() {
-                return String::new();
-            }
-            let text = CStr::from_ptr(ptr).to_string_lossy().into_owned();
-            g_free(ptr.cast());
-            text
-        }
+        unsafe { take_glib_text(vte_terminal_get_text_format(vte, VTE_FORMAT_TEXT)) }.unwrap_or_default()
     }
 
     #[test]
@@ -877,14 +869,13 @@ mod tests {
         height: c_int,
     ) -> (*mut GtkWidget, *mut GtkWidget) {
         unsafe {
-            let win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+            let (win, vte) = (gtk_window_new(GTK_WINDOW_TOPLEVEL), vte_terminal_new());
             gtk_window_set_default_size(win, width, height);
-            let vte = vte_terminal_new();
+            vte_terminal_set_allow_hyperlink(vte, 1);
             gtk_container_add(win, vte);
             gtk_widget_show_all(win);
             pump_gtk_events();
-            let pid = spawn_vte_with_tap(vte, "/tmp", &["sh", "-c", script], sink);
-            assert!(pid > 0);
+            assert!(spawn_vte_with_tap(vte, "/tmp", &["sh", "-c", script], sink) > 0);
             (win, vte)
         }
     }
@@ -904,6 +895,37 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
         }
         pump_gtk_events();
+    }
+
+    #[test]
+    fn headless_vte_pty_tap_preserves_osc8_and_osc7_cyrillic_m_without_c1_st_truncation() {
+        with_headless_gtk(|| {
+            let (toasts, completions) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(Vec::new())));
+            let (win, vte) = spawn_osc8_cyrillic_probe_window(make_test_sink(&toasts, &completions));
+            pump_until_done(&completions, vte, "OSC8_OK");
+            assert_osc8_cyrillic_probe(vte);
+            unsafe { gtk_widget_destroy(win) };
+            pump_gtk_events();
+        });
+    }
+
+    fn assert_osc8_cyrillic_probe(vte: *mut GtkWidget) {
+        let screen = read_vte_screen_text(vte);
+        assert!(screen.contains("ОТКРЫТЬ_ДОГОВОР") && screen.contains("ОТКРЫТЬ_СМЕТУ"), "{screen:?}");
+        assert!(!screen.contains("ФТИ_003") && !screen.contains("договор.pdf"), "{screen:?}");
+        let dir_ptr = unsafe { crate::session::vte_terminal_get_current_directory_uri(vte) };
+        let dir_uri = (!dir_ptr.is_null()).then(|| unsafe { CStr::from_ptr(dir_ptr).to_string_lossy().into_owned() });
+        assert_eq!(dir_uri.as_deref().and_then(crate::session::parse_osc7_directory_uri).as_deref(), Some("/tmp/ПП_МФТИ_003"));
+    }
+
+    fn spawn_osc8_cyrillic_probe_window(sink: PtyTapSink) -> (*mut GtkWidget, *mut GtkWidget) {
+        let script = concat!(
+            "printf '\\033]7;file://localhost/tmp/ПП_МФТИ_003\\007';",
+            "printf '\\033]8;;file:///tmp/ПП_МФТИ_003_договор.pdf\\007ОТКРЫТЬ_ДОГОВОР\\033]8;;\\007\\n';",
+            "printf '\\033]8;id=s2;file:///tmp/ПП_МФТИ_003_смета.pdf\\033\\\\ОТКРЫТЬ_СМЕТУ\\033]8;;\\033\\\\\\n';",
+            "printf '\\033]133;C\\007OSC8_OK\\n\\033]133;D;0\\007'; sleep 0.15"
+        );
+        spawn_script_window(sink, script, 720, 260)
     }
 
     #[test]

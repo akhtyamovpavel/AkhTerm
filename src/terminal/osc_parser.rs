@@ -1,4 +1,4 @@
-//! Streaming zero-full-buffering OSC 52 / OSC 133 parser and pure-Rust base64 decoder.
+//! Streaming zero-full-buffering OSC 7 / OSC 8 / OSC 52 / OSC 133 parser and base64 decoder.
 
 use std::time::Instant;
 
@@ -158,11 +158,26 @@ impl Base64Stream {
     }
 }
 
+fn push_osc_uri_byte(byte: u8, out: &mut Vec<u8>) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    if byte >= 0x80 {
+        out.extend_from_slice(&[
+            b'%',
+            HEX[(byte >> 4) as usize],
+            HEX[(byte & 0x0f) as usize],
+        ]);
+    } else {
+        out.push(byte);
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OscState {
     Ground,
     Esc,
     OscCode,
+    OscUriBody,
+    OscUriEsc,
     Osc52Sel,
     Osc52SelEsc,
     Osc52Body,
@@ -231,6 +246,8 @@ impl OscStreamParser {
             OscState::Ground => {}
             OscState::Esc => self.step_esc(byte, out),
             OscState::OscCode => self.step_osc_code(byte, out),
+            OscState::OscUriBody => self.step_osc_uri_body(byte, out),
+            OscState::OscUriEsc => self.step_osc_uri_esc(byte, out),
             OscState::Osc52Sel => self.step_osc52_sel(byte),
             OscState::Osc52SelEsc => self.step_osc52_esc(byte, out, OscState::Osc52Sel, false, events),
             OscState::Osc52Body => self.step_osc52_body(byte, events),
@@ -276,7 +293,39 @@ impl OscStreamParser {
             self.state = OscState::Osc133Body;
             return;
         }
+        if self.code_buf == b"7" || self.code_buf == b"8" {
+            self.enter_osc_uri_body(out);
+            return;
+        }
         self.flush_untracked_osc_prefix(b';', out);
+    }
+
+    fn enter_osc_uri_body(&mut self, out: &mut Vec<u8>) {
+        out.extend_from_slice(b"\x1b]");
+        out.extend_from_slice(&self.code_buf);
+        out.push(b';');
+        self.code_buf.clear();
+        self.state = OscState::OscUriBody;
+    }
+
+    fn step_osc_uri_body(&mut self, byte: u8, out: &mut Vec<u8>) {
+        match byte {
+            0x07 | 0x18 | 0x1a => {
+                out.push(byte);
+                self.state = OscState::Ground;
+            }
+            0x1b => self.state = OscState::OscUriEsc,
+            _ => push_osc_uri_byte(byte, out),
+        }
+    }
+
+    fn step_osc_uri_esc(&mut self, byte: u8, out: &mut Vec<u8>) {
+        if byte == b'\\' {
+            out.extend_from_slice(b"\x1b\\");
+            self.state = OscState::Ground;
+        } else {
+            self.handle_aborted_esc(byte, out);
+        }
     }
 
     fn flush_untracked_osc_prefix(&mut self, byte: u8, out: &mut Vec<u8>) {
@@ -543,6 +592,38 @@ mod tests {
         timer.on_start(t0);
         assert_eq!(timer.on_finish(Some(2), t0 + Duration::from_secs(17)), (Some(2), 17));
         assert_eq!(timer.on_finish(None, t0 + Duration::from_secs(20)), (None, 0));
+    }
+
+    #[test]
+    fn percent_encodes_non_ascii_osc8_and_osc7_uris_across_chunk_splits_without_c1_st_leak() {
+        let mut p = OscStreamParser::new();
+        let mut out = Vec::new();
+        let mut events = Vec::new();
+        let raw = concat!(
+            "до:",
+            "\x1b]8;;file:///srv/ПП_МФТИ_003_отчёт.pdf\x07ПП_МФТИ_003\x1b]8;;\x07",
+            "|",
+            "\x1b]8;id=lnk1;https://example.org/МФТИ?q=%D0%9C#раздел\x1b\\клик\x1b]8;;\x1b\\",
+            "|",
+            "\x1b]7;file://host/home/pavel/ПП_МФТИ\x07",
+            ":после"
+        );
+        for &byte in raw.as_bytes() {
+            p.feed(&[byte], &mut out, &mut events);
+        }
+        assert!(events.is_empty());
+        let expected = concat!(
+            "до:",
+            "\x1b]8;;file:///srv/%D0%9F%D0%9F_%D0%9C%D0%A4%D0%A2%D0%98_003_%D0%BE%D1%82%D1%87%D1%91%D1%82.pdf\x07",
+            "ПП_МФТИ_003\x1b]8;;\x07",
+            "|",
+            "\x1b]8;id=lnk1;https://example.org/%D0%9C%D0%A4%D0%A2%D0%98?q=%D0%9C#%D1%80%D0%B0%D0%B7%D0%B4%D0%B5%D0%BB\x1b\\",
+            "клик\x1b]8;;\x1b\\",
+            "|",
+            "\x1b]7;file://host/home/pavel/%D0%9F%D0%9F_%D0%9C%D0%A4%D0%A2%D0%98\x07",
+            ":после"
+        );
+        assert_eq!(std::str::from_utf8(&out).unwrap(), expected);
     }
 
     #[test]

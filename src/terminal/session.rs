@@ -16,7 +16,7 @@ use crate::telemetry::SessionTelemetry;
 use crate::theme::{apply_vte_colors, current_theme_mode};
 
 extern "C" {
-    fn vte_terminal_get_current_directory_uri(terminal: *mut VteTerminal) -> *const c_char;
+    pub(crate) fn vte_terminal_get_current_directory_uri(terminal: *mut VteTerminal) -> *const c_char;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

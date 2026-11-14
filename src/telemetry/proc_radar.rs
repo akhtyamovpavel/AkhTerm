@@ -1117,6 +1117,10 @@ pub(crate) mod tests {
         assert_eq!(resolve_link_target(&format!("{}#L12-L34", py_file.display()), None).as_deref(), py_file.to_str());
         let enc_uri = format!("file://{}/%D1%83%D1%87%D1%91%D0%B1%D0%B0/%D0%BA%D1%83%D1%80%D1%81/%D0%BC%D0%BE%D0%B4%D1%83%D0%BB%D1%8C.py#L5-L9", root.display());
         assert_eq!(resolve_link_target(&enc_uri, None).as_deref(), py_file.to_str());
+        let mipt_pdf = root.join("ПП_МФТИ_003_договор.pdf");
+        fs::write(&mipt_pdf, b"%PDF-1.7\n").unwrap();
+        let mipt_uri = format!("file://{}/%D0%9F%D0%9F_%D0%9C%D0%A4%D0%A2%D0%98_003_%D0%B4%D0%BE%D0%B3%D0%BE%D0%B2%D0%BE%D1%80.pdf", root.display());
+        assert_eq!(resolve_link_target(&mipt_uri, None).as_deref(), mipt_pdf.to_str());
         assert_eq!(strip_link_punctuation("~/Development/Курс_(ЦУ))"), "~/Development/Курс_(ЦУ)");
         let _ = fs::remove_dir_all(&root);
     }
