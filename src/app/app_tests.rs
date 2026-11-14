@@ -591,7 +591,7 @@ fn verify_v1_end_to_end_wiring() {
     let prev_loc = crate::i18n::configured_locale();
     let prev_osc = crate::pty_tap::is_osc52_enabled();
     assert!(crate::about::check_version_arg(&["akhterm".into(), "--version".into()])
-        .is_some_and(|s| s.starts_with("akhterm 1.0.0 (")));
+        .is_some_and(|s| s.starts_with(concat!("akhterm ", env!("CARGO_PKG_VERSION"), " ("))));
     let (win, _) = install_test_window();
     let sid = session_ops::add_tab("S1", "", "/tmp", SessionCategory::Project, &["sh"], Tab::local("shell"));
     assert_live_prefs_and_locale_wiring();

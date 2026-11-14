@@ -26,20 +26,20 @@ AkhTerm is a native Linux terminal built with **Rust**, **GTK 3**, and **VTE 2.9
 ### Per-Pane Radar, Telemetry & PTY/OSC Bridge
 - **Per-Pane Status Headers:** Multi-pane tabs show a compact `22 px` header on each pane with agent/process state, exit code, live elapsed turn timer (`⏱`), and context usage (`ctx`) alongside the project Maintainability Index (`MI`).
 - **Attention Jump & Notifications:** `Ctrl+Shift+U` jumps straight to the next pane waiting for confirmation or holding unread output. When unfocused, AkhTerm highlights the tab and sends a desktop notification (`notify-send`) on approval prompts or long commands (`>= notify-secs`).
-- **Deduplicated Token Accounting (`Токены ▾` / `Tokens ▾`):** Per-tab and window-total `input · cache · output` breakdown read from local and remote SSH `AGY`, `Claude Code`, and `Codex CLI` JSONL transcripts or remote `tmux` status lines.
+- **Deduplicated Token Accounting (`Токены ▾` / `Tokens ▾`):** Per-tab and window-total `input · cache · output` breakdown read from local and remote SSH `AGY`, `Claude Code`, and `Codex CLI` JSONL transcripts or remote `tmux` status lines, automatically recounting when switching `tmux` windows.
 - **Transparent `OSC 52` / `OSC 7` / `OSC 133` PTY Bridge:** User-space PTY tap over `VTE 2.91` enabling write-only `OSC 52` clipboard copy across `SSH` and `tmux` (`?` clipboard read queries are strictly blocked), `OSC 7` working-directory tracking, and `OSC 133` command completion notifications.
 
 ### Splits, Tabs & Remote Sessions
 - **Local & Remote Splits:** Split panes vertically (`Ctrl+Shift+D`) or horizontally (`Ctrl+Shift+E`) in the foreground directory across local shells, plain `SSH` tabs, and remote `tmux` tabs (attaching grouped `tmux` sessions so splits share server windows with independent focus).
-- **Layout Persistence (`tabs-v2`):** Restores tab order, active tab, pinned custom titles, nested split trees, and local directories on restart.
-- **SSH & `tmux` Grouping:** Open plain `SSH` shells or persistent `tmux` sessions from `Профили / SSH` and reconnect dropped sessions with `Ctrl+Shift+R`. Running an interactive `ssh` command inside a local tab automatically moves that tab into the `SSH` sidebar group until `ssh` exits.
+- **Layout Persistence, Drag Reorder & Project Folders:** Restores tab order, active tab, pinned custom titles, nested split trees, and local directories (`tabs-v2`). Hold-and-drag reorders tabs in both the top tab strip and the vertical sidebar, while local tabs automatically group into collapsible project folders (with `git worktree` roots merged under their primary repo and a `+` button to open a tab in that folder).
+- **SSH & `tmux` Grouping:** Open plain `SSH` shells or persistent `tmux` sessions from `Профили / SSH` (which live-reloads `~/.ssh/config` and `Include` files automatically) and reconnect dropped sessions with `Ctrl+Shift+R`. Running an interactive `ssh` command inside a local tab automatically moves that tab into the `SSH` sidebar group until `ssh` exits. Split `tmux` panes support pane-bounded mouse selection without bleeding across pane borders.
 
 ### Everyday Terminal Ergonomics
 - **Command Palette (`Ctrl+Shift+P` / `Ctrl+K`):** Fuzzy launcher across open tabs, live remote `tmux` sessions, profiles, SSH hosts, agents, theme/locale switches, Settings, About, Swarm Dashboard, Task Dispatch, and Handoff briefs.
 - **Scrollback Search (`Ctrl+Shift+F`):** Search active-pane output with `Enter` / `Shift+Enter`, case sensitivity (`Aa`), and PCRE2 regex (`.*`).
 - **Smart Clipboard, Links & File Drop:** `Ctrl+C` copies selected text or sends `SIGINT` when nothing is selected; `Ctrl+V` pastes text, clipboard images, or copied files; `Ctrl+Click` opens URLs and relative `file:line` paths without interfering with left-click drag selection; dragging files onto a pane inserts shell-escaped paths locally or uploads them to `/tmp/` via background `scp` on `SSH` tabs.
 - **Context Menus & Mouse Passthrough:** Right-click inside a terminal pane to copy, paste, open/copy a URL or `file:line` path, open its parent directory (**Открыть папку** / **Open Containing Folder**), forward selected text or recent output to another tab, split/close panes, or clear scrollback. `Shift + Right-Click` passes straight through to `tmux`, `vim`, and other mouse-aware TUI apps. Right-clicking a tab or sidebar row renames, duplicates, copies the local path, reconnects, or closes tabs.
-- **Live Settings & Bilingual UI (`Ctrl+,`):** Switch live between **Dark Zinc** and **Light Zinc** (`Ctrl+Shift+L` or `☀` / `☾`), toggle **Russian / English** UI text live, adjust font, scrollback, `OSC 52`, and notification thresholds, or inspect build metadata in **About** (`akhterm --version`).
+- **Live Settings, Bilingual UI & Self-Updater (`Ctrl+,`):** Switch live between **Dark Zinc** and **Light Zinc** (`Ctrl+Shift+L` or `☀` / `☾`), toggle **Russian / English** UI text live, adjust font, scrollback, `OSC 52`, and notification thresholds, inspect build metadata in **About** (`akhterm --version`), and check for or install `SHA-256`-verified updates directly in-app (`About` or Command Palette **Check for Updates**).
 
 ## Keyboard & Mouse Shortcuts
 
@@ -81,14 +81,14 @@ AkhTerm is a native Linux terminal built with **Rust**, **GTK 3**, and **VTE 2.9
 
 ## Install a Package
 
-Prebuilt `.deb` and `.rpm` installers are attached to [GitHub Releases](https://github.com/akhtyamovpavel/AkhTerm/releases/latest) and built continuously in GitHub Actions.
+Prebuilt `.deb`, `.rpm`, and portable Linux `.tar.gz` archives are attached to [GitHub Releases](https://github.com/akhtyamovpavel/AkhTerm/releases/latest) alongside `SHA256SUMS` and built continuously in GitHub Actions.
 
 ### Debian and Ubuntu (`.deb`)
 
 Tested on Ubuntu 24.04 and 26.04 (`amd64`):
 
 ```sh
-sudo apt install ./akhterm_1.0.0-1_amd64.deb
+sudo apt install ./akhterm_1.1.0-1_amd64.deb
 ```
 
 Launch **AkhTerm** from your application menu or run `akhterm` (`akhterm --version` prints version and build metadata). Remove with `sudo apt remove akhterm` (your configuration and saved state in `~` are preserved). See [.github/workflows/build-deb.yml](.github/workflows/build-deb.yml) and [.github/workflows/release.yml](.github/workflows/release.yml).
@@ -98,10 +98,14 @@ Launch **AkhTerm** from your application menu or run `akhterm` (`akhterm --versi
 Tested on Fedora 41 and 42 (`x86_64`), including KDE Breeze GTK 3 and icon packages:
 
 ```sh
-sudo dnf install ./akhterm-1.0.0-1.x86_64.rpm
+sudo dnf install ./akhterm-1.1.0-1.x86_64.rpm
 ```
 
 Launch **AkhTerm** from your application menu or run `akhterm`. Remove with `sudo dnf remove akhterm`. See [.github/workflows/build-rpm.yml](.github/workflows/build-rpm.yml).
+
+### Portable Linux Tarball (`.tar.gz`)
+
+Extract `akhterm_1.1.0_linux_x86_64.tar.gz` to a user-writable directory (such as `~/.local/bin`) to run `akhterm` without root privileges and receive one-click atomic in-app self-updates.
 
 AkhTerm runs natively under **Wayland** and **X11** on **GNOME** and **KDE Plasma** (`StartupWMClass=AkhTerm` in `org.akhterm.AkhTerm.desktop`).
 
@@ -146,6 +150,9 @@ sudo apt install dpkg-dev
 # Fedora (.rpm -> target/rpm/)
 sudo dnf install rpm-build
 ./packaging/build-rpm.sh
+
+# Portable Linux tarball (.tar.gz -> target/tarball/)
+./packaging/build-tarball.sh
 ```
 
 **Run the test suite:**
