@@ -55,6 +55,7 @@ pub const GTK_SCROLL_NATURAL: c_int = 1;
 pub const GTK_ICON_SIZE_MENU: c_int = 1;
 pub const PANGO_ELLIPSIZE_MIDDLE: c_int = 2;
 pub const PANGO_ELLIPSIZE_END: c_int = 3;
+pub const PANGO_WRAP_WORD_CHAR: c_int = 2;
 pub const GTK_STYLE_PROVIDER_PRIORITY_APPLICATION: c_uint = 600;
 pub const G_SPAWN_SEARCH_PATH: c_int = 4;
 pub const VTE_FORMAT_TEXT: c_int = 1;
@@ -279,6 +280,20 @@ extern "C" {
     pub fn gtk_label_set_xalign(label: *mut GtkLabel, xalign: f32);
     pub fn gtk_label_set_ellipsize(label: *mut GtkLabel, mode: c_int);
     pub fn gtk_label_set_max_width_chars(label: *mut GtkLabel, count: c_int);
+    pub fn gtk_label_set_line_wrap(label: *mut GtkLabel, wrap: c_int);
+    pub fn gtk_label_set_line_wrap_mode(label: *mut GtkLabel, mode: c_int);
+
+    pub fn gtk_overlay_new() -> *mut GtkWidget;
+    pub fn gtk_overlay_add_overlay(overlay: *mut GtkWidget, widget: *mut GtkWidget);
+    pub fn gtk_overlay_set_overlay_pass_through(
+        overlay: *mut GtkWidget,
+        widget: *mut GtkWidget,
+        pass_through: c_int,
+    );
+
+    pub fn gtk_spinner_new() -> *mut GtkWidget;
+    pub fn gtk_spinner_start(spinner: *mut GtkWidget);
+    pub fn gtk_spinner_stop(spinner: *mut GtkWidget);
 
     pub fn gtk_popover_new(relative_to: *mut GtkWidget) -> *mut GtkWidget;
     pub fn gtk_popover_set_relative_to(popover: *mut GtkPopover, relative_to: *mut GtkWidget);
@@ -317,6 +332,10 @@ extern "C" {
     pub fn gtk_widget_set_size_request(widget: *mut GtkWidget, width: c_int, height: c_int);
     pub fn gtk_widget_set_halign(widget: *mut GtkWidget, align: c_int);
     pub fn gtk_widget_set_valign(widget: *mut GtkWidget, align: c_int);
+    pub fn gtk_widget_set_margin_start(widget: *mut GtkWidget, margin: c_int);
+    pub fn gtk_widget_set_margin_end(widget: *mut GtkWidget, margin: c_int);
+    pub fn gtk_widget_set_margin_top(widget: *mut GtkWidget, margin: c_int);
+    pub fn gtk_widget_set_margin_bottom(widget: *mut GtkWidget, margin: c_int);
     pub fn gtk_widget_get_allocated_width(widget: *mut GtkWidget) -> c_int;
     pub fn gtk_widget_get_allocated_height(widget: *mut GtkWidget) -> c_int;
     pub fn gtk_widget_get_parent(widget: *mut GtkWidget) -> *mut GtkWidget;

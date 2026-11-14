@@ -276,6 +276,7 @@ fn execute_palette_tool_action(action: palette::PaletteAction) {
         palette::PaletteAction::OpenSettings => topbar::open_settings_for_app(),
         palette::PaletteAction::OpenAbout => topbar::open_about_for_app(),
         palette::PaletteAction::SwitchLocale => topbar::toggle_locale_for_app(),
+        palette::PaletteAction::CheckUpdates => crate::about::trigger_check_updates(),
         _ => {}
     }
 }

@@ -10,3 +10,4 @@ pub mod theme_mode;
 pub mod topbar;
 pub mod ui_font;
 pub mod ui_text;
+pub(crate) mod update_banner;
