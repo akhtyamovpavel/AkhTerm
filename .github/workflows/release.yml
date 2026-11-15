@@ -210,11 +210,23 @@ jobs:
             cd dist
             sha256sum akhterm_*_amd64.deb akhterm-*-1.x86_64.rpm akhterm_*_linux_*.tar.gz > SHA256SUMS
           )
-          gh release create "$GITHUB_REF_NAME" \
-            dist/akhterm_*_amd64.deb \
-            dist/akhterm-*-1.x86_64.rpm \
-            dist/akhterm_*_linux_*.tar.gz \
-            dist/SHA256SUMS \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --generate-notes
+          ./packaging/generate-release-notes.sh "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" dist/RELEASE_NOTES.md
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" \
+              dist/akhterm_*_amd64.deb \
+              dist/akhterm-*-1.x86_64.rpm \
+              dist/akhterm_*_linux_*.tar.gz \
+              dist/SHA256SUMS \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              dist/akhterm_*_amd64.deb \
+              dist/akhterm-*-1.x86_64.rpm \
+              dist/akhterm_*_linux_*.tar.gz \
+              dist/SHA256SUMS \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "AkhTerm $GITHUB_REF_NAME" \
+              --notes-file dist/RELEASE_NOTES.md
+          fi

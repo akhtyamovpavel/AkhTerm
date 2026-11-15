@@ -16,7 +16,7 @@ The [package workflow](.github/workflows/build-deb.yml) builds on Ubuntu 24.04 a
 
 Keep changes small and reuse the existing modules. Aim for a Maintainability Index of at least 75. Use the same calculation as `src/telemetry/mi.rs` when comparing touched modules. For modules already below the target, record the before and after scores and explain any decline.
 
-Every hotfix landed on top of a released version is a SemVer patch release: bump `X.Y.Z` to `X.Y.(Z+1)` in `Cargo.toml`, `Cargo.lock` and `README.md`, rebuild the binary, and tag `vX.Y.(Z+1)` rather than leaving the fix on the previous version number.
+Every hotfix landed on top of a released version is a SemVer patch release: bump `X.Y.Z` to `X.Y.(Z+1)` in `Cargo.toml`, `Cargo.lock` and `README.md`, write curated release notes in `packaging/releases/vX.Y.(Z+1).md` (never leave a bare `--generate-notes` changelog link on GitHub Releases), rebuild the binary, and tag `vX.Y.(Z+1)`.
 
 ## Interface
 
