@@ -90,6 +90,8 @@ pub enum PaletteAction {
     OpenSsh { host: String, tmux_session: Option<String> },
     RunAgent(usize),
     InjectHandoff(PathBuf),
+    PreviewMarkdown(PathBuf),
+    LastMarkdown,
     ToggleTheme,
     OpenSearch,
     OpenGitMenu,
@@ -311,6 +313,8 @@ fn push_handoff_items(files: &[PathBuf], out: &mut Vec<PaletteItem>) {
         let display = path.to_string_lossy();
         let detail = shorten_home(&display);
         let kw = format!("handoff бриф контекст передать файл промпт md {display}");
+        let title = format!("{} · {name}", text::MD_PREVIEW.as_str());
+        out.push(new_item(PaletteKind::Handoff, title, detail.clone(), "markdown preview просмотр".into(), PaletteAction::PreviewMarkdown(path.clone())));
         let act = PaletteAction::InjectHandoff(path.clone());
         out.push(new_item(PaletteKind::Handoff, name.to_owned(), detail, kw, act));
     }
@@ -478,6 +482,8 @@ pub fn collect_items_for_locale(src: &PaletteSource<'_>, locale: UiLocale) -> Ve
     push_git_items(src, &mut out);
     let handoffs = discover_handoff_files(src.briefs_dir, src.extra_handoffs);
     push_handoff_items(&handoffs, &mut out);
+    let label = text::MD_RESULT.for_locale(locale).to_string_lossy().into_owned();
+    out.push(new_item(PaletteKind::Handoff, label, String::new(), "md markdown result результат".into(), PaletteAction::LastMarkdown));
     out
 }
 

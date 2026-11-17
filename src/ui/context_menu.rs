@@ -17,6 +17,7 @@ pub enum ContextAction {
     CopySelection(*mut GtkWidget),
     PasteSmart { sid: usize, vte: *mut GtkWidget },
     OpenLink(String),
+    PreviewMarkdown(PathBuf),
     CopyText(String),
     OpenContainingFolder(PathBuf),
     ForwardToTab { source_sid: usize, source_vte: *mut GtkWidget, target_sid: usize, selected_text: Option<String> },
@@ -342,8 +343,8 @@ fn append_forward_submenu(menu: *mut GtkWidget, spec: &VteMenuSpec, dispatch: &D
     items.push(parent);
 }
 
-fn append_vte_link_items(menu: *mut GtkWidget, link_target: Option<&str>, dispatch: &DispatchFn, items: &mut Vec<*mut GtkWidget>) {
-    let Some(url) = link_target else {
+fn append_vte_link_items(menu: *mut GtkWidget, spec: &VteMenuSpec, dispatch: &DispatchFn, items: &mut Vec<*mut GtkWidget>) {
+    let Some(url) = spec.link_target.as_deref() else {
         return;
     };
     append_separator(menu);
@@ -352,6 +353,10 @@ fn append_vte_link_items(menu: *mut GtkWidget, link_target: Option<&str>, dispat
     let copy_act = ContextAction::CopyText(url.to_owned());
     items.push(append_bound_item(menu, text::ctx_copy_link().as_ptr(), true, copy_act, dispatch));
     if let Some(local_path) = resolve_local_link_path(url) {
+        if spec.is_local && crate::markdown::accepts(&local_path) {
+            let preview = ContextAction::PreviewMarkdown(local_path.clone());
+            items.push(append_bound_item(menu, text::MD_PREVIEW.as_ptr(), true, preview, dispatch));
+        }
         let folder_act = ContextAction::OpenContainingFolder(local_path);
         items.push(append_bound_item(menu, text::ctx_open_folder().as_ptr(), true, folder_act, dispatch));
     }
@@ -373,7 +378,7 @@ pub fn build_vte_menu(spec: &VteMenuSpec, dispatch: &DispatchFn) -> BuiltMenu {
     let mut submenu_items = Vec::with_capacity(spec.targets.len());
     items.push(append_bound_item(menu, text::ctx_copy().as_ptr(), spec.has_selection, ContextAction::CopySelection(spec.vte), dispatch));
     items.push(append_bound_item(menu, text::ctx_paste().as_ptr(), true, ContextAction::PasteSmart { sid: spec.sid, vte: spec.vte }, dispatch));
-    append_vte_link_items(menu, spec.link_target.as_deref(), dispatch, &mut items);
+    append_vte_link_items(menu, spec, dispatch, &mut items);
     append_separator(menu);
     append_forward_submenu(menu, spec, dispatch, &mut items, &mut submenu_items);
     append_separator(menu);

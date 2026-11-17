@@ -39,6 +39,7 @@ pub struct HandoffCallbacks {
     pub on_capture: ClickHandler,
     pub on_forward: ClickHandler,
     pub on_inject: ClickHandler,
+    pub on_preview: ClickHandler,
 }
 
 #[derive(Clone, Copy)]
@@ -373,7 +374,7 @@ fn populate_targets(list: *mut GtkWidget, targets: &[HandoffTarget], cb: ClickHa
     }
 }
 
-fn populate_files(list: *mut GtkWidget, files: &[PathBuf], cb: ClickHandler) {
+fn populate_files(list: *mut GtkWidget, files: &[PathBuf], cb: ClickHandler, preview: ClickHandler) {
     unsafe { gtk_box_pack_start(list, make_header(text::HANDOFF_BRIEFS_HEADER), 0, 0, 0) };
     if files.is_empty() {
         unsafe { gtk_box_pack_start(list, make_muted_label(text::HANDOFF_EMPTY), 0, 1, 2) };
@@ -383,7 +384,13 @@ fn populate_files(list: *mut GtkWidget, files: &[PathBuf], cb: ClickHandler) {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("handoff.md");
         let tip = shorten_home(&path.display().to_string());
         let btn = make_row_button(name, &tip, cb, idx);
-        unsafe { gtk_box_pack_start(list, btn, 0, 1, 0) };
+        let open = make_row_button(text::MD_PREVIEW.as_str(), &tip, preview, idx);
+        unsafe {
+            let row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+            gtk_box_pack_start(row, btn, 1, 1, 0);
+            gtk_box_pack_end(row, open, 0, 0, 0);
+            gtk_box_pack_start(list, row, 0, 1, 0);
+        }
     }
 }
 
@@ -400,7 +407,7 @@ pub fn rebuild_handoff_widgets(
         let list = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
         pack_capture_button(list, cbs.on_capture);
         populate_targets(list, targets, cbs.on_forward);
-        populate_files(list, files, cbs.on_inject);
+        populate_files(list, files, cbs.on_inject, cbs.on_preview);
         let root_child = wrap_popover_scroll(list, targets.len() + files.len());
         gtk_box_pack_start(widgets.outer_box, root_child, 1, 1, 0);
         gtk_widget_show_all(widgets.outer_box);

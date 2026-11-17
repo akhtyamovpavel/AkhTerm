@@ -1233,6 +1233,7 @@ fn tick_radar_app(app: &mut AppState) {
 }
 
 extern "C" fn on_radar_tick(_data: *mut c_void) -> c_int {
+    crate::markdown::reload();
     app_state::with_app_mut(tick_radar_app);
     poll_all_session_telemetry();
     topbar::refresh_ui();
