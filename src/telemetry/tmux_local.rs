@@ -16,11 +16,12 @@ use crate::pane_registry::PaneRecord;
 use crate::paths::{expand_home, shorten_home};
 use crate::proc_radar::ProcInfo;
 use crate::remote_telemetry::RemoteTailer;
+#[cfg(test)]
 use crate::session::TermSession;
 use crate::telemetry::{SessionPollJob, SessionTelemetry};
 
 pub const TMUX_TITLE_FORMAT: &str =
-    "AKHTERM_TMUX:#{session_name}|#{window_index}:#{window_name}|#{pane_current_command}|#{pane_current_path}";
+    "AKHTERM_TMUX:#{pane_id}|#{session_name}|#{window_index}:#{window_name}|#{pane_current_command}|#{pane_current_path}";
 const LOCAL_CLIENT_FMT: &str =
     "#{client_pid}|#{session_name}|#{window_index}:#{window_name}|#{pane_pid}|#{pane_current_command}|#{pane_current_path}";
 const CACHE_TTL: Duration = Duration::from_millis(400);
@@ -40,8 +41,17 @@ pub struct LocalTmuxClient {
     pub pane_path: String,
 }
 
+fn title_target(rest: &str) -> (Option<&str>, &str) {
+    if let Some((id, payload)) = rest.split_once('|') {
+        if id.strip_prefix('%').is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit())) && payload.split('|').count() >= 4 {
+            return (Some(id), payload);
+        }
+    }
+    (None, rest)
+}
+
 pub fn parse_tmux_vte_title(rest: &str) -> Option<(String, String, String, String)> {
-    let mut parts = rest.splitn(4, '|');
+    let mut parts = title_target(rest).1.splitn(4, '|');
     let sess = parts.next()?.trim();
     if sess.is_empty() {
         return None;
@@ -60,11 +70,13 @@ pub fn apply_pane_tmux_title(pane: &mut PaneRecord, rest: &str) {
         .remote_tmux
         .as_ref()
         .is_some_and(|(ps, pw, ..)| (ps.as_str(), pw.as_str()) != (sess.as_str(), win.as_str()));
-    if switched {
+    let target = title_target(rest).0.map(str::to_owned);
+    if switched || target != pane.tmux_pane || pane.remote_tmux.as_ref().is_some_and(|t| t.2 != cmd) {
         pane.proc_info.agent.clear();
         pane.osc_title.clear();
         pane.telemetry = SessionTelemetry::default();
     }
+    pane.tmux_pane = target;
     pane.proc_info.tmux_session.clone_from(&sess);
     pane.proc_info.tmux_window.clone_from(&win);
     pane.remote_tmux = Some((sess, win, cmd, path));
@@ -94,12 +106,7 @@ pub fn matching_remote_tailer(
     sid: usize,
     tmux_window: &Option<String>,
 ) -> Option<RemoteTailer> {
-    let rt = remote_map.get(&sid)?;
-    if tmux_window.is_none() || &rt.tmux_window == tmux_window {
-        Some(rt.clone())
-    } else {
-        None
-    }
+    remote_map.get(&sid).filter(|rt| &rt.tmux_window == tmux_window).cloned()
 }
 
 pub fn pane_poll_job_from_pane(
@@ -111,12 +118,12 @@ pub fn pane_poll_job_from_pane(
     let local_cwd = (!is_remote && pane.proc_info.ssh_host.is_empty() && !pane.cwd.is_empty())
         .then(|| expand_home(&pane.cwd));
     PanePollJob {
-        sid, pane_id: pane.id, root_pid: pane_probe_pid(pane), vte: pane.vte,
+        sid, probe_id: pane.probe_id, pane_id: pane.id, root_pid: pane_probe_pid(pane), vte: pane.vte,
         local_cwd,
         has_ssh: is_remote || !pane.proc_info.ssh_host.is_empty(),
         has_tmux: !pane.proc_info.has_tmux.is_empty() || pane.remote_tmux.is_some(),
         tmux_window: pane_tmux_window(pane),
-        agent: pane.effective_agent(), is_daemon, telemetry: pane.telemetry.clone(),
+        agent: pane.proc_info.agent.clone(), is_daemon, telemetry: pane.telemetry.clone(),
     }
 }
 
@@ -128,18 +135,13 @@ pub fn pane_into_session_job(job: PanePollJob) -> SessionPollJob {
     }
 }
 
-pub fn session_tmux_window(s: &TermSession) -> Option<String> {
-    if let Some((_, w, ..)) = s.remote_tmux.as_ref() {
-        let trimmed = w.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_owned());
-        }
-    }
-    let w = s.proc_info.tmux_window.trim();
-    (!w.is_empty()).then(|| w.to_owned())
-}
-
 pub fn pane_tmux_window(pane: &PaneRecord) -> Option<String> {
+    if let Some(target) = &pane.tmux_pane {
+        return Some(target.clone());
+    }
+    if is_local_tmux_pane(&pane.proc_info) {
+        return Some(format!("pid:{}", pane.proc_info.active_pane_pid));
+    }
     if let Some((_, w, ..)) = pane.remote_tmux.as_ref() {
         let trimmed = w.trim();
         if !trimmed.is_empty() {
@@ -147,7 +149,7 @@ pub fn pane_tmux_window(pane: &PaneRecord) -> Option<String> {
         }
     }
     let w = pane.proc_info.tmux_window.trim();
-    (!w.is_empty()).then(|| w.to_owned())
+    (pane.proc_info.ssh_host.is_empty() && !w.is_empty()).then(|| w.to_owned())
 }
 
 #[cfg(test)]
@@ -251,6 +253,8 @@ fn apply_pane_cwd_and_agent(
     } else if !pane_info.cwd.is_empty() {
         info.cwd = pane_info.cwd;
     }
+    info.ssh_host = pane_info.ssh_host;
+    info.ssh_pid = pane_info.ssh_pid;
     info.agent = if !pane_info.agent.is_empty() {
         pane_info.agent
     } else {
@@ -279,7 +283,7 @@ where
     }
 }
 
-fn collect_fd_tree_pids(root_pid: i32) -> Vec<i32> {
+pub(crate) fn collect_fd_tree_pids(root_pid: i32) -> Vec<i32> {
     if root_pid <= 0 {
         return Vec::new();
     }
@@ -407,6 +411,7 @@ pub mod tests {
         let claude_repo = env.home.join("claude_repo");
         let claude_dir = env.home.join(".claude/projects").join(encode_claude_cwd(&claude_repo.to_string_lossy()));
         fs::create_dir_all(&zsh_repo).unwrap();
+        fs::create_dir_all(&claude_repo).unwrap();
         fs::create_dir_all(&claude_dir).unwrap();
         fs::write(claude_dir.join("s.jsonl"), "{\"type\":\"assistant\",\"message\":{\"id\":\"m1\",\"usage\":{\"input_tokens\":8000,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":140000,\"output_tokens\":900}}}\n").unwrap();
         write_switch_procs_and_tsv(env, codex_repo, &zsh_repo, &claude_repo);
@@ -460,7 +465,7 @@ pub mod tests {
         let t0 = RemoteSessionTarget {
             sid: 1, host: "srv".into(), tmux_session: Some("dev".into()),
             tmux_window: Some("0:zsh".into()), pane_cwd_hint: String::new(),
-            remote_cwd: None, agent_hint: String::new(),
+            remote_cwd: None, agent_hint: String::new(), ..Default::default()
         };
         let t1 = RemoteSessionTarget { tmux_window: Some("1:zsh".into()), ..t0.clone() };
         let mut rt = RemoteTailer::for_target(&t0);

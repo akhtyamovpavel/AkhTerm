@@ -25,6 +25,8 @@ impl PaneId {
 
 pub struct PaneRecord {
     pub id: PaneId,
+    pub probe_id: usize,
+    pub tmux_pane: Option<String>,
     pub vte: *mut GtkWidget,
     #[cfg(test)]
     pub header_box: *mut GtkWidget,
@@ -53,10 +55,14 @@ impl PaneRecord {
         child_pid: i32,
         cwd: String,
     ) -> Self {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT_PROBE: AtomicUsize = AtomicUsize::new(1);
         let now = Instant::now();
         let _ = scroll;
         Self {
             id,
+            probe_id: NEXT_PROBE.fetch_add(1, Ordering::Relaxed),
+            tmux_pane: None,
             vte,
             #[cfg(test)]
             header_box: ptr::null_mut(),
@@ -82,6 +88,15 @@ impl PaneRecord {
     pub fn with_header(mut self, header_box: *mut GtkWidget) -> Self {
         self.header_box = header_box;
         self
+    }
+
+    pub fn sync_connection(&mut self, next: &ProcInfo) {
+        if self.proc_info.ssh_host != next.ssh_host || self.proc_info.ssh_pid != next.ssh_pid {
+            self.remote_tmux = None;
+            self.tmux_pane = None;
+            self.telemetry.reset_transport(self.vte);
+            self.osc_title.clear();
+        }
     }
 
     pub fn set_state(&mut self, next: WorkState, now: Instant) {

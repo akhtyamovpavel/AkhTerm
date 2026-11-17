@@ -104,6 +104,20 @@ impl TermSession {
         self.panes.active_vte(self.vte)
     }
 
+    pub fn focus_pane(&mut self, vte: *mut GtkWidget) {
+        if self.panes.last_focus == vte {
+            return;
+        }
+        self.panes.record_focus(vte);
+        if let Some(pane) = self.pane_registry.by_vte(vte) {
+            self.telemetry.clone_from(&pane.telemetry);
+            self.remote_tmux.clone_from(&pane.remote_tmux);
+            self.tmux_title_from_vte = pane.remote_tmux.is_some();
+            self.osc_title.clone_from(&pane.osc_title);
+            self.proc_info.clone_from(&pane.proc_info);
+        }
+    }
+
     pub fn active_pid(&self) -> i32 {
         self.panes.active_pid(self.vte, self.child_pid)
     }
@@ -145,6 +159,10 @@ impl TermSession {
         let prev_win = std::mem::take(&mut self.proc_info.tmux_window);
         self.proc_info = proc_info;
         if self.category == SessionCategory::Project && prev_host != self.proc_info.ssh_host {
+            self.telemetry = SessionTelemetry::default();
+            if let Some(pane) = self.pane_registry.by_vte_mut(self.active_vte()) {
+                pane.sync_connection(&self.proc_info);
+            }
             self.osc_title.clear();
             self.remote_tmux = None;
             self.tmux_title_from_vte = false;
@@ -884,7 +902,9 @@ mod tests {
         let mut s = sample_local_session("Productivity · Новая", "/tmp/proj");
         assert_eq!(s.effective_category(), SessionCategory::Project);
         assert_eq!(s.active_local_cwd().as_deref(), Some("/tmp/proj"));
+        s.telemetry.vte_fallback.context_tokens = 131_000;
         assert_dynamic_ssh_active(&mut s);
+        assert!(!s.telemetry.snapshot().has_data());
 
         s.apply_vte_title(ptr::null_mut(), "AKHTERM_TMUX:main|0|claude|/srv/app");
         refresh_smart_title(&mut s);
@@ -892,7 +912,9 @@ mod tests {
         assert_eq!(s.title, "ubuntu@prod-01 · app · Claude (tmux:main)");
         assert_eq!(s.snapshot_tab(), Tab::Local { profile: "work".into(), cwd: "/tmp/proj".into() });
 
+        s.telemetry.vte_fallback.context_tokens = 25_000;
         s.apply_proc_snapshot(ProcInfo { cwd: "/tmp/proj".into(), ..Default::default() });
+        assert!(!s.telemetry.snapshot().has_data());
         refresh_smart_title(&mut s);
         assert_eq!(s.effective_category(), SessionCategory::Project);
         assert!(!s.tmux_title_from_vte && s.remote_tmux.is_none() && s.osc_title.is_empty());

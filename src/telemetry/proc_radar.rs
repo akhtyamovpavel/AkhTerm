@@ -10,12 +10,13 @@ use std::thread;
 
 use crate::ffi::*;
 use crate::paths::{expand_home, home_dir, shorten_home, state_dir, write_state_file};
-use crate::ssh_detect::{detect_active_ssh, exe_basename, ProcEntry};
+use crate::ssh_detect::{active_ssh_client, exe_basename, ProcEntry};
 use crate::tabs::Tab;
 
 #[derive(Clone, Debug, Default)]
 pub struct ProcInfo {
     pub ssh_host: String,
+    pub ssh_pid: i32,
     pub has_tmux: String,
     pub tmux_session: String,
     pub tmux_window: String,
@@ -193,7 +194,10 @@ fn inspect_proc_tree_inner(root_pid: i32, allow_tmux: bool) -> ProcInfo {
         info.cwd = shorten_home(&cwd);
     }
     let tpgid = read_proc_groups(root_pid).map_or(0, |(_, tp)| tp);
-    info.ssh_host = detect_active_ssh(root_pid, tpgid, &procs).unwrap_or_default();
+    if let Some((pid, host)) = active_ssh_client(root_pid, tpgid, &procs) {
+        info.ssh_host = host;
+        info.ssh_pid = pid;
+    }
     if let Some(agent) = crate::agent_detect::select_tree_agent(root_pid, tpgid, &procs) {
         info.agent = agent.to_owned();
     }
@@ -254,7 +258,7 @@ pub fn query_ssh_servers(hosts: &[String]) -> BoxTelemetry {
     let remote_cmd = concat!(
         "tmux set -g set-titles on 2>/dev/null; ",
         "tmux set-option -g set-clipboard on 2>/dev/null; ",
-        "tmux set -g set-titles-string 'AKHTERM_TMUX:#{session_name}|#{window_index}:#{window_name}|#{pane_current_command}|#{pane_current_path}' 2>/dev/null; ",
+        "tmux set -g set-titles-string 'AKHTERM_TMUX:#{pane_id}|#{session_name}|#{window_index}:#{window_name}|#{pane_current_command}|#{pane_current_path}' 2>/dev/null; ",
         "tmux list-sessions -F '#{session_name} (#{session_windows} окн.)' 2>/dev/null; ",
         "echo '---CLIENTS---'; ",
         "tmux list-clients -F '#{session_name}|#{window_index}:#{window_name}|#{pane_current_command}|#{pane_current_path}' 2>/dev/null | tail -n 1; ",

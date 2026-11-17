@@ -70,6 +70,9 @@ fn main() -> std::process::ExitCode {
 }
 
 fn init_app_hooks() -> Option<std::fs::File> {
+    if let Err(err) = telemetry::opencode::prepare_tui() {
+        eprintln!("AkhTerm: OpenCode telemetry: {err}");
+    }
     platform::init_process_identity();
     let ui_font = ui_font::load().inspect_err(|e| eprintln!("AkhTerm: {e}")).ok();
     register_link_cwd_lookup(session_ops::lookup_vte_link_cwd);

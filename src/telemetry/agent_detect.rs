@@ -3,6 +3,7 @@
 use crate::ssh_detect::{exe_basename, ProcEntry};
 
 const EXE_AGENTS: &[(&str, &str)] = &[
+    ("opencode", "OpenCode"), ("opencode-ai", "OpenCode"),
     ("deepseek", "DeepSeek"), ("deepseek-cli", "DeepSeek"), ("deepseek_cli", "DeepSeek"),
     ("agy", "AGY"), ("antigravity", "AGY"), ("antigravity-cli", "AGY"), ("antigravity_cli", "AGY"),
     ("codex", "Codex"), ("codex-cli", "Codex"), ("codex_cli", "Codex"), ("dsh", "DSH"),
@@ -11,6 +12,7 @@ const EXE_AGENTS: &[(&str, &str)] = &[
 ];
 
 const INSTALL_PATTERNS: &[(&str, &str)] = &[
+    ("/opencode-ai/bin/", "OpenCode"),
     ("/antigravity-cli/", "AGY"), ("/antigravity/", "AGY"), ("@openai/codex", "Codex"), ("/.codex/", "Codex"),
     ("@anthropic-ai/claude-code", "Claude"), ("/claude/versions/", "Claude"), ("/.claude/local/", "Claude"),
     ("/.kimi-code/", "Kimi"), ("/kimi-cli/", "Kimi"), ("/deepseek-cli/", "DeepSeek"),

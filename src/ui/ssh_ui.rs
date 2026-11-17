@@ -488,8 +488,13 @@ fn reset_retargeted_session(s: &mut session::TermSession, target_session: &str) 
 
 fn retarget_remote_session(sid: usize, target_session: &str) {
     app_state::with_app_mut(|app| {
-        app.remote_telemetry.reset_session(sid);
         if let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid) {
+            if let Some(p) = s.pane_registry.by_vte_mut(s.active_vte()) {
+                app.remote_telemetry.reset_session(p.probe_id);
+                p.remote_tmux = None;
+                p.tmux_pane = None;
+                p.telemetry = SessionTelemetry::default();
+            }
             reset_retargeted_session(s, target_session);
         }
     });

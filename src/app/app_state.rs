@@ -166,7 +166,7 @@ pub(crate) fn record_pane_focus(sid: usize, vte: *mut GtkWidget) {
     }
     with_app_mut(|app| {
         if let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid) {
-            s.panes.record_focus(vte);
+            s.focus_pane(vte);
         }
     });
 }

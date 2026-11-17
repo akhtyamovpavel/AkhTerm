@@ -54,6 +54,7 @@ pub fn sync_pane_proc(
     mut proc_info: ProcInfo,
     remote_tmux: Option<(String, String, String, String)>,
 ) {
+    pane.sync_connection(&proc_info);
     crate::tmux_local::clear_stale_pane_osc(pane, &proc_info);
     if !proc_info.cwd.is_empty() && proc_info.ssh_host.is_empty() {
         pane.cwd = expand_home(&proc_info.cwd);
@@ -181,6 +182,7 @@ pub fn settle_registry_panes(reg: &mut PaneRegistry, ctx: &SettleContext) -> usi
 pub struct PanePollJob {
     pub sid: usize,
     pub pane_id: PaneId,
+    pub probe_id: usize,
     pub root_pid: i32,
     pub vte: *mut GtkWidget,
     pub local_cwd: Option<String>,
@@ -436,18 +438,6 @@ pub fn summarize_registry_headers_for(reg: &PaneRegistry, now: Instant, locale: 
     reg.panes().iter().map(|p| format_pane_header_summary_for(p, now, locale)).collect()
 }
 
-fn mirror_session_remote_to_primary(s: &mut TermSession) {
-    let host = s.remote().map_or(&s.proc_info.ssh_host, |r| &r.host).clone();
-    if let Some(p) = s.pane_registry.by_vte_mut(s.vte) {
-        if !host.is_empty() {
-            p.proc_info.ssh_host = host;
-        }
-        if let Some(ref tmux) = s.remote_tmux {
-            p.remote_tmux = Some(tmux.clone());
-        }
-    }
-}
-
 pub fn sync_and_settle_session(
     s: &mut TermSession,
     now: Instant,
@@ -459,7 +449,6 @@ pub fn sync_and_settle_session(
         return;
     }
     sync_registry_procs(&mut s.pane_registry);
-    mirror_session_remote_to_primary(s);
     let ctx = SettleContext {
         is_active_tab, focused_vte: s.active_vte(), is_daemon: s.category == crate::session::SessionCategory::Daemon,
         tab_title: s.title.clone(), now, win, window_active,
@@ -474,7 +463,7 @@ pub fn collect_sessions_pane_jobs(sessions: &[TermSession]) -> Vec<PanePollJob> 
     let mut out = Vec::new();
     for s in sessions {
         let is_daemon = s.category == crate::session::SessionCategory::Daemon;
-        let is_remote = s.effective_category() == crate::session::SessionCategory::Remote;
+        let is_remote = s.remote().is_some();
         out.extend(collect_pane_poll_jobs(s.id, &s.pane_registry, is_daemon, is_remote));
     }
     out
@@ -488,7 +477,7 @@ pub fn run_pane_poll_jobs(
 ) -> Vec<(usize, PaneId, SessionTelemetry)> {
     jobs.into_iter().map(|job| {
         let sid = job.sid;
-        let rt = crate::tmux_local::matching_remote_tailer(remote_map, sid, &job.tmux_window);
+        let rt = crate::tmux_local::matching_remote_tailer(remote_map, job.probe_id, &job.tmux_window);
         let (pane_id, telem) = run_pane_poll_job(job, rt, home, now);
         (sid, pane_id, telem)
     }).collect()
@@ -552,8 +541,8 @@ fn pane_elapsed(s: &TermSession, idx: usize, active: bool, reg: Option<&PaneReco
 }
 
 fn pane_ctx_text(s: &TermSession, idx: usize, reg: Option<&PaneRecord>) -> String {
-    reg.and_then(|p| p.telemetry.snapshot().compact_context_badge())
-        .unwrap_or_else(|| if idx == 0 { s.telemetry.snapshot().compact_context_badge().unwrap_or_default() } else { String::new() })
+    reg.map(|p| p.telemetry.snapshot()).or_else(|| (idx == 0).then(|| s.telemetry.snapshot()))
+        .and_then(|snap| snap.usage_badge()).unwrap_or_default()
 }
 
 fn build_pane_header_state(s: &TermSession, idx: usize, is_act: bool, active_vte: *mut GtkWidget, now: Instant) -> crate::pane_header::PaneHeaderState {
