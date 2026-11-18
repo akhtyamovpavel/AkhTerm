@@ -434,12 +434,22 @@ fn prepare_child_ctty(slave_fd: c_int) -> io::Result<()> {
     Ok(())
 }
 
-fn spawn_child_process(cwd: &str, argv: &[&str], child_slave: c_int) -> Option<i32> {
+fn apply_akhterm_ctl_env(cmd: &mut Command, pane_id: Option<u64>) {
+    if let Some(sock) = crate::ctl_socket::current_socket_path() {
+        cmd.env("AKHTERM_SOCKET", sock);
+    }
+    if let Some(id) = pane_id {
+        cmd.env("AKHTERM_PANE_ID", id.to_string());
+    }
+}
+
+fn spawn_child_process(cwd: &str, argv: &[&str], child_slave: c_int, pane_id: Option<u64>) -> Option<i32> {
     let prog = *argv.first()?;
     let mut cmd = Command::new(prog);
     cmd.args(&argv[1..])
         .env("TERM", "xterm-256color")
         .env("COLORTERM", "truecolor");
+    apply_akhterm_ctl_env(&mut cmd, pane_id);
     if !cwd.is_empty() {
         cmd.current_dir(cwd);
     }
@@ -672,10 +682,21 @@ fn close_fd_pair(a: c_int, b: c_int) {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn spawn_vte_with_tap(
     vte: *mut GtkWidget,
     cwd: &str,
     argv: &[&str],
+    sink: PtyTapSink,
+) -> i32 {
+    spawn_vte_with_tap_for_pane(vte, cwd, argv, None, sink)
+}
+
+pub fn spawn_vte_with_tap_for_pane(
+    vte: *mut GtkWidget,
+    cwd: &str,
+    argv: &[&str],
+    pane_id: Option<u64>,
     sink: PtyTapSink,
 ) -> i32 {
     if vte.is_null() || argv.is_empty() {
@@ -695,7 +716,7 @@ pub fn spawn_vte_with_tap(
         close_fd_pair(child_slave, -1);
         return 0;
     }
-    finish_tap_spawn(vte, cwd, argv, vte_slave, child_master, child_slave, sink)
+    finish_tap_spawn(vte, cwd, argv, pane_id, vte_slave, child_master, child_slave, sink)
 }
 
 fn prepare_tap_fds(vte_slave: c_int, child_master: c_int, child_slave: c_int) {
@@ -705,16 +726,18 @@ fn prepare_tap_fds(vte_slave: c_int, child_master: c_int, child_slave: c_int) {
     set_nonblocking(child_master);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish_tap_spawn(
     vte: *mut GtkWidget,
     cwd: &str,
     argv: &[&str],
+    pane_id: Option<u64>,
     vte_slave: c_int,
     child_master: c_int,
     child_slave: c_int,
     sink: PtyTapSink,
 ) -> i32 {
-    let pid_opt = spawn_child_process(cwd, argv, child_slave);
+    let pid_opt = spawn_child_process(cwd, argv, child_slave, pane_id);
     unsafe { close(child_slave) };
     let Some(pid) = pid_opt else {
         close_fd_pair(vte_slave, child_master);

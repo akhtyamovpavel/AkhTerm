@@ -747,6 +747,7 @@ fn pack_repo_sections(
     let review = crate::git_review::collect_branch_review(Path::new(root), head);
     crate::git_review::reset_review_ui_state(popover, root, &review);
     pack_repo_header(vbox, root, head, status, &review);
+    crate::diff_review::pack_git_popover_button(vbox, popover);
     let entries = pack_repo_files(vbox, root, status, on_file);
     crate::git_review::pack_branch_review(vbox, &review);
     entries

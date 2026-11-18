@@ -98,6 +98,7 @@ pub enum PaletteAction {
     ToggleTheme,
     OpenSearch,
     OpenGitMenu,
+    OpenDiffReview,
     GitFile { repo_root: String, path: String, untracked: bool },
     RemoveCleanWorktree,
     OpenTaskDispatch,
@@ -474,7 +475,13 @@ fn make_ports_item(locale: UiLocale) -> PaletteItem {
     new_ui_item(PaletteKind::Ports, title, detail, kw, PaletteAction::OpenPortsMenu, locale)
 }
 
+fn make_diff_review_item(locale: UiLocale) -> PaletteItem {
+    let kw = "diff review git hunk stage revert comment agent ssh ревью ханк комментарий";
+    new_ui_item(PaletteKind::Git, text::DIFF_PALETTE_TITLE, text::DIFF_PALETTE_DETAIL, kw, PaletteAction::OpenDiffReview, locale)
+}
+
 fn push_v1_command_items(out: &mut Vec<PaletteItem>, locale: UiLocale) {
+    out.push(make_diff_review_item(locale));
     out.push(make_dispatch_item(locale));
     out.push(make_swarm_item(locale));
     out.push(make_ports_item(locale));

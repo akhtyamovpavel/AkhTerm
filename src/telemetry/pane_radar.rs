@@ -3,7 +3,11 @@
 use std::{collections::HashMap, path::Path, time::{Duration, Instant}};
 #[cfg(test)]
 use std::collections::HashSet;
-use crate::approval::{classify_terminal_text_with_snippet, maybe_notify_background_event, read_vte_visible_text, QUIET_SETTLE_DELAY};
+use crate::approval::{
+    classify_terminal_text_with_snippet, maybe_notify_background_event_for_pane,
+    read_vte_visible_text, QUIET_SETTLE_DELAY,
+};
+use crate::ctl_protocol::HookState;
 use crate::ffi::GtkWidget;
 use crate::i18n::{current_locale, UiLocale, UiText};
 use crate::pane_registry::{PaneId, PaneRecord, PaneRegistry};
@@ -94,6 +98,10 @@ pub fn settle_pane_with_text(
     is_focused_active: bool,
     is_daemon: bool,
 ) -> Option<(WorkState, Duration)> {
+    pane.expire_hook_state(now);
+    if pane.active_hook_state(now).is_some_and(|h| h.state == HookState::Working) {
+        return None;
+    }
     if is_daemon || pane.state != WorkState::Working {
         return None;
     }
@@ -155,7 +163,10 @@ where
         let text = read_text(pane);
         if let Some((cls, span)) = settle_pane_with_text(pane, &text, ctx.now, focused, ctx.is_daemon) {
             settled += 1;
-            maybe_notify_background_event(cls, span, &ctx.tab_title, &mut pane.last_notified, ctx.now, ctx.win, ctx.window_active);
+            let pid = pane.id.raw().to_string();
+            maybe_notify_background_event_for_pane(
+                cls, span, &ctx.tab_title, &mut pane.last_notified, ctx.now, ctx.win, ctx.window_active, Some(&pid),
+            );
         }
     }
     settled
@@ -426,6 +437,27 @@ pub fn summarize_registry_headers_for(reg: &PaneRegistry, now: Instant, locale: 
     reg.panes().iter().map(|p| format_pane_header_summary_for(p, now, locale)).collect()
 }
 
+fn sync_session_aggregate(s: &mut TermSession) {
+    s.state = s.pane_registry.aggregated_state();
+    s.unread = s.pane_registry.has_unread();
+    s.last_turn_secs = s.pane_registry.last_turn_secs().or(s.last_turn_secs);
+}
+
+pub fn apply_pane_hook_notification(
+    s: &mut TermSession,
+    pane_id: PaneId,
+    state: HookState,
+    title: Option<String>,
+    message: Option<String>,
+    is_focused: bool,
+    now: Instant,
+) -> bool {
+    let Some(pane) = s.pane_registry.get_mut(pane_id) else { return false };
+    pane.apply_hook_state(state, title, message, is_focused, now);
+    sync_session_aggregate(s);
+    true
+}
+
 pub fn sync_and_settle_session(
     s: &mut TermSession,
     now: Instant,
@@ -530,6 +562,29 @@ fn pane_ctx_text(s: &TermSession, idx: usize, reg: Option<&PaneRecord>) -> Strin
         .and_then(|snap| snap.usage_badge()).unwrap_or_default()
 }
 
+fn hook_dot_class(state: HookState) -> &'static str {
+    match state {
+        HookState::Working => "pane-dot-working",
+        HookState::Waiting => "pane-dot-waiting",
+        HookState::Done => "pane-dot-done",
+        HookState::Error => "pane-dot-error",
+    }
+}
+
+fn work_dot_class(state: WorkState) -> Option<&'static str> {
+    match state {
+        WorkState::Working => Some("pane-dot-working"),
+        WorkState::NeedsApproval => Some("pane-dot-waiting"),
+        WorkState::Ready => Some("pane-dot-done"),
+        WorkState::Idle => None,
+    }
+}
+
+fn pane_status_dot_class(reg: Option<&PaneRecord>, now: Instant) -> Option<&'static str> {
+    let pane = reg?;
+    pane.active_hook_state(now).map(|h| hook_dot_class(h.state)).or_else(|| work_dot_class(pane.state))
+}
+
 fn build_pane_header_state(s: &TermSession, idx: usize, is_act: bool, active_vte: *mut GtkWidget, now: Instant) -> crate::pane_header::PaneHeaderState {
     let (vte, cwd) = pane_vte_and_cwd(s, idx);
     let reg = s.pane_registry.by_vte(vte);
@@ -541,6 +596,7 @@ fn build_pane_header_state(s: &TermSession, idx: usize, is_act: bool, active_vte
         ctx_badge: pane_ctx_text(s, idx, reg),
         active: is_act && vte == active_vte,
         zoomed: s.panes.zoomed_vte(s.scroll_wrap, s.vte) == Some(vte),
+        status_dot: pane_status_dot_class(reg, now),
     }
 }
 

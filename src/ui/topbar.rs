@@ -743,6 +743,7 @@ fn sync_localized_chrome() {
     app_state::with_app(|app| {
         app.update_banner.refresh_locale();
         app.ports_menu.refresh_locale();
+        app.sys_monitor.refresh_locale();
     });
 }
 

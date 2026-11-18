@@ -14,7 +14,9 @@ mod remote;
 mod remote_reader;
 pub use origin::{for_vte, remote_document, Origin, RemoteDocument};
 #[cfg(test)]
-pub(crate) use origin::{is_current, targets};
+pub(crate) use origin::is_current;
+pub(crate) use origin::{targets, Target};
+pub(crate) use quote::deliver;
 pub use remote_reader::open_remote;
 #[cfg(test)]
 #[path = "markdown_tests.rs"]

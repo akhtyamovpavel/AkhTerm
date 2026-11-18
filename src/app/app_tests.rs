@@ -100,11 +100,13 @@ fn assemble_test_app_state(
     let update_banner = crate::updater_wire::build_update_banner();
     update_banner.mount_in_overlay(unsafe { gtk_widget_get_parent(stack) });
     let ports_menu = crate::ports_ui::PortsMenu::new(vbox);
+    let sys_monitor = crate::sys_monitor_ui::SysMonitorWidget::new(session_ops::sys_mon_open_cb());
     let split_v = unsafe { gtk_button_new() };
     let split_h = unsafe { gtk_button_new() };
     unsafe {
         gtk_box_pack_start(vbox, split_v, 0, 0, 0);
         gtk_box_pack_start(vbox, split_h, 0, 0, 0);
+        gtk_box_pack_end(vbox, sys_monitor.button(), 0, 0, 0);
     }
     AppState {
         config: WorkspaceConfig::load(), win, is_fullscreen: false, sidebar, sidebar_visible: true,
@@ -129,6 +131,8 @@ fn assemble_test_app_state(
         palette, search_bar, pin_pop, swarm_pop, swarm_view,
         update_scheduler: crate::updater::UpdateScheduler::new(),
         update_banner,
+        sys_monitor,
+        sys_sampler: crate::sys_monitor::SysSampler::new(),
         ports_menu,
         ssh_tunnels: crate::ssh_tunnel::SshTunnelManager::new(),
         remote_ports: crate::port_radar::RemotePortScheduler::default(),
@@ -463,6 +467,7 @@ fn check_module_mi_gates(name: &str, score: f64, failures: &mut Vec<String>) {
         ("pty_tap.rs", 60.0), ("session_ops.rs", 60.0), ("settings_dialog.rs", 60.0),
         ("shortcuts.rs", 60.0), ("sidebar.rs", 60.0), ("sidebar_folders.rs", 60.0),
         ("ssh_ui.rs", 60.0), ("swarm_view.rs", 60.0),
+        ("sys_monitor.rs", 60.0), ("sys_monitor_ui.rs", 60.0),
         ("task_dispatch.rs", 60.0), ("topbar.rs", 60.0),
         ("port_radar.rs", 60.0), ("ssh_tunnel.rs", 60.0), ("ports_ui.rs", 60.0),
     ];

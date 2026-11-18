@@ -171,6 +171,7 @@ extern "C" fn on_window_key_press(
         return 0;
     };
     if let Some(result) = crate::markdown::route_key(_win, keyval, state) { return result; }
+    if let Some(result) = crate::diff_review::route_key(_win, keyval, state) { return result; }
     if route_swarm_escape(keyval) {
         return 1;
     }
@@ -234,6 +235,10 @@ fn dispatch_workspace_shortcut(keyval: c_uint, state: c_uint, keycode: u16) -> b
         topbar::toggle_swarm_view();
         return true;
     }
+    if crate::diff_review::is_diff_review_shortcut(keyval, state, keycode) {
+        crate::diff_review::open_for_active();
+        return true;
+    }
     false
 }
 
@@ -270,6 +275,7 @@ fn execute_palette_tool_action(action: palette::PaletteAction) {
         palette::PaletteAction::ToggleTheme => topbar::toggle_theme(),
         palette::PaletteAction::OpenSearch => open_search_bar(),
         palette::PaletteAction::OpenGitMenu => pane_actions::populate_git_popover(true, true),
+        palette::PaletteAction::OpenDiffReview => crate::diff_review::open_for_active(),
         palette::PaletteAction::GitFile { repo_root, path, untracked } => {
             pane_actions::open_git_file_action(&repo_root, &path, untracked);
         }

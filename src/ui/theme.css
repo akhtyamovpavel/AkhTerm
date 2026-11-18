@@ -67,6 +67,8 @@
 @define-color update_accent_fg #ffffff;
 @define-color update_link #60a5fa;
 @define-color update_shadow rgba(0, 0, 0, 0.48);
+@define-color sys_mon_bg #141418;
+@define-color sys_mon_fg #d4d4d8;
 
 .tab-icon,
 .sidebar-icon {
@@ -1112,6 +1114,207 @@ button.update-card-primary:hover {
     color: @update_accent_fg;
 }
 
+/* Diff Review Panel (Dark Zinc / Light Zinc via shared color tokens) */
+.diff-review-root {
+    background-color: @sidebar_bg;
+    border-left: 1px solid @border;
+    padding: 8px;
+}
+
+.diff-review-header {
+    padding-bottom: 4px;
+    border-bottom: 1px solid @border;
+}
+
+.diff-review-title {
+    color: @text_strong;
+    font-weight: 600;
+    font-size: 12px;
+}
+
+.diff-review-meta {
+    color: @muted;
+    font-size: 11px;
+}
+
+.diff-review-files-scroll {
+    background-color: @surface;
+    border: 1px solid @border;
+    border-radius: 6px;
+}
+
+.diff-review-file-row {
+    padding: 2px 4px;
+    border-radius: 4px;
+}
+
+.diff-review-file-row.active {
+    background-color: @selected;
+}
+
+button.diff-review-file-btn {
+    background-image: none;
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+    color: @row_text;
+    font-size: 12px;
+    padding: 2px 6px;
+}
+
+button.diff-review-file-btn:hover {
+    background-color: @hover;
+    color: @text_strong;
+}
+
+.diff-review-ins {
+    color: @ready;
+    font-weight: 600;
+    font-size: 11px;
+}
+
+.diff-review-del {
+    color: @danger;
+    font-weight: 600;
+    font-size: 11px;
+}
+
+button.diff-review-mode-active {
+    background-color: @selected;
+    border-color: @selected_border;
+    color: @text_strong;
+    font-weight: 600;
+}
+
+.diff-review-view,
+.diff-review-view text {
+    background-color: @canvas;
+    color: @text;
+    font-size: 12px;
+}
+
+.diff-review-queue-scroll {
+    background-color: @surface;
+    border: 1px solid @border;
+    border-radius: 6px;
+}
+
+.diff-review-queue-row {
+    background-color: @elevated;
+    border: 1px solid @border;
+    border-radius: 4px;
+    padding: 3px 6px;
+}
+
+.diff-review-badge {
+    background-color: @control_bg;
+    border: 1px solid @badge_agent_border;
+    border-radius: 999px;
+    color: @badge_agent_fg;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 8px;
+}
+
+button.diff-review-primary {
+    background-image: none;
+    background-color: @update_accent;
+    border: 1px solid @update_accent;
+    color: @update_accent_fg;
+    font-weight: 600;
+}
+
+button.diff-review-primary:hover {
+    background-color: @update_accent_hover;
+    border-color: @update_accent_hover;
+}
+
+button.diff-review-danger {
+    color: @danger;
+    border-color: @danger_border;
+    background-color: @danger_bg;
+}
+
+button.sys-mon-btn {
+    background-image: none;
+    background-color: @sys_mon_bg;
+    color: @sys_mon_fg;
+    border: 1px solid @border;
+    border-radius: 5px;
+    padding: 1px 8px;
+    min-height: 20px;
+    font-family: monospace;
+    font-size: 11px;
+    font-weight: 500;
+}
+
+button.sys-mon-btn:hover {
+    background-image: none;
+    background-color: @hover;
+    border-color: @border_strong;
+    color: @text_strong;
+}
+
+button.sys-mon-btn.sys-mon-warn {
+    background-color: @amber_tint;
+    border-color: @amber_border;
+    color: @amber_fg;
+}
+
+button.sys-mon-btn.sys-mon-warn:hover {
+    border-color: @amber_border_strong;
+}
+
+button.sys-mon-btn.sys-mon-hot {
+    background-color: @danger_bg;
+    border-color: @danger_border;
+    color: @danger;
+}
+
+.sys-mon-pop {
+    min-width: 280px;
+    padding: 8px 10px;
+}
+
+.sys-mon-title {
+    color: @text_strong;
+    font-size: 12px;
+    font-weight: 600;
+    padding-bottom: 4px;
+}
+
+.sys-mon-key {
+    color: @muted;
+    font-size: 12px;
+}
+
+.sys-mon-val {
+    color: @text_strong;
+    font-family: monospace;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.sys-mon-val.sys-mon-warn {
+    color: @amber_fg;
+}
+
+.sys-mon-val.sys-mon-hot {
+    color: @danger;
+}
+
+.sys-mon-sub {
+    color: @text_secondary;
+    font-family: monospace;
+    font-size: 11px;
+}
+
+.sys-mon-divider {
+    background-image: none;
+    background-color: @border;
+    min-height: 1px;
+    margin: 4px 0;
+}
 
 /* === Ports & SSH Tunnel Popover === */
 button.ports-btn-active {

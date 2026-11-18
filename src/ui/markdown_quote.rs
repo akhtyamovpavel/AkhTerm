@@ -108,15 +108,18 @@ impl Reader {
 extern "C" fn insert(_: *mut GtkWidget, _: *mut c_void) {
     let draft = READER.with_borrow(|slot| slot.as_ref().map(Reader::selected_quote));
     match draft {
-        Some(Ok((target, quote))) => deliver(target, quote),
+        Some(Ok((target, quote))) => {
+            let _ = deliver(target, quote);
+        }
         Some(Err(message)) => app_state::set_footer_message(message.as_str()),
         None => {}
     }
 }
 
-fn deliver(target: Target, quote: String) {
+pub(crate) fn deliver(target: Target, quote: String) -> bool {
     if !origin::is_current(&target) {
-        return app_state::set_footer_message(text::MD_STALE.as_str());
+        app_state::set_footer_message(text::MD_STALE.as_str());
+        return false;
     }
     crate::session_ops::select_session(target.sid);
     app_state::record_pane_focus(target.sid, target.vte);
@@ -131,4 +134,5 @@ fn deliver(target: Target, quote: String) {
         let text = CString::new(quote).expect("quote excludes NUL");
         unsafe { vte_terminal_paste_text(target.vte, text.as_ptr()) };
     }
+    true
 }

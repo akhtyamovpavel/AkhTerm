@@ -1,5 +1,10 @@
+pub mod agent_hooks;
 pub mod config;
+pub mod ctl_cli;
+pub mod ctl_protocol;
+pub mod ctl_socket;
 pub mod ffi;
+pub mod json_lite;
 pub mod paths;
 pub mod platform;
 pub mod ssh_config;
