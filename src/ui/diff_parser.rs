@@ -426,7 +426,7 @@ pub fn render_file_diff(file: &DiffFile) -> RenderedDiff {
 pub fn active_hunk_at_offset(rendered: &RenderedDiff, char_offset: i32) -> Option<usize> {
     let pos = char_offset.max(0);
     for line in &rendered.lines {
-        if pos <= line.char_end + 1 {
+        if pos <= line.char_end {
             if let Some(idx) = line.hunk_idx {
                 return Some(idx);
             }

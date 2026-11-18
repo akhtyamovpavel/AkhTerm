@@ -387,3 +387,44 @@ fn diff_review_modules_meet_maintainability_index_gates() {
         assert!(score >= 60.0, "{rel} MI {score:.2} < 60.0");
     }
 }
+
+#[test]
+fn active_hunk_at_offset_targets_exact_hunk_after_jump() {
+    let files = parser::parse_unified_diff(SAMPLE_DIFF);
+    let rendered = parser::render_file_diff(&files[0]);
+    let off0 = parser::hunk_start_char(&rendered, 0).unwrap();
+    let off1 = parser::hunk_start_char(&rendered, 1).unwrap();
+    assert_eq!(parser::active_hunk_at_offset(&rendered, off0), Some(0));
+    assert_eq!(parser::active_hunk_at_offset(&rendered, off1), Some(1));
+    let excerpt = parser::extract_selection_excerpt(&rendered, off1, off1, 0).unwrap();
+    assert_eq!(excerpt.hunk_idx, 1);
+    assert!(excerpt.excerpt.contains("drop_me()"));
+    assert!(!excerpt.excerpt.contains("let new = 2;"));
+}
+
+#[test]
+fn real_git_repo_truncates_over_2mib_diff_without_sigpipe_error() {
+    let repo = TempRepo::new("oversized");
+    repo.git(&["init", "-b", "main"]);
+    repo.git(&["config", "user.email", "test@example.com"]);
+    repo.git(&["config", "user.name", "Test"]);
+    let big_file = repo.0.join("big.txt");
+    fs::write(&big_file, "initial\n").unwrap();
+    repo.git(&["add", "big.txt"]);
+    repo.git(&["commit", "-m", "init"]);
+    let line = "x".repeat(100) + "\n";
+    fs::write(&big_file, line.repeat(26_000)).unwrap();
+    let res = source::load_local_diff(&repo.0, DiffMode::WorkingTree).unwrap();
+    assert!(res.truncated);
+    assert!(res.raw_diff.len() <= source::MAX_DIFF_BYTES);
+    assert!(res.raw_diff.ends_with('\n'));
+}
+
+#[test]
+fn remote_branch_script_fails_cleanly_in_non_git_directory() {
+    let plain = TempRepo::new("nongit");
+    let script = source::build_remote_diff_script(plain.0.to_str().unwrap(), DiffMode::Branch);
+    let out = Command::new("sh").args(["-c", &script]).output().unwrap();
+    assert!(!out.status.success(), "expected non-zero exit in non-git dir");
+    assert!(out.stdout.is_empty(), "expected no leaked stdout: {}", String::from_utf8_lossy(&out.stdout));
+}

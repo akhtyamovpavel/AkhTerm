@@ -132,6 +132,19 @@ fn resolve_local_base_branch(repo_root: &Path) -> Option<String> {
     None
 }
 
+fn finish_capped_child(mut child: std::process::Child, truncated: bool, fallback: &str) -> io::Result<()> {
+    if truncated {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Ok(());
+    }
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        return Err(git_stderr_err(&output.stderr, fallback));
+    }
+    Ok(())
+}
+
 fn run_local_git_diff(repo_root: &Path, args: &[&str]) -> io::Result<(String, bool)> {
     let mut child = Command::new("git")
         .arg("-C")
@@ -144,10 +157,7 @@ fn run_local_git_diff(repo_root: &Path, args: &[&str]) -> io::Result<(String, bo
         .spawn()?;
     let stdout = child.stdout.take().ok_or_else(|| io::Error::other("missing git stdout"))?;
     let (raw, truncated) = read_capped_diff(stdout)?;
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        return Err(git_stderr_err(&output.stderr, "git diff failed"));
-    }
+    finish_capped_child(child, truncated, "git diff failed")?;
     Ok((raw, truncated))
 }
 
@@ -201,7 +211,7 @@ fn remote_diff_body(mode: DiffMode, cap: usize) -> String {
 pub fn build_remote_diff_script(cwd: &str, mode: DiffMode) -> String {
     let dir = proc_radar::shell_quote(if cwd.is_empty() { "." } else { cwd });
     let body = remote_diff_body(mode, MAX_DIFF_BYTES + 1);
-    format!("cd {dir} && git rev-parse --show-toplevel >/dev/null 2>&1 && {body}")
+    format!("cd {dir} && git rev-parse --show-toplevel >/dev/null 2>&1 && {{ {body}; }}")
 }
 
 pub fn load_remote_diff(
@@ -214,10 +224,7 @@ pub fn load_remote_diff(
     let mut child = route.spawn(&script, Stdio::null(), "15")?;
     let stdout = child.stdout.take().ok_or_else(|| io::Error::other("missing SSH stdout"))?;
     let (raw_diff, truncated) = read_capped_diff(stdout)?;
-    let status = child.wait()?;
-    if !status.success() {
-        return Err(io::Error::other(format!("SSH diff failed on {host}")));
-    }
+    finish_capped_child(child, truncated, &format!("SSH diff failed on {host}"))?;
     let scope_label = format!("{host} · {}", mode.label_key());
     Ok(DiffLoadResult { raw_diff, truncated, scope_label })
 }
