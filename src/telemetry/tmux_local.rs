@@ -22,8 +22,9 @@ use crate::telemetry::SessionPollJob;
 #[cfg(test)]
 use crate::telemetry::SessionTelemetry;
 
-pub const TMUX_TITLE_FORMAT: &str =
-    "AKHTERM_TMUX:#{pane_id}|#{session_name}|#{window_index}:#{window_name}|#{pane_current_command}|#{pane_current_path}";
+#[path = "tmux_title.rs"]
+mod title;
+pub use title::{apply_pane_tmux_title, parse_tmux_vte_title, title_matches_pane, TMUX_TITLE_FORMAT};
 const LOCAL_CLIENT_FMT: &str =
     "#{client_pid}|#{session_name}|#{window_index}:#{window_name}|#{pane_pid}|#{pane_current_command}|#{pane_current_path}";
 const CACHE_TTL: Duration = Duration::from_millis(400);
@@ -41,46 +42,6 @@ pub struct LocalTmuxClient {
     pub pane_pid: i32,
     pub pane_cmd: String,
     pub pane_path: String,
-}
-
-fn title_target(rest: &str) -> (Option<&str>, &str) {
-    if let Some((id, payload)) = rest.split_once('|') {
-        if id.strip_prefix('%').is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit())) && payload.split('|').count() >= 4 {
-            return (Some(id), payload);
-        }
-    }
-    (None, rest)
-}
-
-pub fn parse_tmux_vte_title(rest: &str) -> Option<(String, String, String, String)> {
-    let mut parts = title_target(rest).1.splitn(4, '|');
-    let sess = parts.next()?.trim();
-    if sess.is_empty() {
-        return None;
-    }
-    let win = parts.next()?.trim().to_owned();
-    let cmd = parts.next()?.trim().to_owned();
-    let path = parts.next()?.trim().to_owned();
-    Some((sess.to_owned(), win, cmd, path))
-}
-
-pub fn apply_pane_tmux_title(pane: &mut PaneRecord, rest: &str) {
-    let Some((sess, win, cmd, path)) = parse_tmux_vte_title(rest) else {
-        return;
-    };
-    let switched = pane
-        .remote_tmux
-        .as_ref()
-        .is_some_and(|(ps, pw, ..)| (ps.as_str(), pw.as_str()) != (sess.as_str(), win.as_str()));
-    let target = title_target(rest).0.map(str::to_owned);
-    if switched || target != pane.tmux_pane || pane.remote_tmux.as_ref().is_some_and(|t| t.2 != cmd) {
-        pane.clear_finished_agent();
-        pane.proc_info.agent.clear();
-    }
-    pane.tmux_pane = target;
-    pane.proc_info.tmux_session.clone_from(&sess);
-    pane.proc_info.tmux_window.clone_from(&win);
-    pane.remote_tmux = Some((sess, win, cmd, path));
 }
 
 pub fn clear_stale_pane_osc(pane: &mut PaneRecord, proc_info: &ProcInfo) {
@@ -182,7 +143,6 @@ fn current_cache_key() -> CacheKey {
     (env::var_os("TMUX"), env::var_os("TMUX_TMPDIR"), env::var_os("PATH"))
 }
 
-#[cfg(test)]
 pub fn invalidate_client_cache() {
     if let Ok(mut g) = CLIENT_CACHE.lock() {
         *g = None;

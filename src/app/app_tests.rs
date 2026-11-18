@@ -909,8 +909,11 @@ fn returning_to_shell_clears_the_agent_badge_after_exit_or_eof() {
             let command = r#"bash -c 'exec -a opencode bash -c "$1"' stub 'printf "\033]0;OpenCode\007"; read -r answer'"#;
             file_drop::feed_vte_text(vte, &format!("{command}\n"), false);
             wait_for_agent_badge("OpenCode", true);
+            let recipient = crate::markdown::targets().into_iter().find(|t| t.vte == vte).expect("OpenCode recipient");
+            assert!(crate::markdown::is_current(&recipient));
             file_drop::feed_vte_text(vte, finish, false);
             wait_for_agent_badge("", false);
+            assert!(!crate::markdown::is_current(&recipient));
         }
         cleanup_test_window(win, &[sid]);
     });

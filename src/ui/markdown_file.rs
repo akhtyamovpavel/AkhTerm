@@ -19,8 +19,13 @@ pub fn read(path: &Path) -> io::Result<String> {
             "Markdown preview requires a regular file up to 2 MiB",
         ));
     }
-    let mut source = String::new();
-    file.take(MAX_BYTES + 1).read_to_string(&mut source)?;
+    let mut bytes = Vec::new();
+    file.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
+    decode(bytes)
+}
+
+pub fn decode(bytes: Vec<u8>) -> io::Result<String> {
+    let source = String::from_utf8(bytes).map_err(io::Error::other)?;
     if source.len() as u64 > MAX_BYTES || source.contains('\0') {
         return Err(io::Error::other("Invalid Markdown text"));
     }

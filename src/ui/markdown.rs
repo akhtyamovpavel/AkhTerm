@@ -1,9 +1,21 @@
-//! Read local Markdown alongside the workspace. GTK owns the widgets for the lifetime of the window.
+//! Read Markdown alongside the workspace. GTK owns the widgets for the lifetime of the window.
 #[path = "markdown_buffer.rs"]
 mod buffer;
 #[path = "markdown_file.rs"]
 mod file;
 pub use file::accepts;
+#[path = "markdown_origin.rs"]
+mod origin;
+#[path = "markdown_quote.rs"]
+mod quote;
+#[path = "markdown_remote.rs"]
+mod remote;
+#[path = "markdown_remote_reader.rs"]
+mod remote_reader;
+#[cfg(test)]
+pub(crate) use origin::{is_current, targets};
+pub use origin::{for_vte, remote_document, Origin, RemoteDocument};
+pub use remote_reader::open_remote;
 #[cfg(test)]
 #[path = "markdown_tests.rs"]
 mod tests;
@@ -33,6 +45,11 @@ struct Reader {
     scroll: *mut GtkWidget,
     buffer: buffer::Buffer,
     path: PathBuf,
+    entry: *mut GtkWidget,
+    refresh: *mut GtkWidget,
+    remote: Option<RemoteDocument>,
+    picker: quote::Picker,
+    request: Option<u64>,
     stamp: Option<(SystemTime, u64)>,
     source: String,
     blocks: Vec<(usize, usize)>,
@@ -44,11 +61,12 @@ fn button(
     row: *mut GtkWidget,
     label: text::UiText,
     cb: extern "C" fn(*mut GtkWidget, *mut c_void),
-) {
+) -> *mut GtkWidget {
     unsafe {
         let widget = gtk_button_new_with_label(label.as_ptr());
         crate::connect_click(widget, cb, ptr::null_mut());
         gtk_box_pack_start(row, widget, 0, 0, 0);
+        widget
     }
 }
 
@@ -63,8 +81,11 @@ pub fn mount(parent: *mut GtkWidget, terminal: *mut GtkWidget) {
         let name = gtk_label_new(ptr::null());
         gtk_label_set_ellipsize(name, 3);
         gtk_box_pack_start(bar, name, 1, 1, 0);
+        let refresh = button(bar, text::MD_REFRESH, remote_reader::refresh);
+        gtk_widget_set_no_show_all(refresh, 1);
         button(bar, text::MD_CLOSE, close);
         gtk_box_pack_start(root, bar, 0, 1, 0);
+        let entry = remote_reader::mount_path(root);
         let search = gtk_search_entry_new();
         gtk_entry_set_placeholder_text(search, text::MD_SEARCH.as_ptr());
         gtk_box_pack_start(root, search, 0, 1, 0);
@@ -81,6 +102,7 @@ pub fn mount(parent: *mut GtkWidget, terminal: *mut GtkWidget) {
         button(actions, text::MD_CODE, copy_code);
         button(actions, text::MD_PASTE, paste);
         gtk_box_pack_start(root, actions, 0, 1, 0);
+        let picker = quote::Picker::mount(root);
         let scroll = gtk_scrolled_window_new(ptr::null_mut(), ptr::null_mut());
         let buffer = buffer::Buffer::new();
         gtk_container_add(scroll, buffer.view);
@@ -104,6 +126,11 @@ pub fn mount(parent: *mut GtkWidget, terminal: *mut GtkWidget) {
             scroll,
             buffer,
             path: PathBuf::new(),
+            entry,
+            refresh,
+            picker,
+            remote: None,
+            request: None,
             stamp: None,
             source: String::new(),
             blocks: Vec::new(),
@@ -116,8 +143,9 @@ extern "C" fn destroyed(_: *mut GtkWidget, _: *mut c_void) {
 }
 
 extern "C" fn close(_: *mut GtkWidget, _: *mut c_void) {
-    READER.with_borrow(|r| {
+    READER.with_borrow_mut(|r| {
         if let Some(r) = r {
+            r.request = None;
             unsafe { gtk_widget_set_visible(r.root, 0) };
         }
     });
@@ -130,6 +158,16 @@ fn stamp(path: &Path) -> Option<(SystemTime, u64)> {
 }
 
 impl Reader {
+    fn show(&self) {
+        unsafe {
+            if gtk_widget_get_visible(self.root) == 0 {
+                gtk_paned_set_position(self.pane, gtk_widget_get_allocated_width(self.pane) / 2);
+                gtk_widget_set_visible(self.root, 1);
+            }
+            gtk_widget_grab_focus(self.buffer.view);
+        }
+    }
+
     fn update(&mut self, source: String, preserve: bool) {
         let (start, end) = self.buffer.bounds();
         let adj = unsafe { gtk_scrolled_window_get_vadjustment(self.scroll) };
@@ -166,6 +204,10 @@ impl Reader {
 }
 
 pub fn open(path: &Path) {
+    open_local(path, for_vte(crate::shortcuts::active_search_vte()));
+}
+
+pub fn open_local(path: &Path, origin: Option<Origin>) {
     let observed = stamp(path);
     let source = match file::read(path) {
         Ok(text) => text,
@@ -173,7 +215,14 @@ pub fn open(path: &Path) {
     };
     READER.with_borrow_mut(|r| {
         let Some(r) = r else { return };
-        let preserve = r.path == path;
+        let preserve = r.remote.is_none() && r.path == path;
+        r.remote = None;
+        r.request = None;
+        r.picker.reset(origin.as_ref());
+        unsafe {
+            gtk_widget_set_visible(r.entry, 0);
+            gtk_widget_set_visible(r.refresh, 0);
+        }
         r.path = path.to_path_buf();
         r.stamp = observed;
         set_label_text(
@@ -182,13 +231,7 @@ pub fn open(path: &Path) {
         );
         set_tooltip(r.name, &path.to_string_lossy());
         r.update(source, preserve);
-        unsafe {
-            if gtk_widget_get_visible(r.root) == 0 {
-                gtk_paned_set_position(r.pane, gtk_widget_get_allocated_width(r.pane) / 2);
-                gtk_widget_set_visible(r.root, 1);
-            }
-            gtk_widget_grab_focus(r.buffer.view);
-        }
+        r.show();
     });
 }
 
@@ -196,6 +239,10 @@ pub fn reload() {
     READER.with_borrow_mut(|slot| {
         let Some(r) = slot else { return };
         if unsafe { gtk_widget_get_visible(r.root) } == 0 {
+            return;
+        }
+        r.picker.sync();
+        if r.remote.is_some() {
             return;
         }
         let observed = stamp(&r.path);

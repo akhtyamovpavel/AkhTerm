@@ -17,7 +17,8 @@ pub enum ContextAction {
     CopySelection(*mut GtkWidget),
     PasteSmart { sid: usize, vte: *mut GtkWidget },
     OpenLink(String),
-    PreviewMarkdown(PathBuf),
+    PreviewMarkdown(PathBuf, Option<crate::markdown::Origin>),
+    PreviewRemote(crate::markdown::RemoteDocument),
     CopyText(String),
     OpenContainingFolder(PathBuf),
     ForwardToTab { source_sid: usize, source_vte: *mut GtkWidget, target_sid: usize, selected_text: Option<String> },
@@ -198,6 +199,7 @@ pub struct VteMenuSpec {
     pub has_selection: bool,
     pub selected_text: Option<String>,
     pub link_target: Option<String>,
+    pub remote_document: Option<crate::markdown::RemoteDocument>,
     pub is_local: bool,
     pub targets: Vec<SessionTarget>,
 }
@@ -348,13 +350,18 @@ fn append_vte_link_items(menu: *mut GtkWidget, spec: &VteMenuSpec, dispatch: &Di
         return;
     };
     append_separator(menu);
+    if let Some(doc) = spec.remote_document.clone() {
+        items.push(append_bound_item(menu, text::MD_PREVIEW.as_ptr(), true, ContextAction::PreviewRemote(doc), dispatch));
+        items.push(append_bound_item(menu, text::ctx_copy_link().as_ptr(), true, ContextAction::CopyText(url.to_owned()), dispatch));
+        return;
+    }
     let open_act = ContextAction::OpenLink(url.to_owned());
     items.push(append_bound_item(menu, text::ctx_open_link().as_ptr(), true, open_act, dispatch));
     let copy_act = ContextAction::CopyText(url.to_owned());
     items.push(append_bound_item(menu, text::ctx_copy_link().as_ptr(), true, copy_act, dispatch));
     if let Some(local_path) = resolve_local_link_path(url) {
         if spec.is_local && crate::markdown::accepts(&local_path) {
-            let preview = ContextAction::PreviewMarkdown(local_path.clone());
+            let preview = ContextAction::PreviewMarkdown(local_path.clone(), crate::markdown::for_vte(spec.vte));
             items.push(append_bound_item(menu, text::MD_PREVIEW.as_ptr(), true, preview, dispatch));
         }
         let folder_act = ContextAction::OpenContainingFolder(local_path);
@@ -685,7 +692,7 @@ mod tests {
 
     fn check_remote_vte_menu(vte: *mut GtkWidget, dispatch: &DispatchFn) {
         let spec = VteMenuSpec {
-            sid: 4, vte, has_selection: false, selected_text: None, link_target: None, is_local: false, targets: Vec::new(),
+            sid: 4, vte, has_selection: false, selected_text: None, link_target: None, remote_document: None, is_local: false, targets: Vec::new(),
         };
         let built = build_vte_menu(&spec, dispatch);
         assert_eq!(built.items.len(), 7);
@@ -705,6 +712,7 @@ mod tests {
             vte,
             has_selection: true,
             selected_text: Some("ошибка".to_owned()),
+            remote_document: None,
             link_target: Some("https://example.org".to_owned()),
             is_local: true,
             targets: vec![SessionTarget { sid: 7, label: "Агент · Claude".to_owned() }],
@@ -852,6 +860,7 @@ mod tests {
             vte,
             has_selection: false,
             selected_text: None,
+            remote_document: None,
             link_target: Some(link),
             is_local: true,
             targets: Vec::new(),
