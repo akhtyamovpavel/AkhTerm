@@ -1111,3 +1111,125 @@ button.update-card-primary:hover {
     border-color: @update_accent_hover;
     color: @update_accent_fg;
 }
+
+
+/* Diff Review Panel (Dark Zinc / Light Zinc via shared color tokens) */
+.diff-review-root {
+    background-color: @sidebar_bg;
+    border-left: 1px solid @border;
+    padding: 8px;
+}
+
+.diff-review-header {
+    padding-bottom: 4px;
+    border-bottom: 1px solid @border;
+}
+
+.diff-review-title {
+    color: @text_strong;
+    font-weight: 600;
+    font-size: 12px;
+}
+
+.diff-review-meta {
+    color: @muted;
+    font-size: 11px;
+}
+
+.diff-review-files-scroll {
+    background-color: @surface;
+    border: 1px solid @border;
+    border-radius: 6px;
+}
+
+.diff-review-file-row {
+    padding: 2px 4px;
+    border-radius: 4px;
+}
+
+.diff-review-file-row.active {
+    background-color: @selected;
+}
+
+button.diff-review-file-btn {
+    background-image: none;
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+    color: @row_text;
+    font-size: 12px;
+    padding: 2px 6px;
+}
+
+button.diff-review-file-btn:hover {
+    background-color: @hover;
+    color: @text_strong;
+}
+
+.diff-review-ins {
+    color: @ready;
+    font-weight: 600;
+    font-size: 11px;
+}
+
+.diff-review-del {
+    color: @danger;
+    font-weight: 600;
+    font-size: 11px;
+}
+
+button.diff-review-mode-active {
+    background-color: @selected;
+    border-color: @selected_border;
+    color: @text_strong;
+    font-weight: 600;
+}
+
+.diff-review-view,
+.diff-review-view text {
+    background-color: @canvas;
+    color: @text;
+    font-size: 12px;
+}
+
+.diff-review-queue-scroll {
+    background-color: @surface;
+    border: 1px solid @border;
+    border-radius: 6px;
+}
+
+.diff-review-queue-row {
+    background-color: @elevated;
+    border: 1px solid @border;
+    border-radius: 4px;
+    padding: 3px 6px;
+}
+
+.diff-review-badge {
+    background-color: @control_bg;
+    border: 1px solid @badge_agent_border;
+    border-radius: 999px;
+    color: @badge_agent_fg;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 8px;
+}
+
+button.diff-review-primary {
+    background-image: none;
+    background-color: @update_accent;
+    border: 1px solid @update_accent;
+    color: @update_accent_fg;
+    font-weight: 600;
+}
+
+button.diff-review-primary:hover {
+    background-color: @update_accent_hover;
+    border-color: @update_accent_hover;
+}
+
+button.diff-review-danger {
+    color: @danger;
+    border-color: @danger_border;
+    background-color: @danger_bg;
+}

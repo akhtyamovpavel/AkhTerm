@@ -1,6 +1,8 @@
 //! AkhTerm binary entry point and GTK application bootstrap.
 
 mod app;
+#[path = "ui/diff_review.rs"]
+mod diff_review;
 #[path = "ui/markdown.rs"]
 mod markdown;
 mod swarm;
@@ -139,7 +141,9 @@ fn build_workspace_area(
         let sidebar = sidebar::Sidebar::new(hbox, session_ops::sidebar_search_cb());
         sidebar.set_new_folder_tab_handler(session_ops::new_tab_in_folder_cb());
         let term_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-        markdown::mount(hbox, term_vbox);
+        let work_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+        markdown::mount(work_hbox, term_vbox);
+        diff_review::mount(hbox, work_hbox);
         let search_bar = search_bar::SearchBar::new(shortcuts::active_search_vte, shortcuts::collect_close_search_vtes);
         gtk_box_pack_start(term_vbox, search_bar.widget(), 0, 1, 0);
         let stack = gtk_stack_new();
