@@ -10,6 +10,14 @@ pub use crate::i18n::{
 #[allow(unused_imports)]
 pub use crate::i18n::configured_locale;
 
+pub const MD_PREVIEW: UiText = UiText::new(c"Открыть рядом", c"Open alongside");
+pub const MD_RESULT: UiText = UiText::new(c"Последний Markdown в выводе", c"Last Markdown in output");
+pub const MD_CODE: UiText = UiText::new(c"Копировать блок", c"Copy code block");
+pub const MD_PASTE: UiText = UiText::new(c"Вставить выделение", c"Paste selection");
+pub const MD_SEARCH: UiText = UiText::new(c"Найти в документе", c"Find in document");
+pub const MD_CLOSE: UiText = UiText::new(c"Закрыть просмотр", c"Close preview");
+pub const MD_EMPTY: UiText = UiText::new(c"В выводе панели нет локального Markdown-файла", c"No local Markdown file found in pane output");
+pub const MD_BLOCK_HINT: UiText = UiText::new(c"Поставь курсор внутрь блока кода", c"Place the cursor in a fenced code block");
 pub const APP_NAME: &CStr = c"AkhTerm";
 pub const PROFILES: &CStr = c"Профили / SSH ▾";
 pub const SERVERS: &CStr = c"Серверы ▾";
