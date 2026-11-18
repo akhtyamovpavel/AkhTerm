@@ -1134,8 +1134,9 @@ fn status_for(session: &TermSession) -> (&'static CStr, &'static str) {
             (c"Нет связи", "sidebar-ended")
         }
         _ if session.active_pid() == 0 => (c"Завершена", "sidebar-ended"),
+        _ if session.pane_registry.has_hook_error() => (text::STATUS_ERROR.cstr(), "sidebar-approval"),
         _ if session.state == WorkState::NeedsApproval => (text::STATUS_APPROVAL, "sidebar-approval"),
-        _ if session.unread => (c"Готово", "sidebar-ready"),
+        _ if session.unread || session.state == WorkState::Ready => (c"Готово", "sidebar-ready"),
         SessionCategory::Daemon => (c"Онлайн", "sidebar-working"),
         _ if session.state == WorkState::Working => (c"В работе", "sidebar-working"),
         _ => (c"", ""),

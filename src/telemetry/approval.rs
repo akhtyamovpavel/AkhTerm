@@ -1,6 +1,7 @@
 //! Agent approval prompt detection, next-attention tab cycling, and unfocused notifications.
 
 use std::ffi::{c_uint, c_void, CStr};
+#[cfg(test)]
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -306,23 +307,29 @@ pub fn can_notify_session(last_notified: Option<Instant>, now: Instant) -> bool 
     last_notified.is_none_or(|prev| now.saturating_duration_since(prev) >= NOTIFY_COOLDOWN)
 }
 
+#[cfg(test)]
 pub fn run_notify_command(program: &str, summary: &str, body: &str) -> bool {
     crate::platform::build_notify_command(program, summary, body)
         .status()
         .is_ok_and(|st| st.success())
 }
 
-pub fn spawn_desktop_notification(needs_approval: bool, tab_title: &str) {
+pub fn spawn_desktop_notification_for_pane(
+    needs_approval: bool,
+    tab_title: &str,
+    pane_id: Option<&str>,
+) {
     let summary_c = if needs_approval {
         text::NOTIFY_APPROVAL_TITLE
     } else {
         text::NOTIFY_READY_TITLE
     };
     let summary = summary_c.to_string_lossy().into_owned();
-    let body = tab_title.to_owned();
-    thread::spawn(move || {
-        let _ = run_notify_command("notify-send", &summary, &body);
-    });
+    crate::platform::spawn_clickable_notification(
+        summary,
+        tab_title.to_owned(),
+        pane_id.map(str::to_owned),
+    );
 }
 
 pub fn sync_window_focus_urgency(win: *mut GtkWidget) -> bool {
@@ -349,6 +356,7 @@ fn apply_settled_state(session: &mut TermSession, classified: WorkState, active_
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn maybe_notify_background_event(
     classified: WorkState,
     work_span: Duration,
@@ -358,6 +366,22 @@ pub fn maybe_notify_background_event(
     win: *mut GtkWidget,
     window_active: bool,
 ) {
+    maybe_notify_background_event_for_pane(
+        classified, work_span, title, last_notified, now, win, window_active, None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn maybe_notify_background_event_for_pane(
+    classified: WorkState,
+    work_span: Duration,
+    title: &str,
+    last_notified: &mut Option<Instant>,
+    now: Instant,
+    win: *mut GtkWidget,
+    window_active: bool,
+    pane_id: Option<&str>,
+) {
     if !should_notify_background(window_active, classified, work_span) {
         return;
     }
@@ -366,7 +390,7 @@ pub fn maybe_notify_background_event(
     }
     if can_notify_session(*last_notified, now) {
         *last_notified = Some(now);
-        spawn_desktop_notification(classified.needs_approval(), title);
+        spawn_desktop_notification_for_pane(classified.needs_approval(), title, pane_id);
     }
 }
 

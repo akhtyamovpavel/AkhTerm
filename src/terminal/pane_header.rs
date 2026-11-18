@@ -28,6 +28,11 @@ const PANE_HEADER_CSS: &str = "\
 .pane-header-bar.pane-header-active { background-color: #202026; border-bottom-color: #3f3f46; color: #e4e4e7; }\n\
 .pane-header-bar.pane-header-zoomed { border-bottom-color: #7c3aed; }\n\
 .pane-header-agent { font-weight: 600; color: #e4e4e7; }\n\
+.pane-header-dot { font-size: 9px; margin-right: 2px; }\n\
+.pane-dot-working { color: #60a5fa; }\n\
+.pane-dot-waiting { color: #f59e0b; }\n\
+.pane-dot-done { color: #34d399; }\n\
+.pane-dot-error { color: #f87171; }\n\
 .pane-header-cwd { color: #a1a1aa; }\n\
 .pane-header-status { color: #a1a1aa; }\n\
 .pane-header-ctx { color: #60a5fa; font-weight: 600; }\n\
@@ -50,12 +55,14 @@ pub struct PaneHeaderState {
     pub ctx_badge: String,
     pub active: bool,
     pub zoomed: bool,
+    pub status_dot: Option<&'static str>,
 }
 
 #[derive(Clone, Copy)]
 pub struct PaneHeader {
     pub container: *mut GtkWidget,
     pub bar: *mut GtkWidget,
+    dot_label: *mut GtkWidget,
     agent_label: *mut GtkWidget,
     cwd_label: *mut GtkWidget,
     status_label: *mut GtkWidget,
@@ -137,7 +144,34 @@ fn set_label_str(label: *mut GtkWidget, text: &str) {
     unsafe { gtk_label_set_text(label as *mut GtkLabel, c_text.as_ptr()) };
 }
 
+fn make_dot_label() -> *mut GtkWidget {
+    unsafe {
+        let lbl = gtk_label_new(c"●".as_ptr());
+        add_css_class(lbl, c"pane-header-dot");
+        gtk_widget_set_no_show_all(lbl, 1);
+        gtk_widget_set_visible(lbl, 0);
+        lbl
+    }
+}
+
+fn sync_dot_label(dot: *mut GtkWidget, class: Option<&'static str>) {
+    if dot.is_null() {
+        return;
+    }
+    let classes = [
+        ("pane-dot-working", c"pane-dot-working"),
+        ("pane-dot-waiting", c"pane-dot-waiting"),
+        ("pane-dot-done", c"pane-dot-done"),
+        ("pane-dot-error", c"pane-dot-error"),
+    ];
+    for (name, c_name) in classes {
+        set_css_class(dot, c_name, class == Some(name));
+    }
+    unsafe { gtk_widget_set_visible(dot, c_int::from(class.is_some())) };
+}
+
 fn build_bar(
+    dot: *mut GtkWidget,
     agent: *mut GtkWidget,
     cwd: *mut GtkWidget,
     status: *mut GtkWidget,
@@ -148,6 +182,7 @@ fn build_bar(
         let bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
         gtk_widget_set_size_request(bar, -1, PANE_HEADER_HEIGHT_PX);
         add_css_class(bar, c"pane-header-bar");
+        gtk_box_pack_start(bar as *mut GtkBox, dot, 0, 0, 0);
         gtk_box_pack_start(bar as *mut GtkBox, agent, 0, 0, 0);
         gtk_box_pack_start(bar as *mut GtkBox, cwd, 1, 1, 0);
         gtk_box_pack_end(bar as *mut GtkBox, close, 0, 0, 0);
@@ -174,14 +209,15 @@ fn wrap_header_vbox(bar: *mut GtkWidget, scroll: *mut GtkWidget) -> *mut GtkWidg
 impl PaneHeader {
     pub fn wrap(scroll: *mut GtkWidget, vte: *mut GtkWidget) -> Self {
         ensure_pane_header_css();
+        let dot_label = make_dot_label();
         let agent_label = make_header_label(c"pane-header-agent", PANGO_ELLIPSIZE_END);
         let cwd_label = make_header_label(c"pane-header-cwd", PANGO_ELLIPSIZE_MIDDLE);
         let status_label = make_header_label(c"pane-header-status", PANGO_ELLIPSIZE_END);
         let ctx_label = make_header_label(c"pane-header-ctx", PANGO_ELLIPSIZE_END);
         let close = make_close_button(vte);
-        let bar = build_bar(agent_label, cwd_label, status_label, ctx_label, close);
+        let bar = build_bar(dot_label, agent_label, cwd_label, status_label, ctx_label, close);
         let container = wrap_header_vbox(bar, scroll);
-        Self { container, bar, agent_label, cwd_label, status_label, ctx_label }
+        Self { container, bar, dot_label, agent_label, cwd_label, status_label, ctx_label }
     }
 
     #[cfg(test)]
@@ -189,6 +225,7 @@ impl PaneHeader {
         Self {
             container: ptr::null_mut(),
             bar: ptr::null_mut(),
+            dot_label: ptr::null_mut(),
             agent_label: ptr::null_mut(),
             cwd_label: ptr::null_mut(),
             status_label: ptr::null_mut(),
@@ -207,6 +244,7 @@ impl PaneHeader {
     }
 
     pub fn update(&self, state: &PaneHeaderState, visible: bool) {
+        sync_dot_label(self.dot_label, state.status_dot);
         set_label_str(self.agent_label, &format_agent_title(state));
         set_label_str(self.cwd_label, &format_short_cwd(&state.cwd));
         set_label_str(
@@ -342,6 +380,7 @@ mod tests {
             ctx_badge: "12k".into(),
             active: true,
             zoomed: true,
+            status_dot: Some("pane-dot-working"),
         }
     }
 
