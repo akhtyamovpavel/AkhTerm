@@ -735,7 +735,10 @@ fn sync_localized_chrome() {
         (btns[8], None, Some(text::i18n_text::tokens_tip())),
     ];
     specs.into_iter().for_each(|(b, l, t)| set_btn_text_and_tip(b, l, t));
-    app_state::with_app(|app| app.update_banner.refresh_locale());
+    app_state::with_app(|app| {
+        app.update_banner.refresh_locale();
+        app.sys_monitor.refresh_locale();
+    });
 }
 
 fn collect_app_vtes(app: &AppState) -> Vec<*mut GtkWidget> {

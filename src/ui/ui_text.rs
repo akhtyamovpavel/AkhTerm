@@ -491,6 +491,47 @@ pub mod i18n_text {
     pub fn sidebar_tmux_prefix() -> &'static str { SIDEBAR_TMUX_PREFIX.as_str() }
     pub const SIDEBAR_FOLDER_NEW_TAB_TIP: UiText = UiText::new(c"Новая локальная вкладка в этой папке", c"New local tab in this folder");
     pub fn sidebar_folder_new_tab_tip() -> &'static CStr { SIDEBAR_FOLDER_NEW_TAB_TIP.cstr() }
+
+    pub const SYS_MON_TIP: UiText = UiText::new(c"Системный монитор: CPU, RAM и питание", c"System monitor: CPU, RAM and power");
+    pub fn sys_mon_tip() -> &'static CStr { SYS_MON_TIP.cstr() }
+    pub const SYS_MON_TITLE: UiText = UiText::new(c"Системный монитор", c"System Monitor");
+    pub fn sys_mon_title() -> &'static CStr { SYS_MON_TITLE.cstr() }
+    pub const SYS_MON_CPU: UiText = UiText::new(c"CPU", c"CPU");
+    pub fn sys_mon_cpu() -> &'static CStr { SYS_MON_CPU.cstr() }
+    pub const SYS_MON_CPU_DETAIL: UiText = UiText::new(c"Профиль", c"Breakdown");
+    pub fn sys_mon_cpu_detail() -> &'static CStr { SYS_MON_CPU_DETAIL.cstr() }
+    pub const SYS_MON_LOAD: UiText = UiText::new(c"Нагрузка (1/5/15м)", c"Load avg (1/5/15m)");
+    pub fn sys_mon_load() -> &'static CStr { SYS_MON_LOAD.cstr() }
+    pub const SYS_MON_RAM: UiText = UiText::new(c"RAM", c"RAM");
+    pub fn sys_mon_ram() -> &'static CStr { SYS_MON_RAM.cstr() }
+    pub const SYS_MON_SWAP: UiText = UiText::new(c"Swap", c"Swap");
+    pub fn sys_mon_swap() -> &'static CStr { SYS_MON_SWAP.cstr() }
+    pub const SYS_MON_SWAP_OFF: UiText = UiText::new(c"Отключён", c"Off");
+    pub fn sys_mon_swap_off() -> &'static str { SYS_MON_SWAP_OFF.as_str() }
+    pub const SYS_MON_TAB_RSS: UiText = UiText::new(c"Память вкладки", c"Tab RSS");
+    pub fn sys_mon_tab_rss() -> &'static CStr { SYS_MON_TAB_RSS.cstr() }
+    pub const SYS_MON_BATTERY: UiText = UiText::new(c"Батарея", c"Battery");
+    pub fn sys_mon_battery() -> &'static CStr { SYS_MON_BATTERY.cstr() }
+    pub const SYS_MON_POWER: UiText = UiText::new(c"Мощность", c"Power draw");
+    pub fn sys_mon_power() -> &'static CStr { SYS_MON_POWER.cstr() }
+    pub const SYS_MON_ETA_LEFT: UiText = UiText::new(c"Осталось", c"Remaining");
+    pub fn sys_mon_eta_left() -> &'static CStr { SYS_MON_ETA_LEFT.cstr() }
+    pub const SYS_MON_ETA_FULL: UiText = UiText::new(c"До заряда", c"To full");
+    pub fn sys_mon_eta_full() -> &'static CStr { SYS_MON_ETA_FULL.cstr() }
+    pub const SYS_MON_HEALTH: UiText = UiText::new(c"Здоровье", c"Health");
+    pub fn sys_mon_health() -> &'static CStr { SYS_MON_HEALTH.cstr() }
+    pub const SYS_MON_AC_ONLY: UiText = UiText::new(c"Сеть / нет батареи", c"AC / No battery");
+    pub fn sys_mon_ac_only() -> &'static str { SYS_MON_AC_ONLY.as_str() }
+    pub const SYS_MON_BAT_DISCHARGING: UiText = UiText::new(c"Разрядка", c"Discharging");
+    pub fn sys_mon_bat_discharging() -> &'static str { SYS_MON_BAT_DISCHARGING.as_str() }
+    pub const SYS_MON_BAT_CHARGING: UiText = UiText::new(c"Зарядка", c"Charging");
+    pub fn sys_mon_bat_charging() -> &'static str { SYS_MON_BAT_CHARGING.as_str() }
+    pub const SYS_MON_BAT_FULL: UiText = UiText::new(c"Заряжена", c"Full");
+    pub fn sys_mon_bat_full() -> &'static str { SYS_MON_BAT_FULL.as_str() }
+    pub const SYS_MON_BAT_NOT_CHARGING: UiText = UiText::new(c"От сети", c"Not charging");
+    pub fn sys_mon_bat_not_charging() -> &'static str { SYS_MON_BAT_NOT_CHARGING.as_str() }
+    pub const SYS_MON_BAT_UNKNOWN: UiText = UiText::new(c"Нет данных", c"Unknown");
+    pub fn sys_mon_bat_unknown() -> &'static str { SYS_MON_BAT_UNKNOWN.as_str() }
 }
 
 pub use i18n_text::*;
@@ -591,10 +632,26 @@ mod tests {
         }
     }
 
+    fn verify_sys_monitor_pairs() {
+        for entry in [
+            i18n_text::SYS_MON_TIP, i18n_text::SYS_MON_TITLE, i18n_text::SYS_MON_CPU,
+            i18n_text::SYS_MON_CPU_DETAIL, i18n_text::SYS_MON_LOAD, i18n_text::SYS_MON_RAM,
+            i18n_text::SYS_MON_SWAP, i18n_text::SYS_MON_SWAP_OFF, i18n_text::SYS_MON_TAB_RSS,
+            i18n_text::SYS_MON_BATTERY, i18n_text::SYS_MON_POWER, i18n_text::SYS_MON_ETA_LEFT,
+            i18n_text::SYS_MON_ETA_FULL, i18n_text::SYS_MON_HEALTH, i18n_text::SYS_MON_AC_ONLY,
+            i18n_text::SYS_MON_BAT_DISCHARGING, i18n_text::SYS_MON_BAT_CHARGING,
+            i18n_text::SYS_MON_BAT_FULL, i18n_text::SYS_MON_BAT_NOT_CHARGING,
+            i18n_text::SYS_MON_BAT_UNKNOWN,
+        ] {
+            assert_pair_valid(entry);
+        }
+    }
+
     #[test]
     fn every_ui_text_entry_has_valid_non_empty_ru_and_en_strings() {
         verify_core_and_palette_pairs();
         verify_tools_context_and_dialog_pairs();
+        verify_sys_monitor_pairs();
     }
 
     #[test]

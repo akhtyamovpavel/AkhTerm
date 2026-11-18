@@ -81,7 +81,9 @@ pub const LIGHT_ZINC_TOKENS: &str = "\
 @define-color update_accent_hover #1d4ed8;\n\
 @define-color update_accent_fg #ffffff;\n\
 @define-color update_link #1d4ed8;\n\
-@define-color update_shadow rgba(9, 9, 11, 0.14);\n";
+@define-color update_shadow rgba(9, 9, 11, 0.14);\n\
+@define-color sys_mon_bg #f4f4f5;\n\
+@define-color sys_mon_fg #27272a;\n";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ThemeMode {
