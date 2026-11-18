@@ -969,8 +969,7 @@ fn make_context_dispatcher() -> DispatchFn {
 
 fn build_vte_menu_spec(
     vte: *mut GtkWidget,
-    link_target: Option<String>,
-    remote_document: Option<crate::markdown::RemoteDocument>,
+    link_target: Option<session::VteLink>,
 ) -> Option<context_menu::VteMenuSpec> {
     let has_selection = context_menu::has_vte_selection(vte);
     let selected_text = has_selection.then(|| context_menu::read_vte_selection(vte)).flatten();
@@ -981,7 +980,7 @@ fn build_vte_menu_spec(
         let is_local = true;
         let targets = collect_forward_targets(app, sid);
         Some(context_menu::VteMenuSpec {
-            sid, vte, has_selection, selected_text, link_target, remote_document, is_local, targets,
+            sid, vte, has_selection, selected_text, link_target, is_local, targets,
         })
     })
     .flatten()
@@ -990,10 +989,9 @@ fn build_vte_menu_spec(
 pub(crate) fn open_vte_context_menu(
     vte: *mut GtkWidget,
     event: *const GdkEvent,
-    link_target: Option<String>,
-    remote_document: Option<crate::markdown::RemoteDocument>,
+    link_target: Option<session::VteLink>,
 ) {
-    if let Some(spec) = build_vte_menu_spec(vte, link_target, remote_document) {
+    if let Some(spec) = build_vte_menu_spec(vte, link_target) {
         context_menu::popup_vte_menu(&spec, event, make_context_dispatcher());
     }
 }

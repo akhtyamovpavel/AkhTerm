@@ -359,7 +359,7 @@ fn clean_local_osc_title(clean: &str) -> String {
 
 #[path = "event_link.rs"]
 mod event_link;
-pub use event_link::{register_link_cwd_lookup, register_vte_menu_hook, LinkCwd};
+pub use event_link::{register_link_cwd_lookup, register_vte_menu_hook, LinkCwd, VteLink};
 use event_link::register_vte_url_matches;
 #[cfg(test)]
 use event_link::{check_vte_event_link, handle_vte_left_click, on_vte_button_press, should_open_vte_link, take_c_string, URL_PATTERNS};

@@ -172,10 +172,14 @@ fn late_remote_result_cannot_replace_the_new_document_or_reopen_a_closed_preview
 
 #[test]
 fn local_and_ssh_reads_enforce_the_same_text_limit() {
-    assert!(file::decode(vec![b'x'; file::MAX_BYTES as usize]).is_ok());
-    assert!(file::decode(vec![b'x'; file::MAX_BYTES as usize + 1]).is_err());
-    assert!(file::decode(vec![0xff]).is_err());
-    assert!(file::decode(vec![b'x', 0]).is_err());
+    use std::io::{repeat, Read};
+    let limit = file::MAX_BYTES;
+    assert!(file::read_text(repeat(b'x').take(limit)).is_ok());
+    let mut oversized = repeat(b'x').take(limit + 20);
+    assert!(file::read_text(&mut oversized).is_err());
+    assert_eq!(oversized.limit(), 19);
+    assert!(file::read_text(&[0xff][..]).is_err());
+    assert!(file::read_text(&b"x\0"[..]).is_err());
 }
 
 #[test]

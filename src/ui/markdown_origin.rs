@@ -28,15 +28,20 @@ impl Origin {
     }
 }
 
-pub fn for_vte(vte: *mut GtkWidget) -> Option<Origin> {
+fn inspect_pane<T>(
+    vte: *mut GtkWidget,
+    inspect: impl FnOnce(&TermSession, &PaneRecord, &ProcInfo) -> Option<T>,
+) -> Option<T> {
     app_state::with_app(|app| {
-        let p = app
-            .sessions
-            .iter()
-            .find_map(|s| s.pane_registry.by_vte(vte))?;
-        Some(Origin::new(p, &proc_radar::inspect_proc_tree(p.child_pid)))
-    })
-    .flatten()
+        let session = app.sessions.iter().find(|s| s.has_vte(vte))?;
+        let pane = session.pane_registry.by_vte(vte)?;
+        let live = proc_radar::inspect_proc_tree(pane.child_pid);
+        inspect(session, pane, &live)
+    })?
+}
+
+pub fn for_vte(vte: *mut GtkWidget) -> Option<Origin> {
+    inspect_pane(vte, |_, pane, live| Some(Origin::new(pane, live)))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,29 +54,32 @@ pub struct RemoteDocument {
 
 pub fn remote_document(vte: *mut GtkWidget, raw: &str) -> Option<RemoteDocument> {
     let path = remote::candidate(raw)?;
-    app_state::with_app(|app| {
-        let session = app.sessions.iter().find(|s| s.has_vte(vte))?;
-        let p = session.pane_registry.by_vte(vte)?;
-        let info = proc_radar::inspect_proc_tree(p.child_pid);
-        let profile = session
-            .panes
-            .remote_for_vte(vte, session.scroll_wrap, session.vte)
-            .or_else(|| (session.vte == vte).then(|| session.remote()).flatten());
-        let host = if info.ssh_host.is_empty() {
-            profile?.host.clone()
-        } else {
-            info.ssh_host.clone()
-        };
+    inspect_pane(vte, |session, p, info| {
+        let host = document_host(session, vte, info)?.to_owned();
         let title = crate::session_ops::read_vte_window_title(vte).unwrap_or_default();
-        let cwd = remote_directory(p, &info, &title);
+        let cwd = remote_directory(p, info, &title);
         Some(RemoteDocument {
-            origin: Origin::new(p, &info),
+            origin: Origin::new(p, info),
             connection: Connection::from_client(info.ssh_pid, &host),
             host,
             path: remote::resolve(&path, cwd).unwrap_or(path),
         })
     })
-    .flatten()
+}
+
+fn document_host<'a>(
+    session: &'a TermSession,
+    vte: *mut GtkWidget,
+    info: &'a ProcInfo,
+) -> Option<&'a str> {
+    if !info.ssh_host.is_empty() {
+        return Some(&info.ssh_host);
+    }
+    let profile = session
+        .panes
+        .remote_for_vte(vte, session.scroll_wrap, session.vte);
+    let primary = (vte == session.vte).then(|| session.remote()).flatten();
+    Some(&profile.or(primary)?.host)
 }
 
 pub(super) fn remote_directory<'a>(
@@ -94,6 +102,8 @@ pub(super) fn remote_directory<'a>(
         .map(|(_, cwd)| Path::new(cwd))
 }
 
+type RemoteDelivery = (Connection, TmuxAddress);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
     pub origin: Origin,
@@ -101,82 +111,61 @@ pub struct Target {
     pub vte: *mut GtkWidget,
     pub label: String,
     foreground_group: i32,
-    pub delivery: Option<(Connection, TmuxAddress)>,
+    pub delivery: Option<RemoteDelivery>,
 }
 
 impl Target {
-    fn for_pane(s: &TermSession, p: &PaneRecord, live: bool) -> Option<Self> {
-        if p.child_pid <= 0 {
+    fn for_pane(s: &TermSession, pane: &PaneRecord, info: &ProcInfo) -> Option<Self> {
+        if pane.child_pid <= 0 || info.foreground_shell {
             return None;
         }
-        let fresh;
-        let info = if live {
-            fresh = proc_radar::inspect_proc_tree(p.child_pid);
-            &fresh
-        } else {
-            &p.proc_info
-        };
-        let remote = info.ssh_pid > 0;
-        if info.shell_owns_pane(if remote { p.remote_tmux.as_ref() } else { None }) {
-            return None;
-        }
-        let agent = if remote {
-            if info.ssh_pid != p.proc_info.ssh_pid || p.tmux_pane.is_none() {
-                return None;
-            }
-            if !crate::tmux_local::title_matches_pane(
-                &crate::session_ops::read_vte_window_title(p.vte)?,
-                p,
-            ) {
-                return None;
-            }
-            crate::session::detect_agent_name(&p.remote_tmux.as_ref()?.2)?
+        let (agent, location, delivery) = if info.ssh_pid > 0 {
+            let (agent, address) = remote_agent(pane, info)?;
+            (agent, info.ssh_host.as_str(), Some(address))
         } else {
             if info.agent.is_empty() {
                 return None;
             }
-            &info.agent
+            (info.agent.as_str(), s.base_title.as_str(), None)
         };
-        let origin = Origin::new(p, info);
-        let location = if remote {
-            &info.ssh_host
-        } else {
-            &s.base_title
-        };
-        let which = p
+        let which = pane
             .tmux_pane
             .clone()
-            .unwrap_or_else(|| format!("#{}", p.id.0));
-        let group_pid = if info.active_pane_pid > 0 {
-            info.active_pane_pid
-        } else {
-            p.child_pid
-        };
-        let foreground_group = proc_radar::read_proc_groups(group_pid)?.1;
-        if foreground_group <= 0 {
-            return None;
-        }
-        let delivery = if remote {
-            Some((
-                Connection::from_client(info.ssh_pid, &info.ssh_host)?,
-                TmuxAddress::new(
-                    p.tmux_server?,
-                    p.tmux_pane.as_deref()?,
-                    &p.remote_tmux.as_ref()?.2,
-                )?,
-            ))
-        } else {
-            None
-        };
+            .unwrap_or_else(|| format!("#{}", pane.id.0));
         Some(Self {
-            delivery,
-            origin,
+            origin: Origin::new(pane, info),
             sid: s.id,
-            vte: p.vte,
+            vte: pane.vte,
             label: format!("{agent} · {location} · {} · {which}", s.id),
-            foreground_group,
+            foreground_group: foreground_group(info, pane.child_pid)?,
+            delivery,
         })
     }
+}
+
+fn foreground_group(info: &ProcInfo, child_pid: i32) -> Option<i32> {
+    let pid = if info.active_pane_pid > 0 {
+        info.active_pane_pid
+    } else {
+        child_pid
+    };
+    let (_, group) = proc_radar::read_proc_groups(pid)?;
+    (group > 0).then_some(group)
+}
+
+fn remote_agent(pane: &PaneRecord, info: &ProcInfo) -> Option<(&'static str, RemoteDelivery)> {
+    if info.ssh_pid != pane.proc_info.ssh_pid || info.shell_owns_pane(pane.remote_tmux.as_ref()) {
+        return None;
+    }
+    let title = crate::session_ops::read_vte_window_title(pane.vte)?;
+    if !crate::tmux_local::title_matches_pane(&title, pane) {
+        return None;
+    }
+    let cmd = &pane.remote_tmux.as_ref()?.2;
+    let agent = crate::session::detect_agent_name(cmd)?;
+    let address = TmuxAddress::new(pane.tmux_server?, pane.tmux_pane.as_deref()?, cmd)?;
+    let connection = Connection::from_client(info.ssh_pid, &info.ssh_host)?;
+    Some((agent, (connection, address)))
 }
 
 pub fn targets() -> Vec<Target> {
@@ -187,7 +176,7 @@ pub fn targets() -> Vec<Target> {
                 s.pane_registry
                     .panes()
                     .iter()
-                    .filter_map(move |p| Target::for_pane(s, p, false))
+                    .filter_map(move |p| Target::for_pane(s, p, &p.proc_info))
             })
             .collect()
     })
@@ -196,12 +185,5 @@ pub fn targets() -> Vec<Target> {
 
 pub fn is_current(target: &Target) -> bool {
     crate::tmux_local::invalidate_client_cache();
-    app_state::with_app(|app| {
-        let session = app.sessions.iter().find(|s| s.id == target.sid)?;
-        let pane = session.pane_registry.by_vte(target.vte)?;
-        Target::for_pane(session, pane, true)
-    })
-    .flatten()
-    .as_ref()
-        == Some(target)
+    inspect_pane(target.vte, Target::for_pane).as_ref() == Some(target)
 }

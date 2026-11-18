@@ -16,29 +16,40 @@ pub(super) fn take_c_string(ptr: *mut c_char) -> Option<String> {
     Some(text)
 }
 
-fn event_target(
-    vte: *mut GtkWidget,
-    event: *const GdkEvent,
-    cwd: Option<&str>,
-) -> Option<(String, Option<markdown::RemoteDocument>)> {
+pub struct VteLink {
+    pub url: String,
+    pub document: Option<markdown::RemoteDocument>,
+}
+
+impl VteLink {
+    fn resolve(vte: *mut GtkWidget, raw: String, cwd: Option<&str>) -> Option<Self> {
+        let document = markdown::remote_document(vte, &raw);
+        let url = match document {
+            Some(_) => raw,
+            None => resolve_link_target(&raw, cwd)?,
+        };
+        Some(Self { url, document })
+    }
+
+    fn open(self) {
+        match self.document {
+            Some(doc) => markdown::open_remote(doc),
+            None => open_external_link(&self.url),
+        }
+    }
+}
+
+fn event_target(vte: *mut GtkWidget, event: *const GdkEvent, cwd: Option<&str>) -> Option<VteLink> {
     if vte.is_null() || event.is_null() {
         return None;
     }
-    let resolve = |raw: String| {
-        if let Some(doc) = markdown::remote_document(vte, &raw) {
-            return Some((raw, Some(doc)));
-        }
-        resolve_link_target(&raw, cwd).map(|target| (target, None))
-    };
-    unsafe {
-        take_c_string(vte_terminal_hyperlink_check_event(vte, event))
-            .and_then(&resolve)
-            .or_else(|| {
-                let mut tag = -1;
-                take_c_string(vte_terminal_match_check_event(vte, event, &mut tag))
-                    .and_then(resolve)
-            })
-    }
+    let resolve = |raw| VteLink::resolve(vte, raw, cwd);
+    let hyperlink = unsafe { take_c_string(vte_terminal_hyperlink_check_event(vte, event)) };
+    hyperlink.and_then(resolve).or_else(|| {
+        let mut tag = -1;
+        let matched = unsafe { vte_terminal_match_check_event(vte, event, &mut tag) };
+        take_c_string(matched).and_then(resolve)
+    })
 }
 
 #[cfg(test)]
@@ -47,7 +58,7 @@ pub(super) fn check_vte_event_link(
     event: *const GdkEvent,
     cwd: Option<&str>,
 ) -> Option<String> {
-    event_target(vte, event, cwd).map(|(target, _)| target)
+    event_target(vte, event, cwd).map(|link| link.url)
 }
 
 pub(super) const URL_PATTERNS: &[&str] = &[
@@ -93,8 +104,7 @@ struct VteLinkCtx {
     fallback_cwd: String,
 }
 
-pub type VteMenuHook =
-    fn(*mut GtkWidget, *const GdkEvent, Option<String>, Option<crate::markdown::RemoteDocument>);
+pub type VteMenuHook = fn(*mut GtkWidget, *const GdkEvent, Option<VteLink>);
 
 thread_local! {
     static LINK_CWD_FN: Cell<Option<fn(*mut GtkWidget) -> LinkCwd>> = const { Cell::new(None) };
@@ -134,10 +144,9 @@ fn resolve_vte_cwd(vte: *mut GtkWidget, user_data: *mut c_void) -> Option<String
 fn handle_vte_right_click(
     vte: *mut GtkWidget,
     event: *const GdkEvent,
+    state: u32,
     user_data: *mut c_void,
 ) -> c_int {
-    let mut state: u32 = 0;
-    unsafe { gdk_event_get_state(event, &mut state) };
     if crate::context_menu::should_passthrough_vte_click(3, state) {
         return 0;
     }
@@ -145,18 +154,12 @@ fn handle_vte_right_click(
         return 0;
     };
     let cwd = resolve_vte_cwd(vte, user_data);
-    let (link, doc) = event_target(vte, event, cwd.as_deref()).unzip();
-    hook(vte, event, link, doc.flatten());
+    hook(vte, event, event_target(vte, event, cwd.as_deref()));
     1
 }
 
 pub fn should_open_vte_link(button: u32, state: u32) -> bool {
-    if button != 1 {
-        return false;
-    }
-    let ctrl_held = (state & GDK_CONTROL_MASK) != 0;
-    let no_alt = (state & GDK_MOD1_MASK) == 0;
-    ctrl_held && no_alt
+    button == 1 && state & GDK_CONTROL_MASK != 0 && state & GDK_MOD1_MASK == 0
 }
 
 pub(super) fn handle_vte_left_click(
@@ -169,11 +172,10 @@ pub(super) fn handle_vte_left_click(
         return 0;
     }
     let cwd = resolve_vte_cwd(vte, user_data);
-    match event_target(vte, event, cwd.as_deref()) {
-        Some((_, Some(doc))) => markdown::open_remote(doc),
-        Some((target, None)) => open_external_link(&target),
-        None => return 0,
-    }
+    let Some(link) = event_target(vte, event, cwd.as_deref()) else {
+        return 0;
+    };
+    link.open();
     1
 }
 
@@ -195,7 +197,7 @@ pub(super) extern "C" fn on_vte_button_press(
     unsafe { gdk_event_get_state(event, &mut state) };
     match button {
         1 => handle_vte_left_click(vte, event, state, user_data),
-        3 => handle_vte_right_click(vte, event, user_data),
+        3 => handle_vte_right_click(vte, event, state, user_data),
         _ => 0,
     }
 }

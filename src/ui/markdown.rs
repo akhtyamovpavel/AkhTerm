@@ -12,9 +12,9 @@ mod quote;
 mod remote;
 #[path = "markdown_remote_reader.rs"]
 mod remote_reader;
+pub use origin::{for_vte, remote_document, Origin, RemoteDocument};
 #[cfg(test)]
 pub(crate) use origin::{is_current, targets};
-pub use origin::{for_vte, remote_document, Origin, RemoteDocument};
 pub use remote_reader::open_remote;
 #[cfg(test)]
 #[path = "markdown_tests.rs"]
@@ -57,6 +57,33 @@ struct Reader {
 
 thread_local! { static READER: RefCell<Option<Reader>> = const { RefCell::new(None) }; }
 
+// GTK calls the closure once on its main thread, taking ownership of the box.
+fn on_gtk_idle<F: FnOnce() + Send + 'static>(callback: F) {
+    extern "C" fn invoke<F: FnOnce()>(data: *mut c_void) -> c_int {
+        let callback = unsafe { Box::from_raw(data.cast::<F>()) };
+        callback();
+        0
+    }
+    let data = Box::into_raw(Box::new(callback));
+    unsafe { g_idle_add(invoke::<F>, data.cast()) };
+}
+
+fn connect_entry_activate(
+    entry: *mut GtkWidget,
+    callback: extern "C" fn(*mut GtkWidget, *mut c_void),
+) {
+    unsafe {
+        g_signal_connect_data(
+            entry,
+            c"activate".as_ptr(),
+            callback as *const c_void,
+            ptr::null_mut(),
+            ptr::null(),
+            0,
+        );
+    }
+}
+
 fn button(
     row: *mut GtkWidget,
     label: text::UiText,
@@ -90,14 +117,7 @@ pub fn mount(parent: *mut GtkWidget, terminal: *mut GtkWidget) {
         gtk_entry_set_placeholder_text(search, text::MD_SEARCH.as_ptr());
         gtk_box_pack_start(root, search, 0, 1, 0);
         crate::connect_entry_changed(search, search_changed);
-        g_signal_connect_data(
-            search,
-            c"activate".as_ptr(),
-            search_next as *const c_void,
-            ptr::null_mut(),
-            ptr::null(),
-            0,
-        );
+        connect_entry_activate(search, search_next);
         let actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
         button(actions, text::MD_CODE, copy_code);
         button(actions, text::MD_PASTE, paste);
@@ -159,7 +179,18 @@ fn stamp(path: &Path) -> Option<(SystemTime, u64)> {
 
 impl Reader {
     fn show(&self) {
+        let full_path = self.path.to_string_lossy();
+        let short_name = self.path.file_name().unwrap_or_default().to_string_lossy();
+        let title = self
+            .remote
+            .as_ref()
+            .map(|doc| format!("{} · {full_path}", doc.host));
+        set_label_text(self.name, title.as_deref().unwrap_or(&short_name));
+        set_tooltip(self.name, title.as_deref().unwrap_or(&full_path));
+        let remote = self.remote.is_some();
         unsafe {
+            gtk_widget_set_visible(self.refresh, i32::from(remote));
+            gtk_widget_set_visible(self.entry, i32::from(remote && !self.path.is_absolute()));
             if gtk_widget_get_visible(self.root) == 0 {
                 gtk_paned_set_position(self.pane, gtk_widget_get_allocated_width(self.pane) / 2);
                 gtk_widget_set_visible(self.root, 1);
@@ -219,17 +250,8 @@ pub fn open_local(path: &Path, origin: Option<Origin>) {
         r.remote = None;
         r.request = None;
         r.picker.reset(origin.as_ref());
-        unsafe {
-            gtk_widget_set_visible(r.entry, 0);
-            gtk_widget_set_visible(r.refresh, 0);
-        }
         r.path = path.to_path_buf();
         r.stamp = observed;
-        set_label_text(
-            r.name,
-            &path.file_name().unwrap_or_default().to_string_lossy(),
-        );
-        set_tooltip(r.name, &path.to_string_lossy());
         r.update(source, preserve);
         r.show();
     });

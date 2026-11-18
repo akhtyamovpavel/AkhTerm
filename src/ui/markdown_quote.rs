@@ -76,45 +76,45 @@ pub(super) fn format_quote(location: &str, source: &str, a: i32, b: i32) -> Opti
     {
         return None;
     }
-    let first = 1 + source[..start].bytes().filter(|&c| c == b'\n').count();
-    let last = first
-        + selection
-            .strip_suffix('\n')
-            .unwrap_or(&selection)
-            .bytes()
-            .filter(|&c| c == b'\n')
-            .count();
-    let run = selection
-        .split(|c| c != '`')
-        .map(str::len)
-        .max()
-        .unwrap_or(0);
-    let fence = "`".repeat(3.max(run + 1));
+    let first = 1 + source[..start].matches('\n').count();
+    let last = first + selection.lines().count() - 1;
+    let fence = quote_fence(&selection);
     let separator = if selection.ends_with('\n') { "" } else { "\n" };
     Some(format!(
         "{location}#L{first}-L{last}\n{fence}\n{selection}{separator}{fence}"
     ))
 }
 
+// A selection can itself contain fenced Markdown.
+fn quote_fence(text: &str) -> String {
+    let run = text.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    "`".repeat(3.max(run + 1))
+}
+
+impl Reader {
+    fn selected_quote(&self) -> Result<(Target, String), text::UiText> {
+        let path = self.path.display();
+        let location = match &self.remote {
+            Some(doc) => format!("{}:{path}", doc.host),
+            None => path.to_string(),
+        };
+        let (start, end) = self.buffer.bounds();
+        let quote = format_quote(&location, &self.source, start, end).ok_or(text::MD_SELECT)?;
+        let target = self.picker.selected().ok_or(text::MD_TARGET)?;
+        Ok((target.clone(), quote))
+    }
+}
+
 extern "C" fn insert(_: *mut GtkWidget, _: *mut c_void) {
-    let draft = READER.with_borrow(|slot| {
-        let r = slot.as_ref()?;
-        let target = r.picker.selected().cloned();
-        let name = r.path.display().to_string();
-        let location = r
-            .remote
-            .as_ref()
-            .map_or_else(|| name.clone(), |d| format!("{}:{name}", d.host));
-        let (a, b) = r.buffer.bounds();
-        Some((target, format_quote(&location, &r.source, a, b)))
-    });
-    let Some((target, quote)) = draft else { return };
-    let Some(quote) = quote else {
-        return app_state::set_footer_message(text::MD_SELECT.as_str());
-    };
-    let Some(target) = target else {
-        return app_state::set_footer_message(text::MD_TARGET.as_str());
-    };
+    let draft = READER.with_borrow(|slot| slot.as_ref().map(Reader::selected_quote));
+    match draft {
+        Some(Ok((target, quote))) => deliver(target, quote),
+        Some(Err(message)) => app_state::set_footer_message(message.as_str()),
+        None => {}
+    }
+}
+
+fn deliver(target: Target, quote: String) {
     if !origin::is_current(&target) {
         return app_state::set_footer_message(text::MD_STALE.as_str());
     }
@@ -123,25 +123,12 @@ extern "C" fn insert(_: *mut GtkWidget, _: *mut c_void) {
     unsafe { gtk_widget_grab_focus(target.vte) };
     if let Some((connection, address)) = target.delivery {
         std::thread::spawn(move || {
-            if let Err(err) = connection.paste(&address, &quote) {
-                unsafe {
-                    g_idle_add(
-                        report_error,
-                        Box::into_raw(Box::new(err.to_string())).cast(),
-                    );
-                }
+            if let Err(error) = connection.paste(&address, &quote) {
+                on_gtk_idle(move || app_state::set_footer_message(&error.to_string()));
             }
         });
-        return;
+    } else {
+        let text = CString::new(quote).expect("quote excludes NUL");
+        unsafe { vte_terminal_paste_text(target.vte, text.as_ptr()) };
     }
-    let text = CString::new(quote).unwrap();
-    unsafe {
-        vte_terminal_paste_text(target.vte, text.as_ptr());
-    }
-}
-
-extern "C" fn report_error(raw: *mut c_void) -> c_int {
-    let message = unsafe { Box::from_raw(raw.cast::<String>()) };
-    app_state::set_footer_message(&message);
-    0
 }
