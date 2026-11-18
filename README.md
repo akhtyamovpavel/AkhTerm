@@ -26,7 +26,7 @@ AkhTerm is a native Linux terminal built with **Rust**, **GTK 3**, and **VTE 2.9
 ### Per-Pane Radar, Telemetry & PTY/OSC Bridge
 - **Per-Pane Status Headers:** Multi-pane tabs show a compact `22 px` header on each pane with agent/process state, exit code, live elapsed turn timer (`⏱`), and context usage (`ctx`) alongside the project Maintainability Index (`MI`).
 - **Attention Jump & Notifications:** `Ctrl+Shift+U` jumps straight to the next pane waiting for confirmation or holding unread output. When unfocused, AkhTerm highlights the tab and sends a desktop notification (`notify-send`) on approval prompts or long commands (`>= notify-secs`).
-- **Focused context and cache:** The Tokens button follows the focused pane. For example, `ctx 40k · cache 80%` means that 80% of the latest request’s input came from the prompt cache. Open the menu for the last request, recent cache readings, and session totals. A missing counter leaves the percentage blank. Changing the SSH connection or tmux pane clears the previous reading. Direct interactive SSH on Linux matches the foreground agent using the connection ports. The background probe uses the host’s SSH config. Put custom ports or identity files in a host alias. Port rewriting, multiplexing, and jump hosts can prevent a match.
+- **Focused context and cache:** The Tokens button follows the focused pane. For example, `ctx 40k · cache 80%` means that 80% of the latest request’s input came from the prompt cache. Open the menu for the last request, recent cache readings, and session totals. A missing counter leaves the percentage blank. Changing the SSH connection or tmux pane clears the previous reading. Direct interactive SSH on Linux matches the foreground agent using the connection ports. The background probe reuses supported connection options from the SSH client, including custom ports, identity files, and jump hosts. SSH reads use noninteractive authentication and require a known host key. Port rewriting, multiplexing, and jump hosts can prevent a match.
 - **OpenCode:** Launch OpenCode from the Agents menu. AkhTerm supplies a TUI plugin that reports token counts for the displayed session. Its totals cover the assistant messages loaded by the TUI. When you set `OPENCODE_TUI_CONFIG` yourself or run OpenCode on a remote host, copy [usage.mjs](assets/opencode/usage.mjs) to that host, append its absolute path to the `plugin` array in your OpenCode `tui.json`, and restart OpenCode. For example, use `{"plugin":["/home/alice/.config/opencode/usage.mjs"]}` for an otherwise empty config.
 - **Transparent `OSC 52` / `OSC 8` / `OSC 7` / `OSC 133` PTY Bridge:** User-space PTY tap over `VTE 2.91` enabling write-only `OSC 52` clipboard copy across `SSH` and `tmux` (`?` clipboard read queries are strictly blocked), streaming percent-encoding of non-ASCII UTF-8 `OSC 8` hyperlinks and `OSC 7` directory URIs (preventing C1 `0x9C` `ST` truncation on Cyrillic paths), and `OSC 133` command completion notifications.
 
@@ -91,7 +91,7 @@ Prebuilt `.deb`, `.rpm`, and portable Linux `.tar.gz` archives are attached to [
 Tested on Ubuntu 24.04 and 26.04 (`amd64`):
 
 ```sh
-sudo apt install ./akhterm_1.3.0-1_amd64.deb
+sudo apt install ./akhterm_1.3.1-1_amd64.deb
 ```
 
 Launch **AkhTerm** from your application menu or run `akhterm` (`akhterm --version` prints version and build metadata). Remove with `sudo apt remove akhterm` (your configuration and saved state in `~` are preserved). See [.github/workflows/build-deb.yml](.github/workflows/build-deb.yml) and [.github/workflows/release.yml](.github/workflows/release.yml).
@@ -101,14 +101,14 @@ Launch **AkhTerm** from your application menu or run `akhterm` (`akhterm --versi
 Tested on Fedora 41 and 42 (`x86_64`), including KDE Breeze GTK 3 and icon packages:
 
 ```sh
-sudo dnf install ./akhterm-1.3.0-1.x86_64.rpm
+sudo dnf install ./akhterm-1.3.1-1.x86_64.rpm
 ```
 
 Launch **AkhTerm** from your application menu or run `akhterm`. Remove with `sudo dnf remove akhterm`. See [.github/workflows/build-rpm.yml](.github/workflows/build-rpm.yml).
 
 ### Portable Linux Tarball (`.tar.gz`)
 
-Extract `akhterm_1.3.0_linux_x86_64.tar.gz` to a user-writable directory (such as `~/.local/bin`) to run `akhterm` without root privileges and receive one-click atomic in-app self-updates.
+Extract `akhterm_1.3.1_linux_x86_64.tar.gz` to a user-writable directory (such as `~/.local/bin`) to run `akhterm` without root privileges and receive one-click atomic in-app self-updates.
 
 AkhTerm runs natively under **Wayland** and **X11** on **GNOME** and **KDE Plasma** (`StartupWMClass=AkhTerm` in `org.akhterm.AkhTerm.desktop`).
 

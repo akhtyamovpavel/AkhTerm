@@ -1486,13 +1486,14 @@ fn format_tab_token_markup(row: &TabTokenRow, colors: TokensMarkupColors) -> Str
     } else {
         format!(" <span foreground='{}'>[{}]</span>", colors.muted, escape_markup(src))
     };
-    format!(
-        "{marker}<b>{}</b>{tag}\n    {}  ·  <tt>{}</tt>  ·  {}",
-        escape_markup(&row.title),
-        format_ctx_span(&row.snap, colors),
-        format_io_breakdown(&row.snap),
-        format_timer_part(row, colors),
-    )
+    let title = escape_markup(&row.title);
+    let context = format_ctx_span(&row.snap, colors);
+    let timer = format_timer_part(row, colors);
+    if !row.snap.has_data() {
+        return format!("{marker}<b>{title}</b>{tag}\n    {context}  ·  {timer}");
+    }
+    let usage = format_io_breakdown(&row.snap);
+    format!("{marker}<b>{title}</b>{tag}\n    {context}  ·  <tt>{usage}</tt>  ·  {timer}")
 }
 
 #[derive(Default)]
@@ -1561,13 +1562,25 @@ pub fn build_tokens_view_with_keys(
     rows: &[(TabTokenRow, Option<String>)],
     mode: ThemeMode,
 ) -> TokensViewData {
+    build_token_rows(rows.iter().map(|(row, key)| (row, key.as_deref())), mode)
+}
+
+fn build_token_rows<'a>(
+    rows: impl IntoIterator<Item = (&'a TabTokenRow, Option<&'a str>)>,
+    mode: ThemeMode,
+) -> TokensViewData {
     let colors = mode.tokens_markup_colors();
     let mut totals = WindowTotals::default();
     let mut lines = Vec::new();
     for (row, key) in rows {
-        totals.record_unique(row, key.as_deref());
+        totals.record_unique(row, key);
         if row.snap.has_data() || row.working_secs.is_some() || row.last_turn_secs.is_some() {
-            lines.push(format_tab_token_markup(row, colors));
+            let line = format_tab_token_markup(row, colors);
+            if row.is_active {
+                lines.insert(0, line);
+            } else {
+                lines.push(line);
+            }
         }
     }
     finalize_tokens_view(totals, lines, colors)
@@ -1590,16 +1603,7 @@ fn finalize_tokens_view(
 
 #[allow(dead_code)]
 pub fn build_tokens_view_for_mode(rows: &[TabTokenRow], mode: ThemeMode) -> TokensViewData {
-    let colors = mode.tokens_markup_colors();
-    let mut totals = WindowTotals::default();
-    let mut lines = Vec::new();
-    for row in rows {
-        totals.record_unique(row, None);
-        if row.snap.has_data() || row.working_secs.is_some() || row.last_turn_secs.is_some() {
-            lines.push(format_tab_token_markup(row, colors));
-        }
-    }
-    finalize_tokens_view(totals, lines, colors)
+    build_token_rows(rows.iter().map(|row| (row, None)), mode)
 }
 
 #[cfg(test)]
@@ -1659,8 +1663,13 @@ fn populate_tokens_popover(popover: *mut GtkWidget) -> *mut GtkWidget {
         gtk_scrolled_window_set_policy(scroll, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
         gtk_scrolled_window_set_min_content_width(scroll, 450);
         gtk_scrolled_window_set_max_content_height(scroll, 380);
+        gtk_scrolled_window_set_propagate_natural_height(scroll, 1);
         let body_label = gtk_label_new(text::TOKENS_EMPTY.as_ptr());
         gtk_label_set_xalign(body_label, 0.0);
+        gtk_widget_set_valign(body_label, GTK_ALIGN_START);
+        gtk_label_set_line_wrap(body_label, 1);
+        gtk_label_set_line_wrap_mode(body_label, PANGO_WRAP_WORD_CHAR);
+        gtk_label_set_max_width_chars(body_label.cast(), 80);
         gtk_container_add(scroll, body_label);
         gtk_box_pack_start(vbox, scroll, 1, 1, 0);
         gtk_container_add(popover, vbox);
@@ -2007,9 +2016,32 @@ mod tests {
             thread::sleep(Duration::from_millis(35));
             pump_gtk();
             verify_vte_poll_and_menu(vte, menu);
+            verify_tokens_popover_scroll(menu);
             verify_vte_context_panel_widget(vte);
             gtk_widget_destroy(win);
         }
+    }
+
+    fn verify_tokens_popover_scroll(menu: TokensMenu) {
+        let mut rows: Vec<_> = (1..=24).map(|n| TabTokenRow {
+            title: format!("Фоновая вкладка {n}"), agent: String::new(),
+            is_active: false, working_secs: None, last_turn_secs: Some(2),
+            snap: TokenSnapshot::default(),
+        }).collect();
+        rows.push(sample_high_row());
+        let view = build_tokens_view_for_mode(&rows, ThemeMode::Dark);
+        let markup = view.markup.as_deref().unwrap();
+        assert!(markup.starts_with("▸ "));
+        assert!(markup.contains("ctx 184k") && !markup.contains("input 0"));
+        menu.apply(&view);
+        unsafe { gtk_popover_popup(menu.popover()) };
+        thread::sleep(Duration::from_millis(55));
+        pump_gtk();
+        let viewport = unsafe { gtk_widget_get_parent(menu.body_label) };
+        let visible = unsafe { gtk_widget_get_allocated_height(viewport) };
+        let content = unsafe { gtk_widget_get_allocated_height(menu.body_label) };
+        assert!(visible >= 180 && content > visible, "visible={visible}, content={content}");
+        unsafe { gtk_popover_popdown(menu.popover()) };
     }
 
     unsafe fn verify_vte_context_panel_widget(vte: *mut GtkWidget) {

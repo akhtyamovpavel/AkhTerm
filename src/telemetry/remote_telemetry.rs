@@ -3,12 +3,12 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::PathBuf;
+#[cfg(test)]
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-#[path = "ssh_connection.rs"]
-mod ssh_connection;
+use crate::telemetry::ssh_connection;
 use crate::proc_radar::shell_quote;
 use crate::session::{SessionCategory, TermSession};
 use crate::tabs::is_ssh_host;
@@ -372,7 +372,8 @@ pub fn posix_quote(raw: &str) -> String {
     shell_quote(&clean)
 }
 
-pub fn build_ssh_probe_args(host: &str, posix_script: &str) -> Vec<String> {
+#[cfg(test)]
+fn build_ssh_probe_args(host: &str, posix_script: &str) -> Vec<String> {
     vec![
         "-o".to_owned(),
         "BatchMode=yes".to_owned(),
@@ -388,6 +389,7 @@ pub fn build_ssh_probe_args(host: &str, posix_script: &str) -> Vec<String> {
     ]
 }
 
+#[cfg(test)]
 pub fn run_ssh_probe_with_program(program: &str, host: &str, posix_script: &str) -> Option<Vec<u8>> {
     if !is_ssh_host(host) {
         return None;
@@ -403,13 +405,8 @@ pub fn run_ssh_probe_with_program(program: &str, host: &str, posix_script: &str)
     output.status.success().then_some(output.stdout)
 }
 
-pub fn run_default_ssh_probe(host: &str, posix_script: &str) -> Option<Vec<u8>> {
-    run_ssh_probe_with_program("ssh", host, posix_script)
-}
-
 #[path = "remote_probe.rs"]
 mod remote_probe;
-pub use remote_probe::build_posix_probe_script;
 
 pub fn parse_probe_stdout(stdout: &[u8]) -> Vec<RemoteProbeFrame> {
     let mut frames = Vec::new();
@@ -609,13 +606,24 @@ impl RemoteTelemetryScheduler {
     }
 
     pub fn refresh_due(&self, now: Instant) -> usize {
-        self.refresh_due_with(now, run_default_ssh_probe)
+        self.refresh_batches(now, |batch| remote_probe::probe_host(batch, |queries, stdout| {
+            self.apply_probe_output(queries, stdout)
+        }))
     }
 
+    #[cfg(test)]
     pub fn refresh_due_with<F>(&self, now: Instant, mut runner: F) -> usize
     where
         F: FnMut(&str, &str) -> Option<Vec<u8>>,
     {
+        self.refresh_batches(now, |batch| {
+            let script = remote_probe::probe_script(&batch.queries);
+            runner(&batch.host, &script)
+                .map_or(0, |out| self.apply_probe_output(&batch.queries, &out))
+        })
+    }
+
+    fn refresh_batches(&self, now: Instant, run: impl FnMut(HostBatchJob) -> usize) -> usize {
         let batches = self
             .inner
             .0
@@ -623,26 +631,16 @@ impl RemoteTelemetryScheduler {
             .ok()
             .map(|mut g| g.claim_due_batches(now))
             .unwrap_or_default();
-        let mut updated = 0usize;
-        for batch in batches {
-            updated += self.run_single_batch(batch, &mut runner);
-        }
-        updated
+        batches.into_iter().map(run).sum()
     }
 
-    fn run_single_batch<F>(&self, batch: HostBatchJob, runner: &mut F) -> usize
-    where
-        F: FnMut(&str, &str) -> Option<Vec<u8>>,
-    {
-        let plain: Vec<SessionProbeQuery> = batch.queries.iter().map(|(_, q)| q.clone()).collect();
-        let script = build_posix_probe_script(&plain);
-        let Some(stdout) = runner(&batch.host, &script) else { return 0 };
-        let frames = parse_probe_stdout(&stdout);
+    fn apply_probe_output(&self, queries: &[(u64, SessionProbeQuery)], stdout: &[u8]) -> usize {
+        let frames = parse_probe_stdout(stdout);
         self.inner
             .0
             .lock()
             .ok()
-            .map_or(0, |mut g| g.apply_batch_frames(&batch.queries, &frames))
+            .map_or(0, |mut g| g.apply_batch_frames(queries, &frames))
     }
 
     pub fn wait_for_turn(&self, max_sleep: Duration) {

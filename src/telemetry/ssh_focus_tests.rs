@@ -180,3 +180,49 @@ fn same_directory_claude_panes_use_only_their_own_transcript() {
     assert_eq!(snap[&1].snapshot.context_tokens, 300);
     assert_eq!(snap[&2].snapshot.context_tokens, 700);
 }
+
+fn isolated_ssh_config(env: &tests::MockRemoteEnv, base: &str, context: u32) -> PathBuf {
+    let process = env.add_proc(4200, "codex\0", &env.home, &[]);
+    let sessions = env.home.join(".codex/sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    let log = sessions.join("rollout.jsonl");
+    let usage = format!(r#"{{"input_tokens":{context},"cached_input_tokens":200,"output_tokens":10}}"#);
+    let line = format!(r#"{{"type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{usage},"last_token_usage":{usage}}}}}}}"#);
+    fs::write(&log, format!("{line}\n")).unwrap();
+    std::os::unix::fs::symlink(log, process.join("fd/3")).unwrap();
+    let panes = format!("work|1|1|4200|codex|{}|0|work|%4\n", env.home.display());
+    fs::write(&env.tmux_panes_file, panes).unwrap();
+
+    let home = shell_quote(&env.home.to_string_lossy());
+    let proc = shell_quote(&env.proc_dir.to_string_lossy());
+    let bin = shell_quote(&env.root.join("bin").to_string_lossy());
+    let prefix = format!("ProxyCommand env HOME={home} AKHTERM_TEST_PROC={proc} PATH={bin}:\"$PATH\" ");
+    assert!(base.contains("ProxyCommand "));
+    let config = env.root.join("ssh-config");
+    fs::write(&config, base.replacen("ProxyCommand ", &prefix, 1)).unwrap();
+    config
+}
+
+#[test]
+#[ignore = "requires the isolated stdio OpenSSH test peer"]
+fn scheduler_reads_tmux_usage_through_each_live_ssh_config() {
+    use crate::telemetry::ssh_connection::FixtureClient;
+    let config = std::env::var_os("AKHTERM_TEST_SSH_CONFIG").unwrap();
+    let base = fs::read_to_string(config).unwrap();
+    let a = tests::MockRemoteEnv::new("tmux-config-a");
+    let b = tests::MockRemoteEnv::new("tmux-config-b");
+    let peer_a = FixtureClient::start(&isolated_ssh_config(&a, &base, 1_200));
+    let peer_b = FixtureClient::start(&isolated_ssh_config(&b, &base, 2_400));
+    let _ = (peer_a.route(), peer_b.route());
+    let target = |sid, ssh_pid| RemoteSessionTarget {
+        sid, ssh_pid, host: "akhterm-fixture".into(),
+        tmux_session: Some("work".into()), tmux_window: Some("%4".into()),
+        agent_hint: "codex".into(), ..Default::default()
+    };
+    let scheduler = RemoteTelemetryScheduler::default();
+    scheduler.sync_targets(&[target(1, peer_a.pid()), target(2, peer_b.pid())]);
+    assert_eq!(scheduler.refresh_due(Instant::now()), 2);
+    let results = scheduler.snapshot();
+    assert_eq!(results[&1].snapshot.context_tokens, 1_200);
+    assert_eq!(results[&2].snapshot.context_tokens, 2_400);
+}
