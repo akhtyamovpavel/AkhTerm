@@ -10,6 +10,14 @@ pub use crate::i18n::{
 #[allow(unused_imports)]
 pub use crate::i18n::configured_locale;
 
+pub const MD_PREVIEW: UiText = UiText::new(c"Открыть рядом", c"Open alongside");
+pub const MD_RESULT: UiText = UiText::new(c"Последний Markdown в выводе", c"Last Markdown in output");
+pub const MD_CODE: UiText = UiText::new(c"Копировать блок", c"Copy code block");
+pub const MD_PASTE: UiText = UiText::new(c"Вставить выделение", c"Paste selection");
+pub const MD_SEARCH: UiText = UiText::new(c"Найти в документе", c"Find in document");
+pub const MD_CLOSE: UiText = UiText::new(c"Закрыть просмотр", c"Close preview");
+pub const MD_EMPTY: UiText = UiText::new(c"В выводе панели нет локального Markdown-файла", c"No local Markdown file found in pane output");
+pub const MD_BLOCK_HINT: UiText = UiText::new(c"Поставь курсор внутрь блока кода", c"Place the cursor in a fenced code block");
 pub const APP_NAME: &CStr = c"AkhTerm";
 pub const PROFILES: &CStr = c"Профили / SSH ▾";
 pub const SERVERS: &CStr = c"Серверы ▾";
@@ -109,12 +117,13 @@ pub const GIT_REMOVE_WT_BTN: &CStr = c"Удалить чистый worktree";
 pub const GIT_REMOVE_WT_TIP: &CStr =
     c"Проверить отсутствие изменений и удалить изолированный Git worktree";
 
-pub const AGENT_ACTIONS: [(&CStr, &str); 5] = [
+pub const AGENT_ACTIONS: [(&CStr, &str); 6] = [
     (c"agy · Antigravity CLI", "agy\n"),
     (c"codex · OpenAI Codex CLI", "codex\n"),
     (c"claude · Claude Code", "claude\n"),
     (c"dsh · DSH Agent", "dsh\n"),
     (c"kimi · Kimi Code CLI", "kimi\n"),
+    (c"opencode · OpenCode", "opencode\n"),
 ];
 
 pub const HANDOFF_TIP: &CStr = c"Снять лог активной вкладки или передать .md-бриф в сессию";

@@ -170,6 +170,7 @@ extern "C" fn on_window_key_press(
     let Some((keyval, state, keycode)) = extract_key_event(event) else {
         return 0;
     };
+    if let Some(result) = crate::markdown::route_key(_win, keyval, state) { return result; }
     if route_swarm_escape(keyval) {
         return 1;
     }
@@ -255,6 +256,8 @@ pub(crate) fn execute_palette_action(action: palette::PaletteAction) {
             session_ops::add_remote_session(&host, tmux_session.as_deref());
         }
         palette::PaletteAction::RunAgent(code) => run_palette_agent(code),
+        palette::PaletteAction::LastMarkdown => crate::markdown::open_last(),
+        palette::PaletteAction::PreviewMarkdown(path) => crate::markdown::open(&path),
         palette::PaletteAction::InjectHandoff(path) => {
             pane_actions::handoff_file_to_session(app_state::active_session_id(), &path);
         }

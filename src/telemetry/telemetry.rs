@@ -1,4 +1,6 @@
 //! Incremental O(1) agent token/context telemetry, VTE status-bar fallback, and turn timer UI.
+#[path = "transcript_owner.rs"]
+mod transcript_owner;
 
 use std::collections::HashSet;
 use std::ffi::{c_void, CString};
@@ -14,6 +16,10 @@ use crate::ffi::*;
 use crate::session::TermSession;
 #[cfg(test)]
 use crate::session::SessionCategory;
+#[path = "usage.rs"]
+pub mod usage;
+#[path = "opencode.rs"]
+pub mod opencode;
 pub use crate::telemetry_agy::parse_vte_context_panel;
 use crate::telemetry_agy::{
     discover_agy_by_fd, discover_agy_transcript, is_vte_breakdown_line, metadata_stamp,
@@ -38,6 +44,7 @@ pub enum TelemetrySource {
     Agy,
     Claude,
     Codex,
+    OpenCode,
     VteFallback,
 }
 
@@ -48,6 +55,7 @@ impl TelemetrySource {
             Self::Agy => "AGY",
             Self::Claude => "Claude",
             Self::Codex => "Codex",
+            Self::OpenCode => "OpenCode",
             Self::VteFallback => "TUI",
         }
     }
@@ -70,6 +78,7 @@ pub struct TokenSnapshot {
     pub output_tokens: u64,
     pub context_tokens: u64,
     pub context_pct: Option<u8>,
+    pub requests: crate::telemetry::usage::RequestHistory,
     pub cost_usd: Option<f64>,
 }
 
@@ -91,9 +100,14 @@ impl TokenSnapshot {
 
     pub fn compact_context_badge(&self) -> Option<String> {
         if self.context_tokens > 0 {
-            return Some(format!("ctx {}", format_compact_tokens(self.context_tokens)));
+            Some(format!("ctx {}", format_compact_tokens(self.context_tokens)))
+        } else {
+            self.context_pct.map(|pct| format!("ctx {pct}%"))
         }
-        self.context_pct.map(|pct| format!("ctx {pct}%"))
+    }
+
+    pub fn usage_badge(&self) -> Option<String> {
+        self.requests.badge(self.compact_context_badge())
     }
 
     pub fn alert_level(&self) -> ContextAlert {
@@ -196,6 +210,7 @@ pub struct SessionTelemetry {
     pub vte_fallback: TokenSnapshot,
     pub vte_panel_override: Option<(u64, Option<u8>, u64)>,
     pub last_tmux_window: Option<String>,
+    previous_screen: Vec<String>,
     effective: TokenSnapshot,
     last_discovery: Option<Instant>,
 }
@@ -247,10 +262,29 @@ impl SessionTelemetry {
         self.effective = self.effective_snapshot();
     }
 
+    pub fn reset_transport(&mut self, vte: *mut GtkWidget) {
+        *self = Self::default();
+        self.previous_screen = read_vte_visible_text(vte).lines().map(|line| line.trim().to_owned()).collect();
+    }
+
     pub fn observe_vte_text(&mut self, visible: &str) {
+        if !self.previous_screen.is_empty() {
+            let current: std::collections::HashSet<_> = visible.lines().map(str::trim).collect();
+            self.previous_screen.retain(|old| current.contains(old.as_str()));
+            let fresh: Vec<_> = visible.lines().filter(|line| {
+                !self.previous_screen.iter().any(|old| old == line.trim())
+            }).collect();
+            self.observe_fresh_text(&fresh.join("\n"));
+        } else {
+            self.observe_fresh_text(visible);
+        }
+    }
+
+    fn observe_fresh_text(&mut self, visible: &str) {
         if let Some((toks, pct)) = parse_vte_context_panel(visible) {
             self.record_panel_hit(toks, pct);
         } else {
+            self.vte_fallback = TokenSnapshot::default();
             self.record_status_fallback(visible);
         }
         self.sync_effective();
@@ -279,7 +313,7 @@ impl SessionTelemetry {
 
     pub fn detected_agent_label(&self) -> Option<&'static str> {
         match self.snapshot().source {
-            TelemetrySource::Agy | TelemetrySource::Claude | TelemetrySource::Codex => {
+            TelemetrySource::Agy | TelemetrySource::Claude | TelemetrySource::Codex | TelemetrySource::OpenCode => {
                 Some(self.snapshot().source.label())
             }
             TelemetrySource::None | TelemetrySource::VteFallback => None,
@@ -289,13 +323,21 @@ impl SessionTelemetry {
     pub fn transcript_key(&self) -> Option<String> {
         if self.tailer.snapshot.has_data() {
             if let Some(path) = &self.tailer.path {
+                if self.tailer.kind == TelemetrySource::OpenCode {
+                    return Some(format!("local:opencode:{}", path.file_name()?.to_str()?));
+                }
                 let canon = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
                 return Some(format!("local:{}", canon.display()));
             }
         }
         let remote = &self.remote_tailer;
         if remote.snapshot.has_data() && !remote.remote_path.is_empty() {
-            return Some(format!("remote:{}:{}", remote.host, remote.remote_path));
+            let name = if remote.kind == TelemetrySource::OpenCode {
+                Path::new(&remote.remote_path).file_name()?.to_str()?
+            } else {
+                &remote.remote_path
+            };
+            return Some(format!("remote:{}:{}", remote.host, name));
         }
         None
     }
@@ -426,6 +468,10 @@ pub fn run_poll_job_with_remote(
     if job.is_daemon {
         return (job.sid, job.telemetry);
     }
+    if remote_tailer.as_ref().is_some_and(|r| r.foreground_shell) {
+        let telemetry = SessionTelemetry { remote_tailer: remote_tailer.unwrap(), ..Default::default() };
+        return (job.sid, telemetry);
+    }
     sync_tmux_window_change(&mut job.telemetry, &job.tmux_window);
     let local_cwd = (!has_live_ssh(&job)).then_some(job.local_cwd.as_deref()).flatten();
     if let Some(cwd) = local_cwd {
@@ -435,9 +481,11 @@ pub fn run_poll_job_with_remote(
         reset_local_tailer(&mut job.telemetry);
         if let Some(rt) = remote_tailer {
             apply_remote_tailer(&mut job.telemetry, rt);
+        } else {
+            reset_remote_tailer(&mut job.telemetry);
         }
     }
-    if should_poll_vte_fallback(local_cwd, job.has_tmux, &job.agent) {
+    if job.tmux_window.is_none() && should_poll_vte_fallback(local_cwd, job.has_tmux, &job.agent) {
         refresh_vte_telemetry(&mut job.telemetry, job.vte);
     } else {
         job.telemetry.vte_fallback = TokenSnapshot::default();
@@ -474,14 +522,14 @@ fn refresh_local_jsonl(
     now: Instant,
 ) {
     let prev_path = telem.tailer.path.clone();
-    if telem.should_rediscover(now) {
+    if agent == "OpenCode" || telem.tailer.kind == TelemetrySource::OpenCode || telem.should_rediscover(now) {
         telem.last_discovery = Some(now);
         if let Some((path, kind)) = discover_transcript(home, cwd, root_pid, agent) {
             let _ = telem.tailer.poll_file(&path, kind);
             invalidate_panel_override_if_advanced(telem, prev_path.as_deref());
             return;
         }
-        if has_tmux {
+        if has_tmux || agent == "OpenCode" || telem.tailer.kind == TelemetrySource::OpenCode {
             telem.tailer = TranscriptTailer::default();
             telem.vte_fallback = TokenSnapshot::default();
             telem.vte_panel_override = None;
@@ -513,16 +561,26 @@ pub fn discover_transcript(
         return None;
     }
     let low = agent.to_ascii_lowercase();
+    if root_pid > 0 && matches!(low.as_str(), "claude" | "codex" | "agy") {
+        let owned = match low.as_str() {
+            "claude" => transcript_owner::claude_fd(root_pid, home).map(|p| (p, TelemetrySource::Claude)),
+            "codex" => crate::tmux_local::discover_codex_by_fd(root_pid, home).map(|p| (p, TelemetrySource::Codex)),
+            _ => discover_agy_by_fd(root_pid, home).map(|p| (p, TelemetrySource::Agy)),
+        };
+        if owned.is_some() || transcript_owner::shared_workspace(root_pid, Path::new(norm_cwd), agent) {
+            return owned;
+        }
+    }
     if low.contains("agy") || low.contains("antigravity") {
         return discover_agy_transcript(home, norm_cwd, root_pid).map(|p| (p, TelemetrySource::Agy));
+    }
+    if low == "opencode" {
+        return crate::telemetry::opencode::discover(root_pid).map(|p| (p, TelemetrySource::OpenCode));
     }
     if low.contains("claude") {
         return discover_claude_transcript(home, norm_cwd).map(|p| (p, TelemetrySource::Claude));
     }
     if low.contains("codex") {
-        if let Some(p) = crate::tmux_local::discover_codex_by_fd(root_pid, home) {
-            return Some((p, TelemetrySource::Codex));
-        }
         return discover_codex_transcript(home, norm_cwd).map(|p| (p, TelemetrySource::Codex));
     }
     discover_agy_by_fd(root_pid, home).map(|p| (p, TelemetrySource::Agy))
@@ -885,6 +943,7 @@ pub fn apply_jsonl_line(
     match kind {
         TelemetrySource::Agy => apply_agy_line(line, snap),
         TelemetrySource::Claude => apply_claude_line(line, snap, last_msg_id, last_msg_usage),
+        TelemetrySource::OpenCode => crate::telemetry::opencode::apply_usage(line, snap),
         TelemetrySource::Codex => apply_codex_line(line, snap),
         TelemetrySource::None | TelemetrySource::VteFallback => {}
     }
@@ -909,6 +968,7 @@ fn apply_agy_line(line: &str, snap: &mut TokenSnapshot) {
         Some("PLANNER_RESPONSE") => {
             if accumulate_agy_usage(snap, in_tok, cache_tok, out_tok) {
                 let prompt = in_tok.saturating_add(cache_tok);
+                snap.requests.record(json_u64(line, "cache_read_tokens"), prompt, None);
                 if prompt > 0 {
                     snap.context_tokens = prompt.saturating_add(out_tok);
                 }
@@ -949,7 +1009,8 @@ fn apply_claude_line(
 ) {
     let Some((msg_id, cur)) = extract_claude_usage(line) else { return };
     snap.source = TelemetrySource::Claude;
-    if !msg_id.is_empty() && msg_id == *last_msg_id {
+    let repeated = !msg_id.is_empty() && msg_id == *last_msg_id;
+    if repeated {
         replace_claude_turn(snap, *last_msg_usage, cur);
         *last_msg_usage = max_tuple4(*last_msg_usage, cur);
     } else {
@@ -957,6 +1018,9 @@ fn apply_claude_line(
         *last_msg_id = msg_id;
         *last_msg_usage = cur;
     }
+    let usage = json_obj(line, "message").and_then(|m| json_obj(m, "usage")).or_else(|| json_obj(line, "usage"));
+    let read = usage.and_then(|u| json_u64(u, "cache_read_input_tokens"));
+    snap.requests.claude_update(read.map(|_| last_msg_usage.2), snap.context_tokens, repeated);
 }
 
 fn max_tuple4(a: (u64, u64, u64, u64), b: (u64, u64, u64, u64)) -> (u64, u64, u64, u64) {
@@ -993,6 +1057,7 @@ fn replace_claude_turn(
 struct CodexUsage {
     uncached_in: u64,
     cached_in: u64,
+    cache_read: Option<u64>,
     output: u64,
     context: u64,
 }
@@ -1011,7 +1076,7 @@ fn parse_codex_usage_obj(obj: &str) -> Option<CodexUsage> {
     } else {
         (in_raw.saturating_sub(cached), in_raw)
     };
-    Some(CodexUsage { uncached_in, cached_in: cached, output, context })
+    Some(CodexUsage { uncached_in, cached_in: cached, cache_read: json_u64(obj, "cached_input_tokens"), output, context })
 }
 
 fn is_codex_cached_disjoint(in_raw: u64, cached: u64, output: u64, total: Option<u64>) -> bool {
@@ -1049,18 +1114,17 @@ fn apply_codex_total_info(info: &str, tot_obj: &str, snap: &mut TokenSnapshot) {
     snap.input_tokens = tot.uncached_in;
     snap.cache_tokens = tot.cached_in;
     snap.output_tokens = tot.output;
-    let last_ctx = json_obj(info, "last_token_usage")
-        .and_then(parse_codex_usage_obj)
-        .map_or(tot.context, |u| u.context);
-    if last_ctx > 0 {
-        snap.context_tokens = last_ctx;
+    if let Some(last) = json_obj(info, "last_token_usage").and_then(parse_codex_usage_obj) {
+        snap.context_tokens = last.context;
+        snap.requests.record(last.cache_read, last.context, Some(tot.context.saturating_add(tot.output)));
     }
     if let Some(win) = json_u64(info, "model_context_window").filter(|w| *w > 0) {
-        snap.context_pct = Some(((snap.context_tokens.saturating_mul(100)) / win).min(100) as u8);
+        snap.context_pct = (snap.context_tokens > 0).then(|| ((snap.context_tokens.saturating_mul(100)) / win).min(100) as u8);
     }
 }
 
 fn apply_codex_step(step: CodexUsage, snap: &mut TokenSnapshot) {
+    snap.requests.record(step.cache_read, step.context, None);
     snap.source = TelemetrySource::Codex;
     snap.input_tokens = snap.input_tokens.saturating_add(step.uncached_in);
     snap.cache_tokens = snap.cache_tokens.saturating_add(step.cached_in);
@@ -1401,12 +1465,13 @@ fn format_timer_part(row: &TabTokenRow, colors: TokensMarkupColors) -> String {
 }
 
 fn format_io_breakdown(snap: &TokenSnapshot) -> String {
+    let detail = snap.requests.detail(snap);
     let cost_s = snap.cost_usd.map_or(String::new(), |c| format!(" · ${c:.2}"));
     if snap.source == TelemetrySource::VteFallback && snap.total_tokens() == 0 {
         return format!("статус TUI{cost_s}");
     }
     format!(
-        "input {} · cache {} · output {}{cost_s}",
+        "input {} · cache {} · output {}{cost_s}{detail}",
         format_compact_tokens(snap.effective_input()),
         format_compact_tokens(snap.cache_tokens),
         format_compact_tokens(snap.output_tokens),
@@ -1446,7 +1511,7 @@ struct WindowTotals {
 impl WindowTotals {
     fn record_active(&mut self, row: &TabTokenRow) {
         if row.is_active {
-            self.active_badge = row.snap.compact_context_badge();
+            self.active_badge = row.snap.usage_badge();
             self.active_alert = row.snap.alert_level();
         }
     }
@@ -1476,7 +1541,7 @@ impl WindowTotals {
         if let Some(badge) = &self.active_badge {
             return Some(format!("Токены · {} ▾", badge.trim_start_matches("ctx ")));
         }
-        (self.tot_ctx > 0).then(|| format!("Токены · Σ {} ▾", format_compact_tokens(self.tot_ctx)))
+        None
     }
 
     fn summary_markup(&self, row_count: usize, colors: TokensMarkupColors) -> String {
@@ -1867,6 +1932,7 @@ mod tests {
                 context_tokens: 184_000,
                 context_pct: Some(92),
                 cost_usd: Some(0.42),
+                ..Default::default()
             },
         }
     }

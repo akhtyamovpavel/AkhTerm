@@ -896,3 +896,40 @@ fn k8_full_stack_maintainability_index_targets() {
     }
     assert!(failures.is_empty(), "MI gate failures:\n{}", failures.join("\n"));
 }
+
+#[test]
+fn returning_to_shell_clears_the_agent_badge_after_exit_or_eof() {
+    with_headless_gtk(|| {
+        let (win, _) = install_test_window();
+        let sid = session_ops::add_tab("Shell", "", "/tmp", SessionCategory::Project,
+            &["bash", "--noprofile", "--norc", "-i"], Tab::local("shell"));
+        let vte = app_state::with_app(|app| app.sessions[0].vte).unwrap();
+        unsafe { gtk_widget_show_all(win) };
+        for finish in ["exit\n", "\x04"] {
+            let command = r#"bash -c 'exec -a opencode bash -c "$1"' stub 'printf "\033]0;OpenCode\007"; read -r answer'"#;
+            file_drop::feed_vte_text(vte, &format!("{command}\n"), false);
+            wait_for_agent_badge("OpenCode", true);
+            file_drop::feed_vte_text(vte, finish, false);
+            wait_for_agent_badge("", false);
+        }
+        cleanup_test_window(win, &[sid]);
+    });
+}
+
+fn wait_for_agent_badge(expected: &str, running: bool) {
+    for _ in 0..80 {
+        pump_gtk_events();
+        let matches = app_state::with_app_mut(|app| {
+            let s = &mut app.sessions[0];
+            session_ops::sync_session_proc(s, None);
+            crate::pane_radar::sync_registry_procs(&mut s.pane_registry);
+            let pane = &s.pane_registry.panes()[0];
+            s.child_pid > 0 && s.effective_agent() == expected && pane.effective_agent() == expected
+                && pane.is_active_agent() == running && s.title.contains("OpenCode") == running
+                && (running || s.proc_info.foreground_shell)
+        });
+        if matches == Some(true) { return; }
+        thread::sleep(Duration::from_millis(20));
+    }
+    panic!("expected focused agent badge {expected:?}");
+}

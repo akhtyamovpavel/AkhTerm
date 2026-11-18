@@ -166,7 +166,12 @@ fn is_foreground_candidate(entry: &ProcEntry, tpgid: i32) -> bool {
     entry.pid > 0 && (tpgid <= 0 || entry.pgrp == tpgid)
 }
 
+#[cfg(test)]
 pub fn detect_active_ssh(root_pid: i32, tpgid: i32, procs: &[ProcEntry]) -> Option<String> {
+    active_ssh_client(root_pid, tpgid, procs).map(|(_, host)| host)
+}
+
+pub fn active_ssh_client(root_pid: i32, tpgid: i32, procs: &[ProcEntry]) -> Option<(i32, String)> {
     for entry in procs {
         if !is_foreground_candidate(entry, tpgid) {
             continue;
@@ -175,7 +180,7 @@ pub fn detect_active_ssh(root_pid: i32, tpgid: i32, procs: &[ProcEntry]) -> Opti
             continue;
         };
         if !has_excluded_ancestor(entry, root_pid, procs) {
-            return Some(dest);
+            return Some((entry.pid, dest));
         }
     }
     None

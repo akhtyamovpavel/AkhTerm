@@ -100,6 +100,7 @@ pub fn set_agent_accent(icon: *mut GtkWidget, agent: &str) {
     let name = match agent {
         "AGY" => c"agent-agy",
         "DeepSeek" => c"agent-deepseek",
+        "OpenCode" => c"agent-opencode",
         "Codex" => c"agent-codex",
         "Claude" => c"agent-claude",
         "Kimi" => c"agent-kimi",

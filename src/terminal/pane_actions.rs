@@ -252,6 +252,7 @@ fn apply_handoff_rebuild(
         on_capture: on_handoff_capture,
         on_forward: on_handoff_forward,
         on_inject: on_handoff_inject,
+        on_preview: on_handoff_preview,
     };
     let new_inner = handoff::rebuild_handoff_widgets(widgets, &files, &targets, cbs);
     app_state::with_app_mut(|app| app.handoff.save_snapshot(new_inner, files, target_ids));
@@ -291,6 +292,13 @@ extern "C" fn on_handoff_forward(_btn: *mut GtkWidget, idx_ptr: *mut c_void) {
     }
     if let (Some(sid), Some(saved_path)) = (target_sid, capture_active_to_file()) {
         handoff_file_to_session(sid, &saved_path);
+    }
+}
+
+extern "C" fn on_handoff_preview(_: *mut GtkWidget, idx: *mut c_void) {
+    if let Some((popover, Some(path))) = app_state::with_app(|app| (app.handoff.popover(), app.handoff.file_at(idx as usize))) {
+        unsafe { gtk_popover_popdown(popover) };
+        crate::markdown::open(&path);
     }
 }
 
@@ -661,7 +669,7 @@ fn pane_paste_context(
         let target_id = sid_opt.unwrap_or(app.active_id);
         let s = app.sessions.iter_mut().find(|s| s.id == target_id)?;
         let target_vte = app_state::pick_session_vte(s, preferred_vte);
-        s.panes.record_focus(target_vte);
+        s.focus_pane(target_vte);
         let agent = resolve_session_agent(s, target_vte);
         Some((s.id, target_vte, app_state::session_ssh_host(s), agent))
     })
@@ -909,6 +917,7 @@ fn execute_vte_action(action: ContextAction) -> Result<(), ContextAction> {
         ContextAction::PasteSmart { sid, vte } => {
             let _ = paste_routed_to(Some(sid), vte, false, false);
         }
+        ContextAction::PreviewMarkdown(path) => crate::markdown::open(&path),
         ContextAction::OpenLink(url) => proc_radar::open_external_link(&url),
         ContextAction::CopyText(value) => context_menu::copy_text_to_clipboard(&value),
         ContextAction::OpenContainingFolder(path) => {
@@ -965,7 +974,7 @@ fn build_vte_menu_spec(
     let selected_text = has_selection.then(|| context_menu::read_vte_selection(vte)).flatten();
     app_state::with_app_mut(|app| {
         let idx = app.sessions.iter().position(|s| s.has_vte(vte))?;
-        app.sessions[idx].panes.record_focus(vte);
+        app.sessions[idx].focus_pane(vte);
         let sid = app.sessions[idx].id;
         let is_local = true;
         let targets = collect_forward_targets(app, sid);

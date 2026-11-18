@@ -3,6 +3,7 @@
 use crate::ssh_detect::{exe_basename, ProcEntry};
 
 const EXE_AGENTS: &[(&str, &str)] = &[
+    ("opencode", "OpenCode"), ("opencode-ai", "OpenCode"),
     ("deepseek", "DeepSeek"), ("deepseek-cli", "DeepSeek"), ("deepseek_cli", "DeepSeek"),
     ("agy", "AGY"), ("antigravity", "AGY"), ("antigravity-cli", "AGY"), ("antigravity_cli", "AGY"),
     ("codex", "Codex"), ("codex-cli", "Codex"), ("codex_cli", "Codex"), ("dsh", "DSH"),
@@ -11,6 +12,7 @@ const EXE_AGENTS: &[(&str, &str)] = &[
 ];
 
 const INSTALL_PATTERNS: &[(&str, &str)] = &[
+    ("/opencode-ai/bin/", "OpenCode"),
     ("/antigravity-cli/", "AGY"), ("/antigravity/", "AGY"), ("@openai/codex", "Codex"), ("/.codex/", "Codex"),
     ("@anthropic-ai/claude-code", "Claude"), ("/claude/versions/", "Claude"), ("/.claude/local/", "Claude"),
     ("/.kimi-code/", "Kimi"), ("/kimi-cli/", "Kimi"), ("/deepseek-cli/", "DeepSeek"),
@@ -136,8 +138,8 @@ pub fn select_tree_agent(root_pid: i32, tpgid: i32, procs: &[ProcEntry]) -> Opti
         .enumerate()
         .filter_map(|(idx, entry)| {
             let agent = detect_argv_agent(&entry.argv)?;
-            let fg_rank = u8::from(!in_foreground_lineage(entry, tpgid, procs));
-            Some(((fg_rank, tree_depth(entry, root_pid, procs), idx), agent))
+            in_foreground_lineage(entry, tpgid, procs)
+                .then(|| ((tree_depth(entry, root_pid, procs), idx), agent))
         })
         .min_by_key(|&(key, _)| key)
         .map(|(_, agent)| agent)
@@ -157,7 +159,7 @@ fn tree_depth(entry: &ProcEntry, root_pid: i32, procs: &[ProcEntry]) -> usize {
 fn in_foreground_lineage(entry: &ProcEntry, tpgid: i32, procs: &[ProcEntry]) -> bool {
     tpgid <= 0
         || entry.pgrp == tpgid
-        || procs.iter().filter(|p| p.pgrp == tpgid).any(|fg| is_ancestor_of(entry.pid, fg, procs))
+        || procs.iter().filter(|p| p.pgrp == tpgid || p.pid == tpgid).any(|fg| is_ancestor_of(entry.pid, fg, procs))
 }
 
 fn is_ancestor_of(ancestor_pid: i32, child: &ProcEntry, procs: &[ProcEntry]) -> bool {
@@ -257,6 +259,7 @@ mod tests {
             node(200, 100, 200, &["agy", "-c"]),
         ];
         assert_eq!(select_tree_agent(100, 200, &bg_claude), Some("AGY"));
+        assert_eq!(select_tree_agent(100, 100, &bg_claude), None);
         let sh_claude = [node(100, 1, 100, &["zsh"]), node(120, 100, 120, &["sh", "-c", "claude"]), node(121, 120, 120, &["claude"])];
         assert_eq!(select_tree_agent(100, 120, &sh_claude), Some("Claude"));
     }

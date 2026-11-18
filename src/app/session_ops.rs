@@ -66,7 +66,7 @@ extern "C" fn on_vte_focus_in(
     let sid = user_data as usize;
     let updated = app_state::with_app_mut(|app| {
         let s = app.sessions.iter_mut().find(|s| s.id == sid && s.has_vte(vte))?;
-        s.panes.record_focus(vte);
+        s.focus_pane(vte);
         clear_pane_unread_for(s, vte);
         sync_session_proc(s, None);
         Some((s.id == app.active_id, app.search_bar.clone()))
@@ -174,19 +174,28 @@ extern "C" fn on_vte_child_exited(vte: *mut GtkWidget, _status: c_int, user_data
     .unwrap_or(false);
     if reap_split {
         unsafe { g_idle_add(on_reap_split_pane, vte as *mut c_void) };
+    } else {
+        topbar::refresh_ui();
     }
 }
 
 fn reset_exited_primary_pane(s: &mut TermSession) {
     s.child_pid = 0;
+    s.proc_info = Default::default();
+    s.osc_title.clear();
+    s.remote_tmux = None;
+    s.tmux_title_from_vte = false;
+    s.telemetry = Default::default();
+    session::refresh_smart_title(s);
     s.state = WorkState::Idle;
     s.unread = false;
     s.work_started_at = None;
     if let Some(pane) = s.pane_registry.by_vte_mut(s.vte) {
         pane.child_pid = 0;
-        pane.state = WorkState::Idle;
-        pane.unread = false;
-        pane.work_started_at = None;
+        pane.proc_info = Default::default();
+        pane.remote_tmux = None;
+        pane.tmux_pane = None;
+        pane.clear_finished_agent();
     }
 }
 
@@ -201,12 +210,18 @@ extern "C" fn on_vte_title_changed(vte: *mut GtkWidget, user_data: *mut c_void) 
     let updated = app_state::with_app_mut(|app| {
         let s = app.sessions.iter_mut().find(|s| s.id == sid && s.has_vte(vte))?;
         sync_session_proc(s, None);
+        if title_str.starts_with("AKHTERM_TMUX:") {
+            if let Some(pane) = s.pane_registry.by_vte_mut(vte) {
+                pane_radar::sync_pane_proc(pane, proc_radar::inspect_proc_tree(pane.child_pid), None);
+            }
+        }
         s.apply_vte_title(vte, &title_str);
         session::refresh_smart_title(s);
         Some(true)
     })
     .flatten();
     if updated == Some(true) {
+        if title_str.starts_with("AKHTERM_TMUX:") { poll_all_session_telemetry(); }
         topbar::refresh_ui();
     }
 }
@@ -1171,7 +1186,7 @@ fn reset_replaced_session(
     let old_vte = std::mem::replace(&mut s.vte, vte);
     s.pane_registry.remove_by_vte(old_vte);
     s.pane_registry.register(vte, s.scroll_wrap, pid, s.cwd.clone());
-    s.panes.record_focus(vte);
+    s.focus_pane(vte);
     s.child_pid = pid;
     s.proc_info = proc_radar::inspect_proc_tree(pid);
     s.remote_tmux = None;
@@ -1186,8 +1201,8 @@ fn reset_replaced_session(
 
 fn replace_terminal(sid: usize, vte: *mut GtkWidget, pid: i32, title: String) {
     let swapped = app_state::with_app_mut(|app| {
-        app.remote_telemetry.reset_session(sid);
         let s = app.sessions.iter_mut().find(|s| s.id == sid)?;
+        if let Some(pane) = s.pane_registry.by_vte(s.vte) { app.remote_telemetry.reset_session(pane.probe_id); }
         let old_vte = reset_replaced_session(s, vte, pid, title);
         Some((old_vte, s.scroll_wrap))
     })
@@ -1233,6 +1248,7 @@ fn tick_radar_app(app: &mut AppState) {
 }
 
 extern "C" fn on_radar_tick(_data: *mut c_void) -> c_int {
+    crate::markdown::reload();
     app_state::with_app_mut(tick_radar_app);
     poll_all_session_telemetry();
     topbar::refresh_ui();
@@ -1286,7 +1302,8 @@ extern "C" fn on_remote_telemetry_ready(_data: *mut c_void) -> c_int {
 fn snapshot_pane_telemetry_jobs() -> (Vec<pane_radar::PanePollJob>, HashMap<usize, remote_telemetry::RemoteTailer>) {
     app_state::with_app(|app| {
         let remote_targets: Vec<remote_telemetry::RemoteSessionTarget> =
-            app.sessions.iter().filter_map(remote_telemetry::RemoteSessionTarget::from_session).collect();
+            app.sessions.iter().flat_map(|s| s.pane_registry.panes().iter()
+                .filter_map(move |pane| remote_telemetry::RemoteSessionTarget::from_pane(s, pane))).collect();
         app.remote_telemetry.sync_targets(&remote_targets);
         let jobs = pane_radar::collect_sessions_pane_jobs(&app.sessions);
         (jobs, app.remote_telemetry.snapshot())
