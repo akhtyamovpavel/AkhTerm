@@ -26,6 +26,48 @@ pub const MD_SEARCH: UiText = UiText::new(c"Найти в документе", c
 pub const MD_CLOSE: UiText = UiText::new(c"Закрыть просмотр", c"Close preview");
 pub const MD_EMPTY: UiText = UiText::new(c"В выводе панели нет локального Markdown-файла", c"No local Markdown file found in pane output");
 pub const MD_BLOCK_HINT: UiText = UiText::new(c"Поставь курсор внутрь блока кода", c"Place the cursor in a fenced code block");
+pub const DIFF_OPEN_BTN: UiText = UiText::new(c"Ревью diff", c"Review Diff");
+pub const DIFF_OPEN_TIP: UiText = UiText::new(
+    c"Открыть панель ревью diff с комментариями для агента (Ctrl+Shift+B)",
+    c"Open interactive Diff Review panel with comments for agent (Ctrl+Shift+B)",
+);
+pub const DIFF_MODE_WORKTREE: UiText = UiText::new(c"Рабочее дерево", c"Working tree");
+pub const DIFF_MODE_STAGED: UiText = UiText::new(c"В индексе", c"Staged");
+pub const DIFF_MODE_BRANCH: UiText = UiText::new(c"Ветка", c"Branch");
+pub const DIFF_REFRESH: UiText = UiText::new(c"Обновить", c"Refresh");
+pub const DIFF_CLOSE: UiText = UiText::new(c"Закрыть", c"Close");
+pub const DIFF_FILES_HDR: UiText = UiText::new(c"ФАЙЛЫ", c"FILES");
+pub const DIFF_REVIEWED: UiText = UiText::new(c"Просмотрено", c"Reviewed");
+pub const DIFF_HUNK_PREV: UiText = UiText::new(c"▲", c"▲");
+pub const DIFF_HUNK_NEXT: UiText = UiText::new(c"▼", c"▼");
+pub const DIFF_HUNK_PREV_TIP: UiText = UiText::new(c"Предыдущий ханк", c"Previous hunk");
+pub const DIFF_HUNK_NEXT_TIP: UiText = UiText::new(c"Следующий ханк", c"Next hunk");
+pub const DIFF_STAGE_HUNK: UiText = UiText::new(c"В индекс", c"Stage hunk");
+pub const DIFF_REVERT_HUNK: UiText = UiText::new(c"Откатить ханк", c"Revert hunk");
+pub const DIFF_HUNK_LOCAL_ONLY: UiText = UiText::new(
+    c"Действия с ханком доступны только для локального рабочего дерева",
+    c"Hunk actions are available only for a local working tree",
+);
+pub const DIFF_COMMENT_PLACEHOLDER: UiText = UiText::new(
+    c"Комментарий к выделенным строкам или активному ханку…",
+    c"Comment on selected lines or active hunk…",
+);
+pub const DIFF_ADD_COMMENT: UiText = UiText::new(c"Добавить", c"Add comment");
+pub const DIFF_CLEAR_BATCH: UiText = UiText::new(c"Очистить", c"Clear");
+pub const DIFF_SEND_BATCH: UiText = UiText::new(c"Отправить агенту", c"Send batch to agent");
+pub const DIFF_QUEUE_EMPTY: UiText = UiText::new(c"Очередь комментариев пуста", c"Comment queue is empty");
+pub const DIFF_NEED_COMMENT: UiText = UiText::new(c"Введите текст комментария перед добавлением", c"Enter a comment before adding");
+pub const DIFF_NO_CHANGES: UiText = UiText::new(c"Изменений нет", c"No changes");
+pub const DIFF_LOADING: UiText = UiText::new(c"Загружаю diff…", c"Loading diff…");
+pub const DIFF_TRUNCATED: UiText = UiText::new(c"Diff обрезан на лимите 2 МиБ", c"Diff truncated at 2 MiB safety limit");
+pub const DIFF_SENT_OK: UiText = UiText::new(c"Пакет комментариев отправлен агенту", c"Review batch sent to agent");
+pub const DIFF_HUNK_STAGED: UiText = UiText::new(c"Ханк добавлен в индекс", c"Hunk staged");
+pub const DIFF_HUNK_REVERTED: UiText = UiText::new(c"Ханк откачен", c"Hunk reverted");
+pub const DIFF_PALETTE_TITLE: UiText = UiText::new(c"Ревью Diff (Ctrl+Shift+B)", c"Review Diff (Ctrl+Shift+B)");
+pub const DIFF_PALETTE_DETAIL: UiText = UiText::new(
+    c"Локальный и SSH diff с инлайн-комментариями агенту и ханками",
+    c"Local and SSH diff review with inline comments for agent and hunk actions",
+);
 pub const APP_NAME: &CStr = c"AkhTerm";
 pub const PROFILES: &CStr = c"Профили / SSH ▾";
 pub const SERVERS: &CStr = c"Серверы ▾";
