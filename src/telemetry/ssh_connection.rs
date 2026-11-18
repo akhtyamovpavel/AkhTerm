@@ -99,6 +99,14 @@ impl SshRoute {
         })
     }
 
+    pub(crate) fn transport_args(&self) -> &[String] {
+        &self.args
+    }
+
+    pub(crate) fn working_dir(&self) -> &std::path::Path {
+        &self.cwd
+    }
+
     pub(crate) fn spawn(
         &self,
         script: &str,

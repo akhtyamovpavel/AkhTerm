@@ -3,6 +3,10 @@
 mod app;
 #[path = "ui/markdown.rs"]
 mod markdown;
+#[path = "telemetry/port_radar.rs"]
+pub(crate) mod port_radar;
+#[path = "ui/ports_ui.rs"]
+pub(crate) mod ports_ui;
 mod swarm;
 mod sys;
 mod telemetry;
@@ -14,7 +18,7 @@ pub(crate) use app::{app_state, session_ops, shortcuts, updater_wire};
 #[cfg(test)]
 pub(crate) use app::app_tests as tests;
 pub(crate) use swarm::{git_review, git_status, git_wt, handoff, swarm_view, task_dispatch};
-pub(crate) use sys::{config, ffi, paths, platform, ssh_config, updater};
+pub(crate) use sys::{config, ffi, paths, platform, ssh_config, ssh_tunnel, updater};
 pub(crate) use telemetry::{
     agent_detect, approval, mi, mi_watch, pane_radar, proc_radar, remote_telemetry, ssh_detect,
     telemetry_agy, tmux_local,
@@ -44,7 +48,7 @@ use handoff::HandoffMenu;
 use mi_watch::MiScheduler;
 use proc_radar::{query_ssh_servers, BoxTelemetry};
 use remote_telemetry::RemoteTelemetryScheduler;
-use session::{register_link_cwd_lookup, register_vte_menu_hook};
+use session::{register_link_cwd_lookup, register_link_open_hook, register_vte_menu_hook};
 
 pub use app_state::{connect_click, connect_entry_changed};
 #[cfg(test)]
@@ -78,6 +82,7 @@ fn init_app_hooks() -> Option<std::fs::File> {
     platform::init_process_identity();
     let ui_font = ui_font::load().inspect_err(|e| eprintln!("AkhTerm: {e}")).ok();
     register_link_cwd_lookup(session_ops::lookup_vte_link_cwd);
+    register_link_open_hook(ports_ui::intercept_vte_link_open);
     install_file_drop_hooks();
     register_vte_menu_hook(pane_actions::open_vte_context_menu);
     pane_header::register_pane_close_hook(pane_actions::close_pane_by_vte);
@@ -164,6 +169,7 @@ struct Schedulers {
     mi: MiScheduler,
     git: GitStatusScheduler,
     remote: RemoteTelemetryScheduler,
+    remote_ports: port_radar::RemotePortScheduler,
     box_state: Arc<Mutex<BoxTelemetry>>,
     enabled_hosts: Arc<Mutex<Vec<String>>>,
 }
@@ -174,6 +180,7 @@ fn make_schedulers(config: &WorkspaceConfig, ssh_hosts: &[proc_radar::SshHostEnt
     mi.sync_targets(&config.mi_directories(), &[], &paths::home_dir());
     Schedulers {
         mi, git: GitStatusScheduler::default(), remote: RemoteTelemetryScheduler::default(),
+        remote_ports: port_radar::RemotePortScheduler::default(),
         box_state: Arc::new(Mutex::new(BoxTelemetry::default())), enabled_hosts: Arc::new(Mutex::new(enabled)),
     }
 }
@@ -208,10 +215,20 @@ fn spawn_ssh_worker(box_bg: Arc<Mutex<BoxTelemetry>>, hosts_bg: Arc<Mutex<Vec<St
     });
 }
 
+fn spawn_remote_ports_worker(ports_bg: port_radar::RemotePortScheduler) {
+    thread::spawn(move || loop {
+        if ports_bg.refresh_due(Instant::now()) > 0 {
+            unsafe { g_idle_add(ports_ui::remote_ports_ready_cb(), ptr::null_mut()) };
+        }
+        ports_bg.wait_for_turn(Duration::from_secs(3));
+    });
+}
+
 fn spawn_background_workers(sched: &Schedulers) {
     spawn_mi_worker(sched.mi.clone());
     spawn_git_worker(sched.git.clone());
     spawn_remote_worker(sched.remote.clone());
+    spawn_remote_ports_worker(sched.remote_ports.clone());
     spawn_ssh_worker(Arc::clone(&sched.box_state), Arc::clone(&sched.enabled_hosts));
 }
 
@@ -284,6 +301,9 @@ fn build_app_state(
         remote_telemetry: a.sched.remote, box_state: a.sched.box_state,
         palette, search_bar: a.search_bar, pin_pop, swarm_pop, swarm_view,
         update_scheduler: updater::UpdateScheduler::new(), update_banner,
+        ports_menu: a.tb.ports_menu, ssh_tunnels: ssh_tunnel::SshTunnelManager::new(),
+        remote_ports: a.sched.remote_ports, local_ports_by_sid: Default::default(),
+        remote_url_ports_by_sid: Default::default(),
     }
 }
 

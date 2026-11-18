@@ -280,6 +280,7 @@ fn execute_palette_tool_action(action: palette::PaletteAction) {
         palette::PaletteAction::OpenAbout => topbar::open_about_for_app(),
         palette::PaletteAction::SwitchLocale => topbar::toggle_locale_for_app(),
         palette::PaletteAction::CheckUpdates => crate::about::trigger_check_updates(),
+        palette::PaletteAction::OpenPortsMenu => crate::ports_ui::open_ports_popover_for_app(),
         _ => {}
     }
 }

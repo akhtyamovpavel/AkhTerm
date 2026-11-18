@@ -449,6 +449,28 @@ pub mod i18n_text {
     pub fn sidebar_tmux_prefix() -> &'static str { SIDEBAR_TMUX_PREFIX.as_str() }
     pub const SIDEBAR_FOLDER_NEW_TAB_TIP: UiText = UiText::new(c"Новая локальная вкладка в этой папке", c"New local tab in this folder");
     pub fn sidebar_folder_new_tab_tip() -> &'static CStr { SIDEBAR_FOLDER_NEW_TAB_TIP.cstr() }
+
+    pub const PORTS_BTN: UiText = UiText::new(c"Порты ▾", c"Ports ▾");
+    pub fn ports_btn() -> &'static CStr { PORTS_BTN.cstr() }
+    pub const PORTS_BTN_WORD: UiText = UiText::new(c"Порты", c"Ports");
+    pub const PORTS_TIP: UiText = UiText::new(c"Открытые локальные и SSH-порты, управляемые туннели", c"Listening local and SSH ports, managed tunnels");
+    pub fn ports_tip() -> &'static CStr { PORTS_TIP.cstr() }
+    pub const PORTS_HEADER: UiText = UiText::new(c"ПОРТЫ И SSH-ТУННЕЛИ", c"PORTS & SSH TUNNELS");
+    pub const PORTS_REFRESH_TIP: UiText = UiText::new(c"Обновить список портов", c"Refresh listening ports");
+    pub const PORTS_SECTION_TUNNELS: UiText = UiText::new(c"АКТИВНЫЕ SSH-ТУННЕЛИ", c"ACTIVE SSH TUNNELS");
+    pub const PORTS_SECTION_LOCAL: UiText = UiText::new(c"ЛОКАЛЬНЫЕ ПОРТЫ ВКЛАДКИ", c"LOCAL TAB PORTS");
+    pub const PORTS_SECTION_REMOTE: UiText = UiText::new(c"УДАЛЁННЫЕ ПОРТЫ", c"REMOTE PORTS");
+    pub const PORTS_OPEN: UiText = UiText::new(c"Открыть", c"Open");
+    pub const PORTS_COPY: UiText = UiText::new(c"Копировать", c"Copy");
+    pub const PORTS_FORWARD_OPEN: UiText = UiText::new(c"Пробросить и открыть", c"Forward & Open");
+    pub const PORTS_STOP_TIP: UiText = UiText::new(c"Остановить SSH-туннель", c"Stop SSH tunnel");
+    pub const PORTS_TO_WORD: UiText = UiText::new(c"на", c"to");
+    pub const PORTS_EMPTY_LOCAL: UiText = UiText::new(c"На этой вкладке нет открытых локальных портов.", c"No listening local ports detected in this tab.");
+    pub const PORTS_EMPTY_REMOTE: UiText = UiText::new(c"Открытые порты на удалённом хосте не найдены. Запустите сервер или обновите список.", c"No listening remote ports detected on this host. Start a server or refresh.");
+    pub const PORTS_COPIED: UiText = UiText::new(c"Скопирован URL:", c"Copied URL:");
+    pub const PORTS_TUNNEL_READY: UiText = UiText::new(c"SSH-туннель:", c"SSH tunnel:");
+    pub const PORTS_TUNNEL_STOPPED: UiText = UiText::new(c"SSH-туннель остановлен:", c"SSH tunnel stopped:");
+    pub const PORTS_TUNNEL_FAILED: UiText = UiText::new(c"Не удалось открыть SSH-туннель:", c"Failed to open SSH tunnel:");
 }
 
 pub use i18n_text::*;
@@ -549,10 +571,29 @@ mod tests {
         }
     }
 
+    fn verify_ports_pairs() {
+        for entry in [
+            i18n_text::PORTS_BTN, i18n_text::PORTS_BTN_WORD, i18n_text::PORTS_TIP,
+            i18n_text::PORTS_HEADER, i18n_text::PORTS_REFRESH_TIP, i18n_text::PORTS_SECTION_TUNNELS,
+            i18n_text::PORTS_SECTION_LOCAL, i18n_text::PORTS_SECTION_REMOTE, i18n_text::PORTS_OPEN,
+            i18n_text::PORTS_COPY, i18n_text::PORTS_FORWARD_OPEN, i18n_text::PORTS_STOP_TIP,
+            i18n_text::PORTS_TO_WORD, i18n_text::PORTS_EMPTY_LOCAL, i18n_text::PORTS_EMPTY_REMOTE,
+            i18n_text::PORTS_COPIED, i18n_text::PORTS_TUNNEL_READY, i18n_text::PORTS_TUNNEL_STOPPED,
+            i18n_text::PORTS_TUNNEL_FAILED,
+        ] {
+            assert_pair_valid(entry);
+            for loc in [UiLocale::Ru, UiLocale::En] {
+                let s = entry.for_locale(loc).to_str().unwrap();
+                assert!(!s.contains("->") && !s.contains('→') && !s.contains("=>"), "arrow in {s}");
+            }
+        }
+    }
+
     #[test]
     fn every_ui_text_entry_has_valid_non_empty_ru_and_en_strings() {
         verify_core_and_palette_pairs();
         verify_tools_context_and_dialog_pairs();
+        verify_ports_pairs();
     }
 
     #[test]

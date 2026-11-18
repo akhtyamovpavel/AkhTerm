@@ -919,7 +919,11 @@ fn execute_vte_action(action: ContextAction) -> Result<(), ContextAction> {
         }
         ContextAction::PreviewMarkdown(path, origin) => crate::markdown::open_local(&path, origin),
         ContextAction::PreviewRemote(doc) => crate::markdown::open_remote(doc),
-        ContextAction::OpenLink(url) => proc_radar::open_external_link(&url),
+        ContextAction::OpenLink(url) => {
+            if !crate::ports_ui::intercept_active_link_open(&url) {
+                proc_radar::open_external_link(&url);
+            }
+        }
         ContextAction::CopyText(value) => context_menu::copy_text_to_clipboard(&value),
         ContextAction::OpenContainingFolder(path) => {
             let ok = crate::platform::open_containing_folder(&path);

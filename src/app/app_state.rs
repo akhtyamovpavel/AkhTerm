@@ -1,6 +1,7 @@
 //! Core application state, thread-local cell, and shared session/widget helpers.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ffi::{c_void, CStr, CString};
 use std::ptr;
 use std::sync::{Arc, Mutex};
@@ -90,6 +91,11 @@ pub(crate) struct AppState {
     pub(crate) swarm_view: crate::swarm_view::SwarmView,
     pub(crate) update_scheduler: UpdateScheduler,
     pub(crate) update_banner: UpdateBanner,
+    pub(crate) ports_menu: crate::ports_ui::PortsMenu,
+    pub(crate) ssh_tunnels: crate::ssh_tunnel::SshTunnelManager,
+    pub(crate) remote_ports: crate::port_radar::RemotePortScheduler,
+    pub(crate) local_ports_by_sid: HashMap<usize, Vec<crate::port_radar::DetectedPort>>,
+    pub(crate) remote_url_ports_by_sid: HashMap<usize, Vec<crate::port_radar::DetectedPort>>,
 }
 
 thread_local! {
