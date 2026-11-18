@@ -143,15 +143,52 @@ impl PaneRecord {
         Some(now.saturating_duration_since(started).as_secs())
     }
 
+    pub fn sync_agent(&mut self, info: &mut ProcInfo) {
+        if info.shell_owns_pane(self.remote_tmux.as_ref()) {
+            if !self.proc_info.agent.is_empty() || self.agent_title_hint().is_some() || self.telemetry.detected_agent_label().is_some() {
+                self.clear_finished_agent();
+            }
+        } else if info.agent.is_empty() && !crate::tmux_local::is_local_tmux_pane(info) {
+            if let Some(name) = self.agent_title_hint() {
+                info.agent = name.to_owned();
+            }
+        }
+    }
+
+    fn agent_title_hint(&self) -> Option<&'static str> {
+        self.remote_tmux.as_ref().and_then(|(_, _, cmd, _)| detect_agent_name(cmd))
+            .or_else(|| detect_agent_name(&self.osc_title))
+    }
+
+    pub fn should_poll_usage(&self) -> bool {
+        self.child_pid > 0 && !self.proc_info.shell_owns_pane(self.remote_tmux.as_ref())
+    }
+
+    pub fn clear_finished_agent(&mut self) {
+        self.telemetry = SessionTelemetry::default();
+        self.osc_title.clear();
+        self.approval_snippet = None;
+        self.state = WorkState::Idle;
+        self.work_started_at = None;
+        self.unread = false;
+    }
+
+    pub fn apply_telemetry(&mut self, next: SessionTelemetry) {
+        if next.remote_tailer.foreground_shell && !self.telemetry.remote_tailer.foreground_shell {
+            self.clear_finished_agent();
+            self.proc_info.agent.clear();
+        }
+        self.telemetry = next;
+    }
+
     pub fn effective_agent(&self) -> String {
+        if self.child_pid <= 0 || self.proc_info.shell_owns_pane(self.remote_tmux.as_ref()) {
+            return String::new();
+        }
         if !self.proc_info.agent.is_empty() {
             return self.proc_info.agent.clone();
         }
-        let tmux_agent = self.remote_tmux.as_ref().and_then(|(_, w, c, _)| {
-            detect_agent_name(c).or_else(|| detect_agent_name(w))
-        });
-        tmux_agent
-            .or_else(|| detect_agent_name(&self.osc_title))
+        self.agent_title_hint()
             .or_else(|| self.telemetry.detected_agent_label())
             .unwrap_or("")
             .to_owned()
