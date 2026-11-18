@@ -207,6 +207,94 @@ fn decode_saved_pinned(path: &Path) -> Option<String> {
     TabsState::decode(&raw).expect("valid").pinned_at(0).map(str::to_owned)
 }
 
+#[test]
+fn cd_updates_mi_button_before_and_after_the_new_directory_is_scanned() {
+    verify_cd_updates_mi(false);
+}
+
+#[test]
+fn cd_updates_mi_inside_a_local_tmux_pane() {
+    use std::process::Command;
+    let test_name = "app::app_tests::cd_updates_mi_inside_a_local_tmux_pane";
+    if std::env::var_os("AKHTERM_TEST_MI_TMUX").is_some() {
+        verify_cd_updates_mi(true);
+        return;
+    }
+    if Command::new("tmux").arg("-V").output().is_err() { return; }
+    let tmp = std::env::temp_dir().join(format!("akhterm-mi-tmux-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test_name, "--nocapture"])
+        .env_remove("TMUX").env("TMUX_TMPDIR", &tmp).env("AKHTERM_TEST_MI_TMUX", "1")
+        .status().unwrap();
+    let _ = Command::new("tmux").arg("kill-server").env_remove("TMUX").env("TMUX_TMPDIR", &tmp).output();
+    std::fs::remove_dir_all(tmp).unwrap();
+    assert!(status.success());
+}
+
+fn verify_cd_updates_mi(in_tmux: bool) {
+    with_headless_gtk(|| {
+        let project = std::env::temp_dir().join(format!("akhterm-mi-cd-{}", std::process::id()));
+        let empty = project.join("отдельный проект");
+        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::write(project.join("Cargo.toml"), "[package]\n").unwrap();
+        std::fs::write(empty.join("Cargo.toml"), "[package]\n").unwrap();
+        std::fs::write(project.join("main.rs"), "fn main() {\n    let message = \"this file is long enough to analyze\";\n    println!(\"{message}\");\n}\n").unwrap();
+        let (win, _) = install_test_window();
+        let dir = project.to_str().unwrap();
+        let argv: &[&str] = if in_tmux {
+            &["tmux", "-f", "/dev/null", "new-session", "-s", "mi-cd", "bash --noprofile --norc -i"]
+        } else {
+            &["bash", "--noprofile", "--norc", "-i"]
+        };
+        let sid = session_ops::add_tab("Shell", "", dir, SessionCategory::Project, argv, Tab::local("shell"));
+        let (vte, button, scheduler) = app_state::with_app_mut(|app| {
+            let button = unsafe { gtk_button_new() };
+            unsafe { gtk_container_add(gtk_widget_get_parent(app.mi_btn), button) };
+            app.mi_btn = button;
+            app.config.mi_root = Some(dir.to_owned());
+            (app.sessions[0].vte, button, app.mi_scheduler.clone())
+        }).unwrap();
+        unsafe { gtk_widget_show_all(win) };
+        wait_for_mi_cwd(dir, in_tmux);
+        topbar::refresh_ui();
+        scheduler.refresh_due(std::time::Instant::now());
+        topbar::refresh_ui();
+        let label = || unsafe { CStr::from_ptr(gtk_button_get_label(button)).to_string_lossy().into_owned() };
+        assert!(label().starts_with("MI ") && label().contains('['));
+        file_drop::feed_vte_text(vte, "cd 'отдельный проект'\n", false);
+        wait_for_mi_cwd(empty.to_str().unwrap(), in_tmux);
+        (session_ops::radar_tick_cb())(ptr::null_mut());
+        assert_eq!(label(), crate::ui_text::MI_CALCULATING.as_str());
+        scheduler.refresh_due(std::time::Instant::now());
+        (topbar::mi_ready_cb())(ptr::null_mut());
+        assert_eq!(label(), crate::ui_text::MI_NO_FILES.as_str());
+        file_drop::feed_vte_text(vte, "cd ..\n", false);
+        wait_for_mi_cwd(dir, in_tmux);
+        (session_ops::radar_tick_cb())(ptr::null_mut());
+        assert_eq!(label(), crate::ui_text::MI_CALCULATING.as_str());
+        scheduler.refresh_due(std::time::Instant::now());
+        (topbar::mi_ready_cb())(ptr::null_mut());
+        assert!(label().contains('['));
+        cleanup_test_window(win, &[sid]);
+        std::fs::remove_dir_all(project).unwrap();
+    });
+}
+
+fn wait_for_mi_cwd(dir: &str, in_tmux: bool) {
+    for _ in 0..100 {
+        pump_gtk_events();
+        let matched = app_state::with_app_mut(|app| {
+            let s = &mut app.sessions[0];
+            session_ops::sync_session_proc(s, None);
+            (!in_tmux || s.proc_info.active_pane_pid > 0) && s.active_local_cwd().as_deref() == Some(dir)
+        });
+        if matched == Some(true) { return; }
+        thread::sleep(Duration::from_millis(25));
+    }
+    panic!("active local pane did not report {dir}");
+}
+
 fn temp_test_path(prefix: &str) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("{prefix}_{}", std::process::id()));
     let _ = std::fs::remove_file(&path);

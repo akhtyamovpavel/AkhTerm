@@ -64,20 +64,18 @@ fn has_project_marker(dir: &Path) -> bool {
 pub fn resolve_project_root(cwd: &str, home: &str) -> Option<String> {
     let home_path = clean_home(home);
     let start = canonical_dir(cwd, home)?;
-    let mut current: &Path = &start;
-    for _ in 0..=3 {
+    for current in start.ancestors() {
         if is_excluded_dir(current, &home_path) {
             return None;
         }
         if has_project_marker(current) {
             return Some(current.to_string_lossy().into_owned());
         }
-        current = current.parent()?;
     }
     None
 }
 
-fn resolve_configured_dir(dir: &str, home: &str) -> Option<String> {
+fn analysis_root(dir: &str, home: &str) -> Option<String> {
     if let Some(root) = resolve_project_root(dir, home) {
         return Some(root);
     }
@@ -94,13 +92,8 @@ fn push_unique(out: &mut Vec<String>, item: String) {
 
 fn collect_targets(configured: &[String], local_cwds: &[String], home: &str) -> Vec<String> {
     let mut targets = Vec::new();
-    for cwd in local_cwds {
-        if let Some(root) = resolve_project_root(cwd, home) {
-            push_unique(&mut targets, root);
-        }
-    }
-    for dir in configured {
-        if let Some(root) = resolve_configured_dir(dir, home) {
+    for dir in local_cwds.iter().chain(configured) {
+        if let Some(root) = analysis_root(dir, home) {
             push_unique(&mut targets, root);
         }
     }
@@ -112,12 +105,22 @@ pub fn lookup_mi<'a>(
     cwd: &str,
     home: &str,
 ) -> Option<&'a ProjectMiReport> {
-    if let Some(root) = resolve_project_root(cwd, home) {
-        if let Some(rep) = map.get(&root) {
-            return Some(rep);
+    analysis_root(cwd, home).and_then(|root| map.get(&root))
+}
+
+pub enum ActiveMi<'a> {
+    Unavailable,
+    Calculating(String),
+    Complete(&'a ProjectMiReport),
+}
+
+impl<'a> ActiveMi<'a> {
+    pub fn report(&self) -> Option<&'a ProjectMiReport> {
+        match self {
+            Self::Complete(report) if report.files_count > 0 => Some(report),
+            _ => None,
         }
     }
-    resolve_configured_dir(cwd, home).and_then(|clean| map.get(&clean))
 }
 
 pub fn resolve_active_mi<'a>(
@@ -125,16 +128,24 @@ pub fn resolve_active_mi<'a>(
     active_cwd: Option<&str>,
     mi_root: Option<&str>,
     home: &str,
-) -> (Option<&'a ProjectMiReport>, Option<&'a ProjectMiReport>) {
+) -> (ActiveMi<'a>, Option<&'a ProjectMiReport>) {
     let self_mi = mi_root.and_then(|path| lookup_mi(map, path, home));
-    let cur_mi = active_cwd
-        .and_then(|dir| lookup_mi(map, dir, home))
-        .or(self_mi);
-    (cur_mi, self_mi)
+    let root = active_cwd.and_then(|dir| analysis_root(dir, home))
+        .or_else(|| mi_root.and_then(|dir| analysis_root(dir, home)));
+    let current = match root {
+        None => ActiveMi::Unavailable,
+        Some(dir) => match map.get(&dir) {
+            Some(report) => ActiveMi::Complete(report),
+            None => ActiveMi::Calculating(dir),
+        },
+    };
+    (current, self_mi.filter(|r| r.files_count > 0))
 }
 
 struct SchedulerState {
     entries: HashMap<String, (Instant, ProjectMiReport)>,
+    last_active: Option<(usize, String)>,
+    invalidated: HashMap<String, Instant>,
     targets: Vec<String>,
     ttl: Duration,
 }
@@ -171,6 +182,8 @@ impl MiScheduler {
     pub fn new(ttl: Duration) -> Self {
         let state = SchedulerState {
             entries: HashMap::new(),
+            last_active: None,
+            invalidated: HashMap::new(),
             targets: Vec::new(),
             ttl,
         };
@@ -190,6 +203,20 @@ impl MiScheduler {
         }
     }
 
+    pub fn observe_directory(&self, pane: Option<(usize, String)>, home: &str) {
+        let (lock, wake) = &*self.shared;
+        let Ok(mut state) = lock.lock() else { return };
+        if state.last_active == pane { return; }
+        let previous = std::mem::replace(&mut state.last_active, pane);
+        let Some(((last, _), (current, dir))) = previous.as_ref().zip(state.last_active.as_ref()) else { return };
+        if last != current { return; }
+        if let Some(root) = analysis_root(dir, home) {
+            state.entries.remove(&root);
+            state.invalidated.insert(root, Instant::now());
+            wake.notify_one();
+        }
+    }
+
     fn take_due(&self, now: Instant) -> Vec<String> {
         let (lock, _) = &*self.shared;
         lock.lock()
@@ -201,6 +228,8 @@ impl MiScheduler {
         let (lock, _) = &*self.shared;
         if let Ok(mut state) = lock.lock() {
             for (root, report) in batch {
+                if state.invalidated.get(&root).is_some_and(|changed| *changed > now) { continue; }
+                state.invalidated.remove(&root);
                 state.entries.insert(root, (now, report));
             }
         }
@@ -232,6 +261,7 @@ impl MiScheduler {
         state
             .entries
             .iter()
+            .filter(|(root, _)| !state.is_due(root, Instant::now()))
             .map(|(k, (_, rep))| (k.clone(), rep.clone()))
             .collect()
     }
@@ -280,7 +310,7 @@ pub fn format_mi_button_label(rep: &ProjectMiReport) -> String {
     format!("MI {:.1} [{}] ▾", rep.avg_mi, rep.grade)
 }
 
-fn escape_markup(text: &str) -> String {
+pub fn escape_markup(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -368,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_project_root_up_to_three_parents() {
+    fn resolves_project_root_from_deep_directories() {
         let base = temp_sandbox("root_walk");
         let home = base.join("home_user");
         let repo = home.join("Проекты").join("demo_repo");
@@ -381,7 +411,7 @@ mod tests {
         let expected = fs::canonicalize(&repo).unwrap().to_string_lossy().into_owned();
         assert_eq!(resolve_project_root(&repo.join("src").to_string_lossy(), &home_s).as_deref(), Some(expected.as_str()));
         assert_eq!(resolve_project_root(&deep_ok.to_string_lossy(), &home_s).as_deref(), Some(expected.as_str()));
-        assert_eq!(resolve_project_root(&too_deep.to_string_lossy(), &home_s), None);
+        assert_eq!(resolve_project_root(&too_deep.to_string_lossy(), &home_s).as_deref(), Some(expected.as_str()));
         assert_eq!(resolve_project_root("~/Проекты/demo_repo/src", &home_s).as_deref(), Some(expected.as_str()));
         let _ = fs::remove_dir_all(&base);
     }

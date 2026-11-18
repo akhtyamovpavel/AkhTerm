@@ -120,7 +120,7 @@ fn build_mi_popover_box(mi_pop_label: *mut GtkWidget, mi_refactor_btn: *mut GtkW
 fn build_mi_popover(mi_btn: *mut GtkWidget) -> (*mut GtkWidget, *mut GtkWidget, *mut GtkWidget) {
     unsafe {
         let mi_pop = gtk_popover_new(mi_btn);
-        let mi_pop_label = gtk_label_new(text::MI_EMPTY.as_ptr());
+        let mi_pop_label = gtk_label_new(text::MI_EMPTY_MESSAGE.as_ptr());
         let mi_refactor_btn = gtk_button_new_with_label(text::MI_REFACTOR.as_ptr());
         let mi_pop_box = build_mi_popover_box(mi_pop_label, mi_refactor_btn);
         gtk_container_add(mi_pop, mi_pop_box);
@@ -356,24 +356,27 @@ pub(crate) fn connect_popover(btn: *mut GtkWidget, pop: *mut GtkWidget) {
 struct MiUiPlan {
     widgets: [*mut GtkWidget; 3],
     grade_cls: Option<&'static str>,
-    texts: Option<(String, String)>,
+    texts: (String, String),
 }
 
 impl MiUiPlan {
     fn from_state(
         app: &AppState,
-        cur_mi: Option<&ProjectMiReport>,
+        cur_mi: mi_watch::ActiveMi<'_>,
         self_mi: Option<&ProjectMiReport>,
     ) -> Self {
         Self {
             widgets: [app.mi_btn, app.mi_pop_label, app.mi_refactor_btn],
-            grade_cls: cur_mi.map(|rep| mi_watch::mi_grade_class(rep.grade)),
-            texts: cur_mi.map(|rep| {
-                (
+            grade_cls: cur_mi.report().map(|rep| mi_watch::mi_grade_class(rep.grade)),
+            texts: match cur_mi {
+                mi_watch::ActiveMi::Unavailable => (text::MAINTAINABILITY.to_string_lossy().into_owned(), text::MI_EMPTY_MESSAGE.as_str().to_owned()),
+                mi_watch::ActiveMi::Calculating(dir) => mi_status_text(text::MI_CALCULATING, text::MI_SCAN_DETAIL, &dir),
+                mi_watch::ActiveMi::Complete(rep) if rep.files_count == 0 => mi_status_text(text::MI_NO_FILES, text::MI_NO_FILES_DETAIL, &rep.root),
+                mi_watch::ActiveMi::Complete(rep) => (
                     mi_watch::format_mi_button_label(rep),
                     mi_watch::format_mi_popover_markup(rep, self_mi),
-                )
-            }),
+                ),
+            },
         }
     }
 
@@ -381,11 +384,10 @@ impl MiUiPlan {
         let [btn, pop_label, refactor_btn] = self.widgets;
         clear_mi_classes(btn);
         unsafe { gtk_widget_set_sensitive(refactor_btn, i32::from(self.grade_cls.is_some())) };
-        let Some((cls, (lbl, markup))) = self.grade_cls.zip(self.texts) else {
-            apply_empty_mi_labels(btn, pop_label);
-            return;
-        };
-        apply_filled_mi_labels(btn, pop_label, cls, &lbl, &markup);
+        if let Some(cls) = self.grade_cls {
+            add_class(btn, cls);
+        }
+        apply_mi_labels(btn, pop_label, &self.texts.0, &self.texts.1);
     }
 }
 
@@ -395,21 +397,16 @@ fn clear_mi_classes(btn: *mut GtkWidget) {
     }
 }
 
-fn apply_empty_mi_labels(btn: *mut GtkWidget, pop_label: *mut GtkWidget) {
-    unsafe {
-        gtk_button_set_label(btn, text::MAINTAINABILITY.as_ptr());
-        gtk_label_set_text(pop_label, text::MI_EMPTY.as_ptr());
-    }
+fn mi_status_text(label: i18n::UiText, detail: i18n::UiText, root: &str) -> (String, String) {
+    (label.as_str().to_owned(), format!("{}\n<tt>{}</tt>", detail.as_str(), mi_watch::escape_markup(root)))
 }
 
-fn apply_filled_mi_labels(
+fn apply_mi_labels(
     btn: *mut GtkWidget,
     pop_label: *mut GtkWidget,
-    cls: &str,
     lbl: &str,
     markup: &str,
 ) {
-    add_class(btn, cls);
     if let Ok(c) = CString::new(lbl) {
         unsafe { gtk_button_set_label(btn, c.as_ptr()) };
     }
@@ -441,7 +438,7 @@ fn active_mi_refactor_target(app: &AppState) -> (*mut GtkWidget, Option<String>)
         app.config.mi_root.as_deref(),
         &home,
     );
-    (app.mi_pop, cur_mi.map(mi_watch::build_mi_refactor_prompt))
+    (app.mi_pop, cur_mi.report().map(mi_watch::build_mi_refactor_prompt))
 }
 
 extern "C" fn on_mi_refactor_clicked(_btn: *mut GtkWidget, _data: *mut c_void) {
@@ -547,16 +544,13 @@ fn prepare_session_views(
 }
 
 fn session_mi_badge(
-    s: &session::TermSession,
     local_dir: Option<&str>,
     mi_map: &HashMap<String, ProjectMiReport>,
     home: &str,
 ) -> Option<(f64, &'static str)> {
     local_dir
-        .and_then(|d| {
-            mi_watch::lookup_mi(mi_map, d, home)
-                .or_else(|| mi_watch::lookup_mi(mi_map, &s.cwd, home))
-        })
+        .and_then(|d| mi_watch::lookup_mi(mi_map, d, home))
+        .filter(|r| r.files_count > 0)
         .map(|r| (r.avg_mi, r.grade))
 }
 
@@ -582,7 +576,7 @@ fn push_session_view(
     let is_act = s.id == app.active_id;
     let local_dir = s.active_local_cwd();
     accumulate_session_counts(s, is_act, out, &local_dir);
-    let mi_badge = session_mi_badge(s, local_dir.as_deref(), mi_map, home);
+    let mi_badge = session_mi_badge(local_dir.as_deref(), mi_map, home);
     let git_badge = session_git_badge(s, local_dir.as_deref(), git_map, home);
     out.rows.push(s.sidebar_row.prepare_update(idx, s, mi_badge, &git_badge, is_act));
     out.tabs.push(s.top_tab.prepare_update(s, is_act));
@@ -606,6 +600,9 @@ impl UiRefreshPlan {
     fn build(app: &AppState) -> Self {
         let home = paths::home_dir();
         let local_cwds = app_state::collect_local_cwds(app);
+        let focused = app.sessions.iter().find(|s| s.id == app.active_id);
+        let pane = focused.and_then(|s| s.active_local_cwd().map(|dir| (s.active_vte() as usize, dir)));
+        app.mi_scheduler.observe_directory(pane, &home);
         app.mi_scheduler.sync_targets(&app.config.mi_directories(), &local_cwds, &home);
         app.git_scheduler.sync_targets(&local_cwds, &home);
         let mi_map = app.mi_scheduler.snapshot();
@@ -632,7 +629,7 @@ impl UiRefreshPlan {
         app: &AppState,
         views: SessionViews,
         active_git: Option<GitRepoStatus>,
-        cur_mi: Option<&ProjectMiReport>,
+        cur_mi: mi_watch::ActiveMi<'_>,
         self_mi: Option<&ProjectMiReport>,
     ) -> Self {
         let [working, ready, ssh_count] = views.counts;
