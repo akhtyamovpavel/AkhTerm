@@ -495,6 +495,13 @@ impl RemotePortScheduler {
         st.cache.get(host).cloned().unwrap_or_default()
     }
 
+    #[cfg(test)]
+    pub fn seed_cache_for_test(&self, host: &str, ports: Vec<DetectedPort>) {
+        if let Ok(mut st) = self.inner.0.lock() {
+            st.cache.insert(host.to_owned(), ports);
+        }
+    }
+
     fn collect_due_jobs(&self, now: Instant) -> Vec<(String, i32)> {
         let Ok(mut st) = self.inner.0.lock() else { return Vec::new() };
         let state = &mut *st;

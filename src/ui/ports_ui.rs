@@ -30,8 +30,11 @@ pub struct PortsMenu {
     popover: *mut GtkWidget,
     body_holder: *mut GtkWidget,
     inner_box: Rc<Cell<*mut GtkWidget>>,
+    is_open: Rc<Cell<bool>>,
     header_label: *mut GtkWidget,
     refresh_btn: *mut GtkWidget,
+    #[cfg(test)]
+    populate_gen: Rc<Cell<usize>>,
 }
 
 pub fn local_url_for(scheme: &str, port: u16) -> String {
@@ -120,6 +123,32 @@ fn build_ports_popover_root(popover: *mut GtkWidget) -> (*mut GtkWidget, *mut Gt
     }
 }
 
+extern "C" fn on_ports_popover_closed(_pop: *mut GtkWidget, data: *mut c_void) {
+    if !data.is_null() {
+        unsafe { (&*data.cast::<Cell<bool>>()).set(false) };
+    }
+}
+
+extern "C" fn drop_open_flag(data: *mut c_void, _closure: *mut c_void) {
+    if !data.is_null() {
+        unsafe { drop(Rc::from_raw(data.cast::<Cell<bool>>())) };
+    }
+}
+
+fn connect_popover_closed(popover: *mut GtkWidget, is_open: &Rc<Cell<bool>>) {
+    let raw = Rc::into_raw(Rc::clone(is_open));
+    unsafe {
+        g_signal_connect_data(
+            popover,
+            c"closed".as_ptr(),
+            on_ports_popover_closed as *const c_void,
+            raw.cast_mut().cast(),
+            drop_open_flag as *const c_void,
+            0,
+        );
+    }
+}
+
 impl PortsMenu {
     pub fn new(topbar: *mut GtkWidget) -> Self {
         unsafe {
@@ -128,8 +157,15 @@ impl PortsMenu {
             gtk_box_pack_end(topbar, button, 0, 0, 0);
             let popover = gtk_popover_new(button);
             let (header_label, refresh_btn, body_holder) = build_ports_popover_root(popover);
+            let is_open = Rc::new(Cell::new(false));
+            connect_popover_closed(popover, &is_open);
             app_state::connect_click(button, on_ports_btn_clicked, ptr::null_mut());
-            Self { button, popover, body_holder, inner_box: Rc::new(Cell::new(ptr::null_mut())), header_label, refresh_btn }
+            Self {
+                button, popover, body_holder, inner_box: Rc::new(Cell::new(ptr::null_mut())),
+                is_open, header_label, refresh_btn,
+                #[cfg(test)]
+                populate_gen: Rc::new(Cell::new(0)),
+            }
         }
     }
 
@@ -183,22 +219,41 @@ impl PortsMenu {
             gtk_box_pack_start(self.body_holder, inner, 0, 1, 0);
             gtk_widget_show_all(inner);
             self.inner_box.set(inner);
+            #[cfg(test)]
+            self.populate_gen.set(self.populate_gen.get().wrapping_add(1));
         }
     }
 
     pub fn popup(&self) {
         if !self.popover.is_null() {
+            self.is_open.set(true);
             unsafe { gtk_popover_popup(self.popover) };
         }
     }
 
     pub fn popdown(&self) {
+        self.is_open.set(false);
         if !self.popover.is_null() {
             unsafe { gtk_popover_popdown(self.popover) };
         }
     }
+
+    pub fn is_visible(&self) -> bool {
+        self.is_open.get() && !self.popover.is_null() && unsafe { gtk_widget_get_visible(self.popover) != 0 }
+    }
+
+    #[cfg(test)]
+    pub fn inner_widget(&self) -> *mut GtkWidget {
+        self.inner_box.get()
+    }
+
+    #[cfg(test)]
+    pub fn populate_count(&self) -> usize {
+        self.populate_gen.get()
+    }
 }
 
+#[derive(Clone)]
 enum PortRowAction {
     OpenUrl(String),
     CopyUrl(String),
@@ -680,22 +735,19 @@ fn stop_tunnel_row_action(id: u64, label: &str) {
     topbar::refresh_ui();
 }
 
-fn handle_row_action(action: &PortRowAction) {
+fn handle_row_action(action: PortRowAction) {
     match action {
         PortRowAction::OpenUrl(url) => {
             dismiss_ports_popover();
-            open_browser_url(url);
+            open_browser_url(&url);
         }
-        PortRowAction::CopyUrl(url) => copy_port_url(url),
+        PortRowAction::CopyUrl(url) => copy_port_url(&url),
         PortRowAction::ForwardAndOpen { sid, host, ssh_pid, port, scheme, process } => {
             dismiss_ports_popover();
-            let req = TunnelRequest {
-                host: host.clone(), ssh_pid: *ssh_pid, remote_port: *port,
-                scheme: scheme.clone(), process: process.clone(), session_id: *sid,
-            };
+            let req = TunnelRequest { host, ssh_pid, remote_port: port, scheme, process, session_id: sid };
             let _ = ensure_and_open_tunnel(req, None);
         }
-        PortRowAction::StopTunnel { id, label } => stop_tunnel_row_action(*id, label),
+        PortRowAction::StopTunnel { id, label } => stop_tunnel_row_action(id, &label),
     }
 }
 
@@ -703,7 +755,7 @@ extern "C" fn on_row_action_clicked(_btn: *mut GtkWidget, data: *mut c_void) {
     if data.is_null() {
         return;
     }
-    let action = unsafe { &*data.cast::<PortRowAction>() };
+    let action = unsafe { (&*data.cast::<PortRowAction>()).clone() };
     handle_row_action(action);
 }
 
@@ -737,7 +789,17 @@ pub(crate) fn open_ports_popover_for_app() {
     refresh_and_repopulate_popover(true);
 }
 
+fn repopulate_if_popover_open() {
+    let pair = app_state::with_app(|app| (app.ports_menu.clone(), collect_active_snapshot(app)));
+    if let Some((menu, snap)) = pair {
+        if menu.is_visible() {
+            menu.populate(&snap, i18n::current_locale());
+        }
+    }
+}
+
 extern "C" fn on_remote_ports_ready(_data: *mut c_void) -> c_int {
+    repopulate_if_popover_open();
     topbar::refresh_ui();
     0
 }
@@ -927,6 +989,68 @@ mod tests {
             crate::theme::apply_gtk_theme_mode(crate::theme_mode::ThemeMode::Dark);
             crate::theme::apply_gtk_theme_mode(crate::theme_mode::ThemeMode::Light);
             crate::theme::apply_gtk_theme_mode(crate::theme_mode::ThemeMode::Dark);
+        });
+    }
+
+    fn open_remote_popover_for_test() -> (*mut GtkWidget, usize, PortsMenu) {
+        let (win, _) = crate::tests::install_test_window();
+        let sid = crate::session_ops::add_tab(
+            "GPU", "", "/tmp", SessionCategory::Remote, &["sleep", "30"], crate::tabs::Tab::remote("gpu01", None),
+        );
+        unsafe { gtk_widget_show_all(win) };
+        open_ports_popover_for_app();
+        pump_gtk_events();
+        let menu = app_state::with_app(|app| app.ports_menu.clone()).unwrap();
+        (win, sid, menu)
+    }
+
+    #[test]
+    fn remote_ports_ready_repopulates_open_popover_and_skips_closed() {
+        with_headless_gtk(|| {
+            let (win, sid, menu) = open_remote_popover_for_test();
+            assert!(menu.is_visible());
+            let before = menu.populate_count();
+            app_state::with_app(|app| app.remote_ports.seed_cache_for_test("gpu01", vec![sample_port(8000, "uvicorn")]));
+            (remote_ports_ready_cb())(ptr::null_mut());
+            pump_gtk_events();
+            assert_eq!(menu.populate_count(), before + 1);
+            assert!(btn_label_text(menu.button_widget()).contains(":8000"));
+            menu.popdown();
+            pump_gtk_events();
+            (remote_ports_ready_cb())(ptr::null_mut());
+            assert_eq!(menu.populate_count(), before + 1);
+            crate::tests::cleanup_test_window(win, &[sid]);
+        });
+    }
+
+    fn spawn_test_tunnel_in_app() -> (u64, u32, PortsMenu) {
+        app_state::with_app_mut(|app| {
+            app.ssh_tunnels = crate::ssh_tunnel::SshTunnelManager::with_test_command("sleep", &["60"]);
+            let req = TunnelRequest {
+                host: "gpu01".into(), ssh_pid: 0, remote_port: 8000,
+                scheme: "http".into(), process: "uvicorn".into(), session_id: 1,
+            };
+            let res = app.ssh_tunnels.ensure_tunnel(req).unwrap();
+            (res.info.id, res.info.pid, app.ports_menu.clone())
+        }).unwrap()
+    }
+
+    #[test]
+    fn stop_tunnel_row_click_safely_destroys_button_and_stops_child() {
+        with_headless_gtk(|| {
+            let (win, _) = crate::tests::install_test_window();
+            let (tid, pid, menu) = spawn_test_tunnel_in_app();
+            open_ports_popover_for_app();
+            let act = PortRowAction::StopTunnel { id: tid, label: "gpu01 :8000 to :8000".into() };
+            let btn = make_action_button("×", "ports-stop-btn", act);
+            unsafe {
+                gtk_box_pack_start(menu.inner_widget(), btn, 0, 0, 0);
+                gtk_button_clicked(btn.cast());
+            }
+            pump_gtk_events();
+            assert!(app_state::with_app(|app| app.ssh_tunnels.list_tunnels_snapshot()).unwrap().is_empty());
+            assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+            crate::tests::cleanup_test_window(win, &[]);
         });
     }
 }
