@@ -669,7 +669,7 @@ fn pane_paste_context(
         let target_id = sid_opt.unwrap_or(app.active_id);
         let s = app.sessions.iter_mut().find(|s| s.id == target_id)?;
         let target_vte = app_state::pick_session_vte(s, preferred_vte);
-        s.panes.record_focus(target_vte);
+        s.focus_pane(target_vte);
         let agent = resolve_session_agent(s, target_vte);
         Some((s.id, target_vte, app_state::session_ssh_host(s), agent))
     })
@@ -974,7 +974,7 @@ fn build_vte_menu_spec(
     let selected_text = has_selection.then(|| context_menu::read_vte_selection(vte)).flatten();
     app_state::with_app_mut(|app| {
         let idx = app.sessions.iter().position(|s| s.has_vte(vte))?;
-        app.sessions[idx].panes.record_focus(vte);
+        app.sessions[idx].focus_pane(vte);
         let sid = app.sessions[idx].id;
         let is_local = true;
         let targets = collect_forward_targets(app, sid);

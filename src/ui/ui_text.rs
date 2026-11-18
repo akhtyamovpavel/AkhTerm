@@ -112,12 +112,13 @@ pub const GIT_REMOVE_WT_BTN: &CStr = c"Удалить чистый worktree";
 pub const GIT_REMOVE_WT_TIP: &CStr =
     c"Проверить отсутствие изменений и удалить изолированный Git worktree";
 
-pub const AGENT_ACTIONS: [(&CStr, &str); 5] = [
+pub const AGENT_ACTIONS: [(&CStr, &str); 6] = [
     (c"agy · Antigravity CLI", "agy\n"),
     (c"codex · OpenAI Codex CLI", "codex\n"),
     (c"claude · Claude Code", "claude\n"),
     (c"dsh · DSH Agent", "dsh\n"),
     (c"kimi · Kimi Code CLI", "kimi\n"),
+    (c"opencode · OpenCode", "opencode\n"),
 ];
 
 pub const HANDOFF_TIP: &CStr = c"Снять лог активной вкладки или передать .md-бриф в сессию";

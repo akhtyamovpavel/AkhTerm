@@ -84,6 +84,7 @@
     background-color: @agent_deepseek_bg;
 }
 
+#agent-opencode,
 #agent-codex {
     color: @agent_codex_fg;
     background-color: @agent_codex_bg;

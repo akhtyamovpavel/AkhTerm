@@ -7,9 +7,13 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::proc_radar::{detect_local_agent, shell_quote};
+#[path = "ssh_connection.rs"]
+mod ssh_connection;
+use crate::proc_radar::shell_quote;
 use crate::session::{SessionCategory, TermSession};
-use crate::tabs::{is_ssh_host, Tab};
+use crate::tabs::is_ssh_host;
+#[cfg(test)]
+use crate::tabs::Tab;
 use crate::telemetry::{
     is_complete_json_object, json_obj, json_obj_prefix, json_u64, TelemetrySource, TranscriptTailer,
 };
@@ -26,6 +30,8 @@ const FRAME_END: &[u8] = b"\nAKHTERM_RTELEM_END\n";
 pub struct RemoteSessionTarget {
     pub sid: usize,
     pub host: String,
+    pub ports: Option<(u16, u16)>,
+    pub ssh_pid: i32,
     pub tmux_session: Option<String>,
     pub tmux_window: Option<String>,
     pub pane_cwd_hint: String,
@@ -36,9 +42,13 @@ pub struct RemoteSessionTarget {
 #[derive(Clone, Debug, Default)]
 pub struct RemoteTailer {
     pub host: String,
+    pub ports: Option<(u16, u16)>,
+    pub ssh_pid: i32,
     pub tmux_session: Option<String>,
     pub tmux_window: Option<String>,
+    pub agent_hint: String,
     pub remote_path: String,
+    pub foreground_shell: bool,
     pub remote_offset: u64,
     pub mtime: u64,
     pub tailer: TranscriptTailer,
@@ -48,6 +58,7 @@ pub struct RemoteTailer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameMode {
     None,
+    Shell,
     Unchanged,
     Full,
     HeadTail,
@@ -70,6 +81,8 @@ pub struct RemoteProbeFrame {
 #[derive(Clone, Debug)]
 pub struct SessionProbeQuery {
     pub sid: usize,
+    pub ports: Option<(u16, u16)>,
+    pub ssh_pid: i32,
     pub tmux_session: Option<String>,
     pub tmux_window: Option<String>,
     pub pane_cwd_hint: String,
@@ -98,73 +111,40 @@ pub struct RemoteTelemetryScheduler {
 }
 
 impl RemoteSessionTarget {
-    pub fn from_session(s: &TermSession) -> Option<Self> {
-        if s.category == SessionCategory::Daemon {
-            return None;
-        }
-        let (host, tmux_session) = resolve_host_and_tmux(s)?;
-        let cwd_hint = extract_cwd_hint(s);
-        let remote_cwd = (!cwd_hint.is_empty()).then(|| cwd_hint.clone());
-        is_ssh_host(&host).then(|| Self {
-            sid: s.id,
-            host,
-            tmux_session,
-            tmux_window: crate::tmux_local::session_tmux_window(s),
-            pane_cwd_hint: cwd_hint,
-            remote_cwd,
-            agent_hint: extract_live_agent_hint(s),
+    pub fn from_pane(s: &TermSession, pane: &crate::pane_registry::PaneRecord) -> Option<Self> {
+        if s.category == SessionCategory::Daemon || pane.child_pid <= 0 { return None; }
+        let configured = s.panes.remote_for_vte(pane.vte, s.scroll_wrap, s.vte).or_else(|| s.remote());
+        let host = configured.map_or(pane.proc_info.ssh_host.as_str(), |r| r.host.as_str());
+        if !is_ssh_host(host) { return None; }
+        let live = pane.remote_tmux.as_ref();
+        let tmux_session = live.map(|t| t.0.clone()).or_else(|| configured.and_then(|r| r.tmux_session.clone()));
+        let ssh_pid = pane.proc_info.ssh_pid;
+        Some(Self {
+            sid: pane.probe_id, host: host.to_owned(), ports: None, ssh_pid, tmux_session,
+            tmux_window: live.and_then(|_| crate::tmux_local::pane_tmux_window(pane)),
+            pane_cwd_hint: live.map(|t| t.3.clone()).unwrap_or_default(),
+            remote_cwd: live.map(|t| t.3.clone()),
+            agent_hint: live.and_then(|t| classify_agent_hint(&t.2)).unwrap_or("").to_owned(),
         })
     }
-}
 
-fn resolve_host_and_tmux(s: &TermSession) -> Option<(String, Option<String>)> {
-    let live_tmux = live_tmux_session(s);
-    match &s.tab {
-        Tab::Remote(remote) if s.child_pid > 0 || !s.proc_info.ssh_host.is_empty() => {
-            let cfg_tmux = remote.tmux_session.clone().filter(|t| !t.trim().is_empty());
-            Some((remote.host.clone(), live_tmux.or(cfg_tmux)))
-        }
-        Tab::Local { .. } if s.is_dynamic_ssh() => Some((s.proc_info.ssh_host.clone(), live_tmux)),
-        _ => None,
+    #[cfg(test)]
+    pub fn from_session(s: &TermSession) -> Option<Self> {
+        use crate::pane_registry::{PaneId, PaneRecord};
+        let mut pane = PaneRecord::new(PaneId(0), s.vte, std::ptr::null_mut(), s.child_pid.max(1), s.cwd.clone());
+        pane.probe_id = s.id;
+        pane.proc_info.clone_from(&s.proc_info);
+        pane.remote_tmux.clone_from(&s.remote_tmux);
+        Self::from_pane(s, &pane)
     }
-}
-
-fn live_tmux_session(s: &TermSession) -> Option<String> {
-    s.remote_tmux
-        .as_ref()
-        .map(|t| t.0.trim().to_owned())
-        .filter(|name| !name.is_empty())
-}
-
-fn extract_cwd_hint(s: &TermSession) -> String {
-    s.remote_tmux.as_ref().map_or("", |t| t.3.trim()).to_owned()
-}
-
-fn extract_live_agent_hint(s: &TermSession) -> String {
-    if !s.proc_info.agent.is_empty() {
-        return classify_agent_hint(&s.proc_info.agent)
-            .unwrap_or(&s.proc_info.agent)
-            .to_owned();
-    }
-    if let Some(tag) = s.remote_tmux.as_ref().and_then(|t| classify_agent_hint(&t.2)) {
-        return tag.to_owned();
-    }
-    classify_agent_hint(&s.osc_title)
-        .or_else(|| classify_agent_hint(&s.title))
-        .or_else(|| local_pid_agent_hint(s.active_pid()))
-        .unwrap_or("")
-        .to_owned()
-}
-
-fn local_pid_agent_hint(pid: i32) -> Option<&'static str> {
-    let name = (pid > 0).then(|| detect_local_agent(pid)).flatten()?;
-    classify_agent_hint(&name)
 }
 
 fn classify_agent_hint(raw: &str) -> Option<&'static str> {
     let low = raw.to_ascii_lowercase();
     if low.contains("agy") || low.contains("antigravity") {
         Some("agy")
+    } else if low.contains("opencode") {
+        Some("opencode")
     } else if low.contains("codex") {
         Some("codex")
     } else if low.contains("claude") {
@@ -186,6 +166,9 @@ impl RemoteTailer {
     pub fn for_target(target: &RemoteSessionTarget) -> Self {
         Self {
             host: target.host.clone(),
+            agent_hint: target.agent_hint.clone(),
+            ports: target.ports,
+            ssh_pid: target.ssh_pid,
             tmux_session: target.tmux_session.clone(),
             tmux_window: target.tmux_window.clone(),
             ..Default::default()
@@ -193,14 +176,17 @@ impl RemoteTailer {
     }
 
     pub fn matches_target(&self, target: &RemoteSessionTarget) -> bool {
-        self.host == target.host
+        self.ssh_pid == target.ssh_pid && self.ports == target.ports && self.host == target.host
+            && self.agent_hint == target.agent_hint
             && self.tmux_session == target.tmux_session
             && self.tmux_window == target.tmux_window
     }
 
     pub fn apply_frame(&mut self, frame: &RemoteProbeFrame) -> bool {
-        match frame.mode {
-            FrameMode::None => self.clear_tailer(),
+        let shell = frame.mode == FrameMode::Shell;
+        let shell_changed = std::mem::replace(&mut self.foreground_shell, shell) != shell;
+        let updated = match frame.mode {
+            FrameMode::None | FrameMode::Shell => self.clear_tailer(),
             FrameMode::Unchanged => {
                 self.mtime = frame.mtime;
                 false
@@ -209,7 +195,8 @@ impl RemoteTailer {
             FrameMode::HeadTail => self.apply_head_tail(frame),
             FrameMode::Delta => self.apply_delta(frame),
             FrameMode::TailDelta => self.apply_tail_delta(frame),
-        }
+        };
+        updated || shell_changed
     }
 
     fn clear_tailer(&mut self) -> bool {
@@ -349,6 +336,7 @@ impl FrameMode {
     fn parse(raw: &str) -> Option<Self> {
         match raw {
             "NONE" => Some(Self::None),
+            "SHELL" => Some(Self::Shell),
             "UNCHANGED" => Some(Self::Unchanged),
             "FULL" => Some(Self::Full),
             "HEAD_TAIL" => Some(Self::HeadTail),
@@ -363,6 +351,7 @@ fn parse_source_kind(raw: &str) -> TelemetrySource {
     match raw {
         "agy" => TelemetrySource::Agy,
         "claude" => TelemetrySource::Claude,
+        "opencode" => TelemetrySource::OpenCode,
         "codex" => TelemetrySource::Codex,
         _ => TelemetrySource::None,
     }
@@ -372,6 +361,7 @@ fn source_kind_slug(kind: TelemetrySource) -> &'static str {
     match kind {
         TelemetrySource::Agy => "agy",
         TelemetrySource::Claude => "claude",
+        TelemetrySource::OpenCode => "opencode",
         TelemetrySource::Codex => "codex",
         TelemetrySource::None | TelemetrySource::VteFallback => "",
     }
@@ -417,464 +407,9 @@ pub fn run_default_ssh_probe(host: &str, posix_script: &str) -> Option<Vec<u8>> 
     run_ssh_probe_with_program("ssh", host, posix_script)
 }
 
-pub fn build_posix_probe_script(queries: &[SessionProbeQuery]) -> String {
-    let mut out = String::with_capacity(4864 + queries.len() * 192);
-    for chunk in posix_core_helpers() {
-        out.push_str(chunk);
-    }
-    for chunk in posix_agent_resolvers() {
-        out.push_str(chunk);
-    }
-    push_emit_slice_fn(&mut out);
-    for chunk in posix_probe_runners() {
-        out.push_str(chunk);
-    }
-    if !queries.is_empty() {
-        out.push_str(posix_tmux_snapshot_line());
-    }
-    if queries.iter().any(|q| q.tmux_session.is_none()) {
-        out.push_str("TMUX_PIDS=$(tree_pids \"$(tmux_roots)\")\n");
-    }
-    for q in queries {
-        append_query_call(&mut out, q);
-    }
-    out
-}
-
-fn posix_core_helpers() -> [&'static str; 4] {
-    [
-        posix_preamble_fn(),
-        posix_proc_kind_fn(),
-        posix_tree_pids_fn(),
-        posix_tree_agent_fn(),
-    ]
-}
-
-fn posix_probe_runners() -> [&'static str; 8] {
-    [
-        posix_pane_rank_fn(),
-        posix_pick_pane_fn(),
-        posix_tmux_roots_fn(),
-        posix_tmux_hint_fn(),
-        posix_tmux_probe_fn(),
-        posix_better_hit_fn(),
-        posix_plain_score_fn(),
-        posix_plain_probe_fn(),
-    ]
-}
-
-fn posix_agent_resolvers() -> [&'static str; 11] {
-    [
-        posix_newest_in_fn(),
-        posix_resolve_claude_fn(),
-        posix_codex_fd_fn(),
-        posix_codex_anc_fn(),
-        posix_resolve_codex_fn(),
-        posix_ws_match_fn(),
-        posix_agy_is_sub_fn(),
-        posix_agy_pids_fn(),
-        posix_agy_fd_fn(),
-        posix_resolve_agy_fn(),
-        posix_resolve_kind_fn(),
-    ]
-}
-
-fn posix_preamble_fn() -> &'static str {
-    concat!(
-        "LC_ALL=C; export LC_ALL\n",
-        "P_ROOT=\"${AKHTERM_TEST_PROC:-/proc}\"\n",
-        "detect_kind() {\n",
-        "  case \"$1\" in ssh|sshd) return 1 ;; agy) printf 'agy'; return 0 ;; ",
-        "codex|codex-*) printf 'codex'; return 0 ;; claude|claude-*) printf 'claude'; return 0 ;; esac\n",
-        "  case \"$2\" in *akhterm_rtelem*) return 1 ;; ",
-        "*/agy|*/agy\\ *|agy\\ *|*antigravity*) printf 'agy'; return 0 ;; ",
-        "*codex*) printf 'codex'; return 0 ;; *claude*) printf 'claude'; return 0 ;; esac\n",
-        "  return 1\n}\n",
-    )
-}
-
-fn posix_proc_kind_fn() -> &'static str {
-    concat!(
-        "proc_kind() {\n",
-        "  _p=\"$1\"; [ \"$_p\" = \"$$\" ] && return 1; [ \"$_p\" = \"${PPID:-0}\" ] && return 1\n",
-        "  [ -r \"$P_ROOT/$_p/cmdline\" ] || [ -r \"$P_ROOT/$_p/comm\" ] || return 1\n",
-        "  _raw=$(tr '\\000\\n\\t' '   ' < \"$P_ROOT/$_p/cmdline\" 2>/dev/null)\n",
-        "  _cm=$(tr -d '\\n\\r' < \"$P_ROOT/$_p/comm\" 2>/dev/null)\n",
-        "  [ -z \"$_raw\" ] && _raw=\"$_cm\"\n",
-        "  _low=$(printf '%s' \"$_raw\" | tr 'A-Z' 'a-z')\n",
-        "  _f1=\"${_low%% *}\"; _ex=\"${_f1##*/}\"\n",
-        "  [ -z \"$_ex\" ] && _ex=$(printf '%s' \"$_cm\" | tr 'A-Z' 'a-z')\n",
-        "  detect_kind \"$_ex\" \"$_low\"\n}\n",
-    )
-}
-
-fn posix_tree_pids_fn() -> &'static str {
-    concat!(
-        "tree_pids() {\n",
-        "  _q=\"$1\"; _sn=\" \"; _n=0; _ps=\"\"\n",
-        "  if [ \"$P_ROOT\" = \"/proc\" ] && [ -n \"$_q\" ]; then\n",
-        "    _f1=\"${_q%% *}\"; set -- \"$P_ROOT/$_f1/task\"/*/children\n",
-        "    [ -r \"$1\" ] || [ -r \"$P_ROOT/$_f1/children\" ] || _ps=$(ps -eo pid=,ppid= 2>/dev/null || true)\n",
-        "  fi\n",
-        "  while [ -n \"$_q\" ] && [ \"$_n\" -lt 64 ]; do\n",
-        "    _c=\"${_q%% *}\"\n",
-        "    if [ \"$_c\" = \"$_q\" ]; then _q=\"\"; else _q=\"${_q#* }\"; fi\n",
-        "    case \"$_c\" in ''|*[!0-9]*) continue ;; esac\n",
-        "    case \"$_sn\" in *\" $_c \"*) continue ;; esac\n",
-        "    _sn=\"$_sn$_c \"; _n=$((_n + 1))\n",
-        "    for _cf in \"$P_ROOT/$_c/task\"/*/children \"$P_ROOT/$_c/children\"; do\n",
-        "      [ -r \"$_cf\" ] || continue\n",
-        "      for _kp in $(tr '\\n\\t' '  ' < \"$_cf\" 2>/dev/null); do _q=\"${_q:+$_q }$_kp\"; done\n",
-        "    done\n",
-        "    if [ -n \"$_ps\" ]; then\n",
-        "      for _kp in $(printf '%s\\n' \"$_ps\" | awk -v p=\"$_c\" '$2==p{print $1}'); do _q=\"${_q:+$_q }$_kp\"; done\n",
-        "    fi\n  done\n",
-        "  printf '%s' \"$_sn\"\n}\n",
-    )
-}
-
-fn posix_tree_agent_fn() -> &'static str {
-    concat!(
-        "find_tree_agent() {\n",
-        "  for _c in $(tree_pids \"$1\"); do\n",
-        "    if _k=$(proc_kind \"$_c\"); then printf '%s|%s' \"$_c\" \"$_k\"; return 0; fi\n",
-        "  done; return 1\n}\n",
-    )
-}
-
-fn posix_newest_in_fn() -> &'static str {
-    concat!(
-        "newest_in() {\n",
-        "  _b=\"\"\n",
-        "  for _x in \"$1\"/*.jsonl; do\n",
-        "    [ -f \"$_x\" ] || continue\n",
-        "    [ -z \"$_b\" ] || [ \"$_x\" -nt \"$_b\" ] && _b=\"$_x\"\n",
-        "  done\n  [ -n \"$_b\" ] && printf '%s' \"$_b\"\n}\n",
-    )
-}
-
-fn posix_resolve_claude_fn() -> &'static str {
-    concat!(
-        "resolve_claude() {\n",
-        "  _cur=\"${1%/}\"; _pj=\"$HOME/.claude/projects\"; [ -d \"$_pj\" ] || return 1\n",
-        "  _i=0\n",
-        "  while [ \"$_i\" -le 3 ]; do\n",
-        "    [ -z \"$_cur\" ] || [ \"$_cur\" = \"/\" ] || [ \"$_cur\" = \"$HOME\" ] && break\n",
-        "    _sl=$(printf '%s' \"$_cur\" | tr '/.' '--')\n",
-        "    _hit=$(newest_in \"$_pj/$_sl\")\n",
-        "    if [ -n \"$_hit\" ]; then printf '%s' \"$_hit\"; return 0; fi\n",
-        "    _pa=\"${_cur%/*}\"; [ \"$_pa\" = \"$_cur\" ] && break\n",
-        "    _cur=\"$_pa\"; _i=$((_i + 1))\n  done\n  return 1\n}\n",
-    )
-}
-
-fn posix_codex_fd_fn() -> &'static str {
-    concat!(
-        "codex_is_sub() {\n",
-        "  case \"$1\" in *',\"source\":{\"subagent'*|*', \"source\": {\"subagent'*|*'{\"source\":{\"subagent'*|*'{\"source\": {\"subagent'*) return 0 ;; esac\n",
-        "  return 1\n}\n",
-        "codex_fd() {\n",
-        "  [ -n \"$1\" ] || return 1; _sr=\"${CODEX_HOME:-$HOME/.codex}/sessions\"\n",
-        "  for _cp in $(tree_pids \"$1\"); do\n",
-        "    [ -d \"$P_ROOT/$_cp/fd\" ] || continue\n",
-        "    for _fd in \"$P_ROOT/$_cp/fd\"/*; do\n",
-        "      _t=$(readlink \"$_fd\" 2>/dev/null) || continue\n",
-        "      case \"$_t\" in \"$_sr/\"*.jsonl) [ -f \"$_t\" ] || continue\n",
-        "        _hd=$(head -c 32768 \"$_t\" 2>/dev/null); codex_is_sub \"$_hd\" && continue\n",
-        "        printf '%s' \"$_t\"; return 0 ;; esac\n",
-        "    done\n  done; return 1\n}\n",
-    )
-}
-
-fn posix_codex_anc_fn() -> &'static str {
-    concat!(
-        "codex_anc() {\n",
-        "  _hd=\"$1\"; _an=\"$2\"; _d=0\n",
-        "  while [ \"$_d\" -lt 3 ]; do\n",
-        "    _pa=\"${_an%/*}\"; [ -z \"$_pa\" ] || [ \"$_pa\" = \"$_an\" ] || [ \"$_pa\" = \"/\" ] || [ \"$_pa\" = \"$HOME\" ] && break\n",
-        "    _an=\"$_pa\"; _d=$((_d + 1))\n",
-        "    case \"$_hd\" in *'\"cwd\":\"'\"$_an\"'\"'*|*'\"cwd\": \"'\"$_an\"'\"'*) return 0 ;; esac\n",
-        "  done; return 1\n}\n",
-    )
-}
-
-fn posix_resolve_codex_fn() -> &'static str {
-    concat!(
-        "codex_has_tok() { tail -c 65536 \"$1\" 2>/dev/null | grep -q '\"token_count\"'; }\n",
-        "resolve_codex() {\n",
-        "  _cw=\"${1%/}\"; _pd=\"$2\"\n",
-        "  _hit=$(codex_fd \"$_pd\") && [ -n \"$_hit\" ] && { printf '%s' \"$_hit\"; return 0; }\n",
-        "  _sr=\"${CODEX_HOME:-$HOME/.codex}/sessions\"; [ -d \"$_sr\" ] || return 1\n",
-        "  set --; for _g in \"$_sr\"/*/*/*/*.jsonl \"$_sr\"/*.jsonl; do [ -f \"$_g\" ] && set -- \"$@\" \"$_g\"; done\n",
-        "  [ \"$#\" -gt 0 ] || return 1\n",
-        "  _lst=$(ls -1t \"$@\" 2>/dev/null | head -n 48)\n",
-        "  _bet=\"\"; _be=\"\"; _bst=\"\"; _bs=\"\"; _ba=\"\"; _oifs=\"$IFS\"; IFS='\n'\n",
-        "  set -f\n",
-        "  for _f in $_lst; do\n",
-        "    IFS=\"$_oifs\"; set +f; [ -f \"$_f\" ] || continue\n",
-        "    _hd=$(head -c 32768 \"$_f\" 2>/dev/null); codex_is_sub \"$_hd\" && continue\n",
-        "    if [ -z \"$_cw\" ]; then [ -z \"$_ba\" ] && _ba=\"$_f\"; codex_has_tok \"$_f\" && { _ba=\"$_f\"; break; }; continue; fi\n",
-        "    case \"$_hd\" in *'\"cwd\":\"'\"$_cw\"'\"'*|*'\"cwd\": \"'\"$_cw\"'\"'*)\n",
-        "      [ -z \"$_be\" ] && _be=\"$_f\"\n",
-        "      codex_has_tok \"$_f\" && { _bet=\"$_f\"; break; }; continue ;; esac\n",
-        "    if [ -z \"$_bst\" ] && codex_anc \"$_hd\" \"$_cw\"; then\n",
-        "      [ -z \"$_bs\" ] && _bs=\"$_f\"; codex_has_tok \"$_f\" && _bst=\"$_f\"\n    fi\n",
-        "  done\n",
-        "  IFS=\"$_oifs\"; set +f\n",
-        "  for _r in \"$_bet\" \"$_be\" \"$_bst\" \"$_bs\"; do [ -n \"$_r\" ] && { printf '%s' \"$_r\"; return 0; }; done\n",
-        "  [ -z \"$_cw\" ] && [ -n \"$_ba\" ] && { printf '%s' \"$_ba\"; return 0; }\n  return 1\n}\n",
-    )
-}
-
-fn posix_ws_match_fn() -> &'static str {
-    concat!(
-        "ws_match() {\n",
-        "  _tx=\"$1\"; _ws=\"${2%/}\"; [ -n \"$_ws\" ] || return 2; _sb=1\n",
-        "  while :; do\n",
-        "    case \"$_tx\" in *\"$_ws\"*)\n",
-        "      _tx=\"${_tx#*\"$_ws\"}\"; _ch=$(printf '%.1s' \"$_tx\")\n",
-        "      case \"$_ch\" in /) _sb=0 ;; [A-Za-z0-9_.-]) ;; *) return 0 ;; esac ;;\n",
-        "      *) break ;; esac\n  done\n",
-        "  [ \"$_sb\" -eq 0 ] && return 1\n  return 2\n}\n",
-    )
-}
-
-fn posix_agy_is_sub_fn() -> &'static str {
-    concat!(
-        "agy_is_sub() {\n",
-        "  [ -n \"$2\" ] || return 1\n",
-        "  for _sf in \"$1\"/*/.system_generated/subagents/\"$2\".json; do\n",
-        "    [ -f \"$_sf\" ] && return 0\n  done\n  return 1\n}\n",
-    )
-}
-
-fn posix_agy_pids_fn() -> &'static str {
-    concat!(
-        "agy_pids() {\n",
-        "  _pl=\"$1\"\n",
-        "  for _cf in \"$P_ROOT/$1/task\"/*/children \"$P_ROOT/$1/children\"; do\n",
-        "    [ -r \"$_cf\" ] && _pl=\"$_pl $(tr '\\n\\t' '  ' < \"$_cf\" 2>/dev/null)\"\n  done\n",
-        "  printf '%s' \"$_pl\"\n}\n",
-    )
-}
-
-fn posix_agy_fd_fn() -> &'static str {
-    concat!(
-        "agy_fd() {\n",
-        "  _pd=\"$1\"; _br=\"$2\"; [ -n \"$_pd\" ] || return 1; _fb=\"\"\n",
-        "  for _ap in $(agy_pids \"$_pd\"); do\n",
-        "    [ -d \"$P_ROOT/$_ap/fd\" ] || continue\n",
-        "    for _fd in \"$P_ROOT/$_ap/fd\"/*; do\n",
-        "      _t=$(readlink \"$_fd\" 2>/dev/null) || continue\n",
-        "      case \"$_t\" in \"$_br/\"*) _rl=\"${_t#\"$_br/\"}\"; _id=\"${_rl%%/*}\"; [ -n \"$_id\" ] || continue\n",
-        "        agy_is_sub \"$_br\" \"$_id\" && continue\n",
-        "        _cd=\"$_br/$_id/.system_generated/logs/transcript.jsonl\"\n",
-        "        [ -f \"$_cd\" ] || _cd=\"$_br/$_id/transcript.jsonl\"; [ -f \"$_cd\" ] || continue\n",
-        "        case \"${_t##*/}\" in transcript*) printf '%s' \"$_cd\"; return 0 ;; esac\n",
-        "        [ -z \"$_fb\" ] || [ \"$_cd\" -nt \"$_fb\" ] && _fb=\"$_cd\" ;; esac\n",
-        "    done\n  done\n",
-        "  [ -n \"$_fb\" ] && { printf '%s' \"$_fb\"; return 0; }\n  return 1\n}\n",
-    )
-}
-
-fn posix_resolve_agy_fn() -> &'static str {
-    concat!(
-        "resolve_agy() {\n",
-        "  _cw=\"${1%/}\"; _pd=\"$2\"; _br=\"$HOME/.gemini/antigravity-cli/brain\"\n",
-        "  [ -d \"$_br\" ] || return 1\n",
-        "  _hit=$(agy_fd \"$_pd\" \"$_br\") && [ -n \"$_hit\" ] && { printf '%s' \"$_hit\"; return 0; }\n",
-        "  [ -n \"$_cw\" ] || return 1; _be=\"\"; _bs=\"\"\n",
-        "  for _cd in \"$_br\"/*/.system_generated/logs/transcript.jsonl \"$_br\"/*/transcript.jsonl; do\n",
-        "    [ -f \"$_cd\" ] || continue\n",
-        "    _rl=\"${_cd#\"$_br/\"}\"; _id=\"${_rl%%/*}\"; agy_is_sub \"$_br\" \"$_id\" && continue\n",
-        "    _hd=$(head -c 65536 \"$_cd\" 2>/dev/null)\n",
-        "    _rc=0; ws_match \"$_hd\" \"$_cw\" || _rc=$?\n",
-        "    [ \"$_rc\" -eq 0 ] && { [ -z \"$_be\" ] || [ \"$_cd\" -nt \"$_be\" ] && _be=\"$_cd\"; }\n",
-        "    [ \"$_rc\" -eq 1 ] && { [ -z \"$_bs\" ] || [ \"$_cd\" -nt \"$_bs\" ] && _bs=\"$_cd\"; }\n",
-        "  done\n",
-        "  for _r in \"$_be\" \"$_bs\"; do [ -n \"$_r\" ] && { printf '%s' \"$_r\"; return 0; }; done\n  return 1\n}\n",
-    )
-}
-
-fn posix_resolve_kind_fn() -> &'static str {
-    concat!(
-        "resolve_for_kind() {\n",
-        "  case \"$1\" in claude) resolve_claude \"$2\" ;; codex) resolve_codex \"$2\" \"$3\" ;; ",
-        "agy) resolve_agy \"$2\" \"$3\" ;; *) return 1 ;; esac\n}\n",
-    )
-}
-
-fn push_emit_slice_fn(out: &mut String) {
-    out.push_str(concat!(
-        "emit_slice() {\n",
-        "  _s=\"$1\"; _k=\"$2\"; _f=\"$3\"; _pp=\"$4\"; _po=\"$5\"\n",
-        "  if [ -z \"$_f\" ] || [ ! -f \"$_f\" ]; then\n",
-        "    printf 'AKHTERM_RTELEM1|%s|NONE|-|0|0|0|0|\\n\\nAKHTERM_RTELEM_END\\n' \"$_s\"; return 0\n  fi\n",
-        "  _sz=$(wc -c < \"$_f\" 2>/dev/null | tr -d ' \\t\\r\\n'); [ -n \"$_sz\" ] || _sz=0\n",
-        "  _mt=$(stat -c '%Y' \"$_f\" 2>/dev/null || stat -f '%m' \"$_f\" 2>/dev/null || echo 0)\n",
-        "  _mt=$(printf '%s' \"$_mt\" | tr -d ' \\t\\r\\n'); [ -n \"$_mt\" ] || _mt=0\n",
-    ));
-    push_emit_initial_branch(out);
-    push_emit_delta_tail(out);
-}
-
-fn push_emit_initial_branch(out: &mut String) {
-    out.push_str(&format!(
-        concat!(
-            "  if [ \"$_f\" != \"$_pp\" ] || [ \"$_po\" -le 0 ] || [ \"$_sz\" -lt \"$_po\" ]; then\n",
-            "    if [ \"$_sz\" -le {max_full} ]; then\n",
-            "      printf 'AKHTERM_RTELEM1|%s|FULL|%s|%s|%s|0|%s|%s\\n' \"$_s\" \"$_k\" \"$_sz\" \"$_mt\" \"$_sz\" \"$_f\"\n",
-            "      [ \"$_sz\" -gt 0 ] && head -c \"$_sz\" \"$_f\"; printf '\\nAKHTERM_RTELEM_END\\n'\n",
-            "    else\n",
-            "      printf 'AKHTERM_RTELEM1|%s|HEAD_TAIL|%s|%s|%s|{head_b}|{tail_b}|%s\\n' \"$_s\" \"$_k\" \"$_sz\" \"$_mt\" \"$_f\"\n",
-            "      head -c {head_b} \"$_f\"; tail -c {tail_b} \"$_f\" | head -c {tail_b}; printf '\\nAKHTERM_RTELEM_END\\n'\n    fi\n",
-        ),
-        max_full = REMOTE_FULL_MAX_BYTES,
-        head_b = REMOTE_HEAD_BYTES,
-        tail_b = REMOTE_TAIL_BYTES,
-    ));
-}
-
-fn push_emit_delta_tail(out: &mut String) {
-    out.push_str(&format!(
-        concat!(
-            "  elif [ \"$_sz\" -eq \"$_po\" ]; then\n",
-            "    printf 'AKHTERM_RTELEM1|%s|UNCHANGED|%s|%s|%s|0|0|%s\\n\\nAKHTERM_RTELEM_END\\n' \"$_s\" \"$_k\" \"$_sz\" \"$_mt\" \"$_f\"\n",
-            "  else\n",
-            "    _dl=$((_sz - _po))\n",
-            "    if [ \"$_dl\" -le {max_full} ]; then\n",
-            "      _st=$((_po + 1))\n",
-            "      printf 'AKHTERM_RTELEM1|%s|DELTA|%s|%s|%s|0|%s|%s\\n' \"$_s\" \"$_k\" \"$_sz\" \"$_mt\" \"$_dl\" \"$_f\"\n",
-            "      tail -c +\"$_st\" \"$_f\" | head -c \"$_dl\"; printf '\\nAKHTERM_RTELEM_END\\n'\n",
-            "    else\n",
-            "      printf 'AKHTERM_RTELEM1|%s|TAIL_DELTA|%s|%s|%s|0|{tail_b}|%s\\n' \"$_s\" \"$_k\" \"$_sz\" \"$_mt\" \"$_f\"\n",
-            "      tail -c {tail_b} \"$_f\" | head -c {tail_b}; printf '\\nAKHTERM_RTELEM_END\\n'\n    fi\n  fi\n}}\n",
-        ),
-        max_full = REMOTE_FULL_MAX_BYTES,
-        tail_b = REMOTE_TAIL_BYTES,
-    ));
-}
-
-fn posix_pane_rank_fn() -> &'static str {
-    concat!(
-        "pane_rank() {\n",
-        "  _tw=\"$1\"; _wa=\"$2\"; _pa=\"$3\"; _wi=\"$4\"; _wn=\"$5\"; _twi=\"${_tw%%:*}\"; _r=-1\n",
-        "  case \"$_tw\" in\n",
-        "    \"\") ;;\n",
-        "    *:*) if [ -n \"$_wi\" ] && [ \"$_wi:$_wn\" = \"$_tw\" ]; then _r=4; [ \"$_pa\" = \"1\" ] && _r=5\n",
-        "         elif [ -n \"$_wi\" ] && [ \"$_wi\" = \"$_twi\" ]; then _r=2; [ \"$_pa\" = \"1\" ] && _r=3\n",
-        "         elif [ \"$_wn\" = \"$_tw\" ]; then _r=4; [ \"$_pa\" = \"1\" ] && _r=5; fi ;;\n",
-        "    *)   if [ \"$_wn\" = \"$_tw\" ] || [ \"$_wi\" = \"$_tw\" ]; then _r=4; [ \"$_pa\" = \"1\" ] && _r=5; fi ;;\n",
-        "  esac\n",
-        "  [ \"$_r\" -lt 0 ] && { _r=0; [ \"$_pa\" = \"1\" ] && _r=1; [ \"$_wa\" = \"1\" ] && [ \"$_pa\" = \"1\" ] && _r=2; }\n",
-        "  printf '%s' \"$_r\"\n}\n",
-    )
-}
-
-fn posix_pick_pane_fn() -> &'static str {
-    concat!(
-        "pick_pane() {\n",
-        "  _ts=\"$1\"; _tw=\"$2\"; _bp=\"\"; _bc=\"\"; _bd=\"\"; _br=-1\n",
-        "  while IFS='|' read -r _sn _wa _pa _ppid _pcmd _ppath _wi _wn; do\n",
-        "    [ \"$_sn\" = \"$_ts\" ] || continue\n",
-        "    _r=$(pane_rank \"$_tw\" \"$_wa\" \"$_pa\" \"$_wi\" \"$_wn\")\n",
-        "    [ \"$_r\" -gt \"$_br\" ] && { _br=\"$_r\"; _bp=\"$_ppid\"; _bc=\"$_pcmd\"; _bd=\"$_ppath\"; }\n",
-        "  done\n  [ \"$_br\" -ge 0 ] && printf '%s|%s|%s' \"$_bp\" \"$_bc\" \"$_bd\"\n}\n",
-    )
-}
-
-fn posix_tmux_hint_fn() -> &'static str {
-    concat!(
-        "tmux_hint() {\n",
-        "  _hl=$(printf '%s %s' \"$1\" \"$2\" | tr 'A-Z' 'a-z')\n",
-        "  _hk=$(detect_kind \"$1\" \"$_hl\" || true)\n",
-        "  [ -n \"$_hk\" ] || return 1\n",
-        "  _hf=$(resolve_for_kind \"$_hk\" \"$3\" \"$4\" || true)\n",
-        "  [ -n \"$_hf\" ] && printf '%s|%s' \"$_hk\" \"$_hf\"\n}\n",
-    )
-}
-
-fn posix_tmux_probe_fn() -> &'static str {
-    concat!(
-        "probe_tmux() {\n",
-        "  _s=\"$1\"; _ts=\"$2\"; _tw=\"$3\"; _ch=\"$4\"; _ah=\"$5\"; _pp=\"$6\"; _pk=\"$7\"; _po=\"$8\"\n",
-        "  _fk=\"\"; _ff=\"\"; _rw=$(printf '%s\\n' \"${TMUX_PANES:-}\" | pick_pane \"$_ts\" \"$_tw\")\n",
-        "  if [ -n \"$_rw\" ]; then\n",
-        "    _ppid=\"${_rw%%|*}\"; _rs=\"${_rw#*|}\"; _pcmd=\"${_rs%%|*}\"; _ppath=\"${_rs#*|}\"\n",
-        "    _ag=$(find_tree_agent \"$_ppid\")\n",
-        "    if [ -n \"$_ag\" ]; then\n",
-        "      _ap=\"${_ag%%|*}\"; _fk=\"${_ag#*|}\"\n",
-        "      _ac=$(readlink \"$P_ROOT/$_ap/cwd\" 2>/dev/null); [ -n \"$_ac\" ] || _ac=\"${_ppath:-$_ch}\"\n",
-        "      _ff=$(resolve_for_kind \"$_fk\" \"$_ac\" \"$_ap\" || true)\n    fi\n",
-        "    if [ -z \"$_ff\" ]; then\n",
-        "      _hm=$(tmux_hint \"$_pcmd\" \"$_ah\" \"${_ppath:-$_ch}\" \"$_ppid\" || true)\n",
-        "      [ -n \"$_hm\" ] && { _fk=\"${_hm%%|*}\"; _ff=\"${_hm#*|}\"; }\n    fi\n  fi\n",
-        "  emit_slice \"$_s\" \"$_fk\" \"$_ff\" \"$_pp\" \"$_po\"\n}\n",
-    )
-}
-
-fn posix_tmux_roots_fn() -> &'static str {
-    concat!(
-        "tmux_roots() {\n",
-        "  [ -n \"${TMUX_PANES:-}\" ] || return 0\n",
-        "  printf '%s\\n' \"$TMUX_PANES\" | while IFS='|' read -r _s1 _s2 _s3 _pp _r; do\n",
-        "    [ -n \"$_pp\" ] && printf '%s ' \"$_pp\"\n  done\n}\n",
-    )
-}
-
-fn posix_better_hit_fn() -> &'static str {
-    concat!(
-        "better_hit() {\n",
-        "  [ \"$1\" -gt \"$2\" ] && return 0\n",
-        "  [ \"$1\" -eq \"$2\" ] && { [ -z \"$4\" ] || [ \"$3\" -nt \"$4\" ]; }\n}\n",
-    )
-}
-
-fn posix_plain_score_fn() -> &'static str {
-    concat!(
-        "plain_score() {\n",
-        "  _sc=0; [ -n \"$3\" ] && [ \"$1\" = \"$3\" ] && _sc=$((_sc + 4))\n",
-        "  [ -n \"$4\" ] && [ \"$2\" = \"$4\" ] && _sc=$((_sc + 2))\n",
-        "  case \"${TMUX_PIDS:- }\" in *\" $5 \"*) ;; *) _sc=$((_sc + 1)) ;; esac\n",
-        "  printf '%s' \"$_sc\"\n}\n",
-    )
-}
-
-fn posix_plain_probe_fn() -> &'static str {
-    concat!(
-        "probe_plain() {\n",
-        "  _s=\"$1\"; _ch=\"$2\"; _ah=\"$3\"; _pp=\"$4\"; _pk=\"$5\"; _po=\"$6\"\n",
-        "  _bk=\"\"; _bf=\"\"; _bsc=-1\n",
-        "  for _d in \"$P_ROOT\"/[0-9]*; do\n",
-        "    [ -d \"$_d\" ] && [ -O \"$_d\" ] || continue\n",
-        "    _p=\"${_d##*/}\"; _k=$(proc_kind \"$_p\") || continue\n",
-        "    _c=$(readlink \"$_d/cwd\" 2>/dev/null); [ -n \"$_c\" ] || _c=\"$_ch\"\n",
-        "    _f=$(resolve_for_kind \"$_k\" \"$_c\" \"$_p\") || continue\n",
-        "    _sc=$(plain_score \"$_k\" \"$_c\" \"$_ah\" \"$_ch\" \"$_p\")\n",
-        "    better_hit \"$_sc\" \"$_bsc\" \"$_f\" \"$_bf\" && { _bsc=\"$_sc\"; _bk=\"$_k\"; _bf=\"$_f\"; }\n  done\n",
-        "  [ -z \"$_bf\" ] && [ -n \"$_pp\" ] && [ -f \"$_pp\" ] && { _bf=\"$_pp\"; _bk=\"$_pk\"; }\n",
-        "  emit_slice \"$_s\" \"$_bk\" \"$_bf\" \"$_pp\" \"$_po\"\n}\n",
-    )
-}
-
-fn posix_tmux_snapshot_line() -> &'static str {
-    "TMUX_PANES=$(tmux list-panes -a -F '#{session_name}|#{window_active}|#{pane_active}|#{pane_pid}|#{pane_current_command}|#{pane_current_path}|#{window_index}|#{window_name}' 2>/dev/null || true)\n"
-}
-
-fn append_query_call(out: &mut String, q: &SessionProbeQuery) {
-    let (sid, poff) = (q.sid, q.prev_offset);
-    let cwd = posix_quote(&q.pane_cwd_hint);
-    let hint = posix_quote(&q.agent_hint);
-    let ppath = posix_quote(&q.prev_path);
-    let pkind = posix_quote(source_kind_slug(q.prev_kind));
-    if let Some(tmux) = &q.tmux_session {
-        let tsess = posix_quote(tmux);
-        let twin = posix_quote(q.tmux_window.as_deref().unwrap_or(""));
-        out.push_str(&format!("probe_tmux {sid} {tsess} {twin} {cwd} {hint} {ppath} {pkind} {poff}\n"));
-    } else {
-        out.push_str(&format!("probe_plain {sid} {cwd} {hint} {ppath} {pkind} {poff}\n"));
-    }
-}
+#[path = "remote_probe.rs"]
+mod remote_probe;
+pub use remote_probe::build_posix_probe_script;
 
 pub fn parse_probe_stdout(stdout: &[u8]) -> Vec<RemoteProbeFrame> {
     let mut frames = Vec::new();
@@ -1003,6 +538,8 @@ impl SchedulerState {
         let rt = self.tailers.get(&target.sid);
         SessionProbeQuery {
             sid: target.sid,
+            ports: target.ports,
+            ssh_pid: target.ssh_pid,
             tmux_session: target.tmux_session.clone(),
             tmux_window: target.tmux_window.clone(),
             pane_cwd_hint: target.pane_cwd_hint.clone(),
@@ -1115,6 +652,10 @@ impl RemoteTelemetryScheduler {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "ssh_focus_tests.rs"]
+mod ssh_focus_tests;
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -1358,7 +899,10 @@ pub(crate) mod tests {
         let s1 = dummy_session(1, SessionCategory::Remote, Tab::remote("gpu-box", Some("claude-s")), "gpu-box");
         let s2 = dummy_session(2, SessionCategory::Remote, Tab::remote("gpu-box", Some("codex-s")), "gpu-box");
         let s3 = dummy_session(3, SessionCategory::Project, Tab::local("shell"), "gpu-box");
-        [&s1, &s2, &s3].into_iter().filter_map(RemoteSessionTarget::from_session).collect()
+        let mut targets: Vec<_> = [&s1, &s2, &s3].into_iter().filter_map(RemoteSessionTarget::from_session).collect();
+        fs::write(env.proc_dir.join("2301/environ"), b"SSH_CONNECTION=127.0.0.1 50123 127.0.0.1 22\0").unwrap();
+        targets[2].ports = Some((50123, 22));
+        targets
     }
 
     #[test]
@@ -1478,7 +1022,10 @@ pub(crate) mod tests {
         let (repo, rollout, initial_sz) = setup_large_codex_fixture(&env);
         let s = dummy_session(9, SessionCategory::Remote, Tab::remote("gpu-box", None), "gpu-box");
         let sched = RemoteTelemetryScheduler::new(REMOTE_PROBE_TTL);
-        sched.sync_targets(&[RemoteSessionTarget::from_session(&s).unwrap()]);
+        let mut target = RemoteSessionTarget::from_session(&s).unwrap();
+        target.ports = Some((50123, 22));
+        fs::write(env.proc_dir.join("4100/environ"), b"SSH_CONNECTION=127.0.0.1 50123 127.0.0.1 22\0").unwrap();
+        sched.sync_targets(&[target]);
         let prog = env.ssh_bin.to_string_lossy().into_owned();
         let t0 = Instant::now();
 
@@ -1649,7 +1196,7 @@ pub(crate) mod tests {
         assert_single_remote_row(&sessions[1], "ctx 186k", "sidebar-metric-high", "agent-codex");
         let view = build_sessions_tokens_view(sessions, sessions[1].id, ThemeMode::Dark, Instant::now());
         menu.apply(&view);
-        assert_eq!(gtk_button_str(menu.button_widget()), "Токены · 186k ▾");
+        assert_eq!(gtk_button_str(menu.button_widget()), "Токены · 186k · cache 86% ▾");
         assert!(has_css_class(menu.button_widget(), "btn-mi-c"));
         let markup = view.markup.as_deref().unwrap_or("");
         assert!(markup.contains("ctx 148k") && markup.contains("ctx 186k (93%)") && markup.contains("Итого по окну (2)"));
