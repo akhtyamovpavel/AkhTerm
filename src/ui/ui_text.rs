@@ -24,7 +24,12 @@ pub const SERVERS: &CStr = c"Серверы ▾";
 pub const AGENTS: &CStr = c"Агенты ▾";
 pub const HANDOFF: &CStr = c"Handoff ▾";
 pub const MAINTAINABILITY: &CStr = c"MI ▾";
-pub const MI_EMPTY: &CStr = c"Нет данных MI для открытой вкладки.\nПерейдите в каталог проекта (.git, Cargo.toml, pyproject.toml, package.json, go.mod, Makefile).";
+pub const MI_CALCULATING: UiText = UiText::new(c"MI · считаю… ▾", c"MI · calculating… ▾");
+pub const MI_NO_FILES: UiText = UiText::new(c"MI · нет файлов ▾", c"MI · no files ▾");
+pub const MI_SCAN_DETAIL: UiText = UiText::new(c"Считаю MI в каталоге", c"Calculating MI in");
+pub const MI_NO_FILES_DETAIL: UiText = UiText::new(c"Нет подходящих исходных файлов в каталоге", c"No eligible source files in");
+pub const MI_EMPTY: &CStr = c"Для расчёта MI открой локальный каталог с исходным кодом.";
+pub const MI_EMPTY_MESSAGE: UiText = UiText::new(MI_EMPTY, c"Open a local source directory to calculate MI.");
 pub const MI_REFACTOR: &CStr = c"Поручить рефакторинг агенту";
 pub const MI_REFACTOR_TIP: &CStr = c"Отправить в активный терминал промпт на рефакторинг файлов с низким MI";
 pub const TOGGLE_SIDEBAR: &CStr = c"◧";
@@ -193,7 +198,7 @@ pub mod i18n_text {
         use crate::i18n::UiText;
         pub const APP_NAME: UiText = UiText::new(super::super::APP_NAME, c"AkhTerm");
         pub fn profiles_str() -> &'static str { super::PROFILES.as_str() }
-        pub const MI_EMPTY: UiText = UiText::new(super::super::MI_EMPTY, c"No MI data for the active tab.\nOpen a project directory (.git, Cargo.toml, pyproject.toml, package.json, go.mod, Makefile).");
+        pub const MI_EMPTY: UiText = super::super::MI_EMPTY_MESSAGE;
         pub const MI_REFACTOR: UiText = UiText::new(super::super::MI_REFACTOR, c"Ask agent to refactor");
         pub const MI_REFACTOR_TIP: UiText = UiText::new(super::super::MI_REFACTOR_TIP, c"Send a prompt to the active terminal to refactor low-MI files");
         pub const TOGGLE_SIDEBAR: UiText = UiText::new(super::super::TOGGLE_SIDEBAR, c"◧");

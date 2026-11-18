@@ -207,6 +207,9 @@ fn decode_saved_pinned(path: &Path) -> Option<String> {
     TabsState::decode(&raw).expect("valid").pinned_at(0).map(str::to_owned)
 }
 
+#[path = "mi_tests.rs"]
+mod mi_tests;
+
 fn temp_test_path(prefix: &str) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("{prefix}_{}", std::process::id()));
     let _ = std::fs::remove_file(&path);

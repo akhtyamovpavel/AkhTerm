@@ -141,7 +141,6 @@ impl TermSession {
         }
         if !self.proc_info.has_tmux.is_empty()
             && !self.proc_info.cwd.is_empty()
-            && self.active_vte() == self.vte
         {
             return Some(expand_home(&self.proc_info.cwd));
         }
