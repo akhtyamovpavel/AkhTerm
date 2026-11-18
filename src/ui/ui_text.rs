@@ -26,6 +26,48 @@ pub const MD_SEARCH: UiText = UiText::new(c"Найти в документе", c
 pub const MD_CLOSE: UiText = UiText::new(c"Закрыть просмотр", c"Close preview");
 pub const MD_EMPTY: UiText = UiText::new(c"В выводе панели нет локального Markdown-файла", c"No local Markdown file found in pane output");
 pub const MD_BLOCK_HINT: UiText = UiText::new(c"Поставь курсор внутрь блока кода", c"Place the cursor in a fenced code block");
+pub const DIFF_OPEN_BTN: UiText = UiText::new(c"Ревью diff", c"Review Diff");
+pub const DIFF_OPEN_TIP: UiText = UiText::new(
+    c"Открыть панель ревью diff с комментариями для агента (Ctrl+Shift+B)",
+    c"Open interactive Diff Review panel with comments for agent (Ctrl+Shift+B)",
+);
+pub const DIFF_MODE_WORKTREE: UiText = UiText::new(c"Рабочее дерево", c"Working tree");
+pub const DIFF_MODE_STAGED: UiText = UiText::new(c"В индексе", c"Staged");
+pub const DIFF_MODE_BRANCH: UiText = UiText::new(c"Ветка", c"Branch");
+pub const DIFF_REFRESH: UiText = UiText::new(c"Обновить", c"Refresh");
+pub const DIFF_CLOSE: UiText = UiText::new(c"Закрыть", c"Close");
+pub const DIFF_FILES_HDR: UiText = UiText::new(c"ФАЙЛЫ", c"FILES");
+pub const DIFF_REVIEWED: UiText = UiText::new(c"Просмотрено", c"Reviewed");
+pub const DIFF_HUNK_PREV: UiText = UiText::new(c"▲", c"▲");
+pub const DIFF_HUNK_NEXT: UiText = UiText::new(c"▼", c"▼");
+pub const DIFF_HUNK_PREV_TIP: UiText = UiText::new(c"Предыдущий ханк", c"Previous hunk");
+pub const DIFF_HUNK_NEXT_TIP: UiText = UiText::new(c"Следующий ханк", c"Next hunk");
+pub const DIFF_STAGE_HUNK: UiText = UiText::new(c"В индекс", c"Stage hunk");
+pub const DIFF_REVERT_HUNK: UiText = UiText::new(c"Откатить ханк", c"Revert hunk");
+pub const DIFF_HUNK_LOCAL_ONLY: UiText = UiText::new(
+    c"Действия с ханком доступны только для локального рабочего дерева",
+    c"Hunk actions are available only for a local working tree",
+);
+pub const DIFF_COMMENT_PLACEHOLDER: UiText = UiText::new(
+    c"Комментарий к выделенным строкам или активному ханку…",
+    c"Comment on selected lines or active hunk…",
+);
+pub const DIFF_ADD_COMMENT: UiText = UiText::new(c"Добавить", c"Add comment");
+pub const DIFF_CLEAR_BATCH: UiText = UiText::new(c"Очистить", c"Clear");
+pub const DIFF_SEND_BATCH: UiText = UiText::new(c"Отправить агенту", c"Send batch to agent");
+pub const DIFF_QUEUE_EMPTY: UiText = UiText::new(c"Очередь комментариев пуста", c"Comment queue is empty");
+pub const DIFF_NEED_COMMENT: UiText = UiText::new(c"Введите текст комментария перед добавлением", c"Enter a comment before adding");
+pub const DIFF_NO_CHANGES: UiText = UiText::new(c"Изменений нет", c"No changes");
+pub const DIFF_LOADING: UiText = UiText::new(c"Загружаю diff…", c"Loading diff…");
+pub const DIFF_TRUNCATED: UiText = UiText::new(c"Diff обрезан на лимите 2 МиБ", c"Diff truncated at 2 MiB safety limit");
+pub const DIFF_SENT_OK: UiText = UiText::new(c"Пакет комментариев отправлен агенту", c"Review batch sent to agent");
+pub const DIFF_HUNK_STAGED: UiText = UiText::new(c"Ханк добавлен в индекс", c"Hunk staged");
+pub const DIFF_HUNK_REVERTED: UiText = UiText::new(c"Ханк откачен", c"Hunk reverted");
+pub const DIFF_PALETTE_TITLE: UiText = UiText::new(c"Ревью Diff (Ctrl+Shift+B)", c"Review Diff (Ctrl+Shift+B)");
+pub const DIFF_PALETTE_DETAIL: UiText = UiText::new(
+    c"Локальный и SSH diff с инлайн-комментариями агенту и ханками",
+    c"Local and SSH diff review with inline comments for agent and hunk actions",
+);
 pub const APP_NAME: &CStr = c"AkhTerm";
 pub const PROFILES: &CStr = c"Профили / SSH ▾";
 pub const SERVERS: &CStr = c"Серверы ▾";
@@ -452,6 +494,47 @@ pub mod i18n_text {
     pub fn sidebar_tmux_prefix() -> &'static str { SIDEBAR_TMUX_PREFIX.as_str() }
     pub const SIDEBAR_FOLDER_NEW_TAB_TIP: UiText = UiText::new(c"Новая локальная вкладка в этой папке", c"New local tab in this folder");
     pub fn sidebar_folder_new_tab_tip() -> &'static CStr { SIDEBAR_FOLDER_NEW_TAB_TIP.cstr() }
+
+    pub const SYS_MON_TIP: UiText = UiText::new(c"Системный монитор: CPU, RAM и питание", c"System monitor: CPU, RAM and power");
+    pub fn sys_mon_tip() -> &'static CStr { SYS_MON_TIP.cstr() }
+    pub const SYS_MON_TITLE: UiText = UiText::new(c"Системный монитор", c"System Monitor");
+    pub fn sys_mon_title() -> &'static CStr { SYS_MON_TITLE.cstr() }
+    pub const SYS_MON_CPU: UiText = UiText::new(c"CPU", c"CPU");
+    pub fn sys_mon_cpu() -> &'static CStr { SYS_MON_CPU.cstr() }
+    pub const SYS_MON_CPU_DETAIL: UiText = UiText::new(c"Профиль", c"Breakdown");
+    pub fn sys_mon_cpu_detail() -> &'static CStr { SYS_MON_CPU_DETAIL.cstr() }
+    pub const SYS_MON_LOAD: UiText = UiText::new(c"Нагрузка (1/5/15м)", c"Load avg (1/5/15m)");
+    pub fn sys_mon_load() -> &'static CStr { SYS_MON_LOAD.cstr() }
+    pub const SYS_MON_RAM: UiText = UiText::new(c"RAM", c"RAM");
+    pub fn sys_mon_ram() -> &'static CStr { SYS_MON_RAM.cstr() }
+    pub const SYS_MON_SWAP: UiText = UiText::new(c"Swap", c"Swap");
+    pub fn sys_mon_swap() -> &'static CStr { SYS_MON_SWAP.cstr() }
+    pub const SYS_MON_SWAP_OFF: UiText = UiText::new(c"Отключён", c"Off");
+    pub fn sys_mon_swap_off() -> &'static str { SYS_MON_SWAP_OFF.as_str() }
+    pub const SYS_MON_TAB_RSS: UiText = UiText::new(c"Память вкладки", c"Tab RSS");
+    pub fn sys_mon_tab_rss() -> &'static CStr { SYS_MON_TAB_RSS.cstr() }
+    pub const SYS_MON_BATTERY: UiText = UiText::new(c"Батарея", c"Battery");
+    pub fn sys_mon_battery() -> &'static CStr { SYS_MON_BATTERY.cstr() }
+    pub const SYS_MON_POWER: UiText = UiText::new(c"Мощность", c"Power draw");
+    pub fn sys_mon_power() -> &'static CStr { SYS_MON_POWER.cstr() }
+    pub const SYS_MON_ETA_LEFT: UiText = UiText::new(c"Осталось", c"Remaining");
+    pub fn sys_mon_eta_left() -> &'static CStr { SYS_MON_ETA_LEFT.cstr() }
+    pub const SYS_MON_ETA_FULL: UiText = UiText::new(c"До заряда", c"To full");
+    pub fn sys_mon_eta_full() -> &'static CStr { SYS_MON_ETA_FULL.cstr() }
+    pub const SYS_MON_HEALTH: UiText = UiText::new(c"Здоровье", c"Health");
+    pub fn sys_mon_health() -> &'static CStr { SYS_MON_HEALTH.cstr() }
+    pub const SYS_MON_AC_ONLY: UiText = UiText::new(c"Сеть / нет батареи", c"AC / No battery");
+    pub fn sys_mon_ac_only() -> &'static str { SYS_MON_AC_ONLY.as_str() }
+    pub const SYS_MON_BAT_DISCHARGING: UiText = UiText::new(c"Разрядка", c"Discharging");
+    pub fn sys_mon_bat_discharging() -> &'static str { SYS_MON_BAT_DISCHARGING.as_str() }
+    pub const SYS_MON_BAT_CHARGING: UiText = UiText::new(c"Зарядка", c"Charging");
+    pub fn sys_mon_bat_charging() -> &'static str { SYS_MON_BAT_CHARGING.as_str() }
+    pub const SYS_MON_BAT_FULL: UiText = UiText::new(c"Заряжена", c"Full");
+    pub fn sys_mon_bat_full() -> &'static str { SYS_MON_BAT_FULL.as_str() }
+    pub const SYS_MON_BAT_NOT_CHARGING: UiText = UiText::new(c"От сети", c"Not charging");
+    pub fn sys_mon_bat_not_charging() -> &'static str { SYS_MON_BAT_NOT_CHARGING.as_str() }
+    pub const SYS_MON_BAT_UNKNOWN: UiText = UiText::new(c"Нет данных", c"Unknown");
+    pub fn sys_mon_bat_unknown() -> &'static str { SYS_MON_BAT_UNKNOWN.as_str() }
 }
 
 pub use i18n_text::*;
@@ -553,10 +636,26 @@ mod tests {
         }
     }
 
+    fn verify_sys_monitor_pairs() {
+        for entry in [
+            i18n_text::SYS_MON_TIP, i18n_text::SYS_MON_TITLE, i18n_text::SYS_MON_CPU,
+            i18n_text::SYS_MON_CPU_DETAIL, i18n_text::SYS_MON_LOAD, i18n_text::SYS_MON_RAM,
+            i18n_text::SYS_MON_SWAP, i18n_text::SYS_MON_SWAP_OFF, i18n_text::SYS_MON_TAB_RSS,
+            i18n_text::SYS_MON_BATTERY, i18n_text::SYS_MON_POWER, i18n_text::SYS_MON_ETA_LEFT,
+            i18n_text::SYS_MON_ETA_FULL, i18n_text::SYS_MON_HEALTH, i18n_text::SYS_MON_AC_ONLY,
+            i18n_text::SYS_MON_BAT_DISCHARGING, i18n_text::SYS_MON_BAT_CHARGING,
+            i18n_text::SYS_MON_BAT_FULL, i18n_text::SYS_MON_BAT_NOT_CHARGING,
+            i18n_text::SYS_MON_BAT_UNKNOWN,
+        ] {
+            assert_pair_valid(entry);
+        }
+    }
+
     #[test]
     fn every_ui_text_entry_has_valid_non_empty_ru_and_en_strings() {
         verify_core_and_palette_pairs();
         verify_tools_context_and_dialog_pairs();
+        verify_sys_monitor_pairs();
     }
 
     #[test]

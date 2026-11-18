@@ -17,6 +17,8 @@ use crate::remote_telemetry::RemoteTelemetryScheduler;
 use crate::search_bar;
 use crate::session::TermSession;
 use crate::sidebar::Sidebar;
+use crate::sys_monitor::SysSampler;
+use crate::sys_monitor_ui::SysMonitorWidget;
 use crate::tab_order;
 use crate::tab_strip::TabStrip;
 use crate::tabs::TabStore;
@@ -90,6 +92,8 @@ pub(crate) struct AppState {
     pub(crate) swarm_view: crate::swarm_view::SwarmView,
     pub(crate) update_scheduler: UpdateScheduler,
     pub(crate) update_banner: UpdateBanner,
+    pub(crate) sys_monitor: SysMonitorWidget,
+    pub(crate) sys_sampler: SysSampler,
 }
 
 thread_local! {
@@ -200,6 +204,19 @@ pub(crate) fn session_ssh_host(s: &TermSession) -> String {
     s.remote()
         .map_or(&s.proc_info.ssh_host, |r| &r.host)
         .clone()
+}
+
+pub(crate) fn collect_focused_tab_pids(app: &AppState) -> Vec<i32> {
+    let Some(s) = app.sessions.iter().find(|s| s.id == app.active_id) else {
+        return Vec::new();
+    };
+    let mut vtes = Vec::new();
+    s.panes.collect_vtes(s.vte, &mut vtes);
+    let mut pids: Vec<i32> = vtes.into_iter().map(|v| s.pid_for_vte(v)).filter(|&p| p > 0).collect();
+    if s.proc_info.active_pane_pid > 0 && !pids.contains(&s.proc_info.active_pane_pid) {
+        pids.push(s.proc_info.active_pane_pid);
+    }
+    pids
 }
 
 pub(crate) fn collect_local_cwds(app: &AppState) -> Vec<String> {

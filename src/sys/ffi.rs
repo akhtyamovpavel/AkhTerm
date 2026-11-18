@@ -53,6 +53,7 @@ pub const GTK_POLICY_NEVER: c_int = 2;
 pub const GTK_POLICY_AUTOMATIC: c_int = 1;
 pub const GTK_SCROLL_NATURAL: c_int = 1;
 pub const GTK_ICON_SIZE_MENU: c_int = 1;
+pub const GTK_POS_TOP: c_int = 2;
 pub const PANGO_ELLIPSIZE_MIDDLE: c_int = 2;
 pub const PANGO_ELLIPSIZE_END: c_int = 3;
 pub const PANGO_WRAP_WORD_CHAR: c_int = 2;
@@ -299,6 +300,7 @@ extern "C" {
 
     pub fn gtk_popover_new(relative_to: *mut GtkWidget) -> *mut GtkWidget;
     pub fn gtk_popover_set_relative_to(popover: *mut GtkPopover, relative_to: *mut GtkWidget);
+    pub fn gtk_popover_set_position(popover: *mut GtkPopover, position: c_int);
     pub fn gtk_popover_popup(popover: *mut GtkPopover);
     pub fn gtk_popover_popdown(popover: *mut GtkPopover);
 
