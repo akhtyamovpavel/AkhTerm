@@ -1,13 +1,14 @@
 //! VTE-2.91 terminal widget creation, clickable link matching, and session metadata.
 
-use std::cell::Cell;
-use std::ffi::{c_char, c_int, c_void, CStr, CString};
+#[cfg(test)]
+use std::ffi::c_int;
+use std::ffi::{c_char, c_void, CStr, CString};
 use std::ptr;
 use std::time::Instant;
 
 use crate::ffi::*;
 use crate::paths::expand_home;
-use crate::proc_radar::{foreground_cwd, open_external_link, resolve_link_target, ProcInfo};
+use crate::proc_radar::{foreground_cwd, ProcInfo};
 use crate::sidebar::SidebarRow;
 use crate::split_pane::TabPanes;
 use crate::tab_strip::TabView;
@@ -356,158 +357,12 @@ fn clean_local_osc_title(clean: &str) -> String {
     if keep { clean.chars().take(28).collect() } else { String::new() }
 }
 
-const URL_PATTERNS: &[&str] = &[
-    r"https?://[^\s\x22'<>()`│┃┆┊║]+",
-    r"file://[^\s\x22'<>()\]`│┃┆┊║]+(?:\([^\s\x22'<>()\]`│┃┆┊║]*\)[^\s\x22'<>()\]`│┃┆┊║]*)*",
-    r"\b(localhost|127\.0\.0\.1|0\.0\.0\.0):[0-9]{2,5}(/[^\s\x22'<>()`│┃┆┊║]*)?",
-    r"(?:~|/home/[a-zA-Z0-9_.-]+)/[^\s\x22'<>()\]`│┃┆┊║]+(?:\([^\s\x22'<>()\]`│┃┆┊║]*\)[^\s\x22'<>()\]`│┃┆┊║]*)*",
-    r"(?<![^\s\x22'<>(\[{=`│┃┆┊║])(?:(?:[^\s\x22'<>():~`│┃┆┊║/\[\]{};,]+/)+[^\s\x22'<>():~`│┃┆┊║/\[\]{};,]+\.[a-zA-Z][a-zA-Z0-9]{0,9}(?::[0-9]+){0,2}|(?:[^\s\x22'<>():~`│┃┆┊║/\[\]{};,]*[^\s\x22'<>():~`│┃┆┊║/\[\]{};,.])\.[a-zA-Z][a-zA-Z0-9]{0,9}:[0-9]+(?::[0-9]+)?)",
-];
-
-pub enum LinkCwd {
-    Unmanaged,
-    Remote,
-    Local(String),
-}
-
-struct VteLinkCtx {
-    pid: i32,
-    fallback_cwd: String,
-}
-
-pub type VteMenuHook = fn(*mut GtkWidget, *const GdkEvent, Option<String>);
-
-thread_local! {
-    static LINK_CWD_FN: Cell<Option<fn(*mut GtkWidget) -> LinkCwd>> = const { Cell::new(None) };
-    static VTE_MENU_FN: Cell<Option<VteMenuHook>> = const { Cell::new(None) };
-}
-
-pub fn register_link_cwd_lookup(lookup: fn(*mut GtkWidget) -> LinkCwd) {
-    LINK_CWD_FN.with(|slot| slot.set(Some(lookup)));
-}
-
-pub fn register_vte_menu_hook(hook: VteMenuHook) {
-    VTE_MENU_FN.with(|slot| slot.set(Some(hook)));
-}
-
-extern "C" fn drop_vte_link_ctx(data: *mut c_void, _closure: *mut c_void) {
-    if !data.is_null() {
-        unsafe { drop(Box::from_raw(data.cast::<VteLinkCtx>())) };
-    }
-}
-
-fn resolve_vte_cwd(vte: *mut GtkWidget, user_data: *mut c_void) -> Option<String> {
-    if let Some(lookup) = LINK_CWD_FN.with(Cell::get) {
-        match lookup(vte) {
-            LinkCwd::Local(dir) => return Some(dir),
-            LinkCwd::Remote => return None,
-            LinkCwd::Unmanaged => {}
-        }
-    }
-    if user_data.is_null() {
-        return None;
-    }
-    let ctx = unsafe { &*user_data.cast::<VteLinkCtx>() };
-    foreground_cwd(ctx.pid)
-        .or_else(|| (!ctx.fallback_cwd.is_empty()).then(|| ctx.fallback_cwd.clone()))
-}
-
-fn take_c_string(ptr: *mut c_char) -> Option<String> {
-    if ptr.is_null() {
-        return None;
-    }
-    let text = unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() };
-    unsafe { g_free(ptr as *mut c_void) };
-    Some(text)
-}
-
-pub fn check_vte_event_link(
-    vte: *mut GtkWidget,
-    event: *const GdkEvent,
-    cwd: Option<&str>,
-) -> Option<String> {
-    if vte.is_null() || event.is_null() {
-        return None;
-    }
-    unsafe {
-        if let Some(hlink) = take_c_string(vte_terminal_hyperlink_check_event(vte, event)) {
-            if let Some(target) = resolve_link_target(&hlink, cwd) {
-                return Some(target);
-            }
-        }
-        let mut tag: c_int = -1;
-        let matched = take_c_string(vte_terminal_match_check_event(vte, event, &mut tag))?;
-        resolve_link_target(&matched, cwd)
-    }
-}
-
-fn handle_vte_right_click(
-    vte: *mut GtkWidget,
-    event: *const GdkEvent,
-    user_data: *mut c_void,
-) -> c_int {
-    let mut state: u32 = 0;
-    unsafe { gdk_event_get_state(event, &mut state) };
-    if crate::context_menu::should_passthrough_vte_click(3, state) {
-        return 0;
-    }
-    let Some(hook) = VTE_MENU_FN.with(Cell::get) else {
-        return 0;
-    };
-    let cwd = resolve_vte_cwd(vte, user_data);
-    let link = check_vte_event_link(vte, event, cwd.as_deref());
-    hook(vte, event, link);
-    1
-}
-
-pub fn should_open_vte_link(button: u32, state: u32) -> bool {
-    if button != 1 {
-        return false;
-    }
-    let ctrl_held = (state & GDK_CONTROL_MASK) != 0;
-    let no_alt = (state & GDK_MOD1_MASK) == 0;
-    ctrl_held && no_alt
-}
-
-fn handle_vte_left_click(
-    vte: *mut GtkWidget,
-    event: *const GdkEvent,
-    state: u32,
-    user_data: *mut c_void,
-) -> c_int {
-    if !should_open_vte_link(1, state) {
-        return 0;
-    }
-    let cwd = resolve_vte_cwd(vte, user_data);
-    if let Some(target) = check_vte_event_link(vte, event, cwd.as_deref()) {
-        open_external_link(&target);
-        return 1;
-    }
-    0
-}
-
-extern "C" fn on_vte_button_press(
-    vte: *mut GtkWidget,
-    event: *const GdkEvent,
-    user_data: *mut c_void,
-) -> c_int {
-    let mut button: u32 = 0;
-    let mut state: u32 = 0;
-    let is_press = unsafe {
-        !event.is_null()
-            && gdk_event_get_event_type(event) == GDK_BUTTON_PRESS
-            && gdk_event_get_button(event, &mut button) != 0
-    };
-    if !is_press {
-        return 0;
-    }
-    unsafe { gdk_event_get_state(event, &mut state) };
-    match button {
-        1 => handle_vte_left_click(vte, event, state, user_data),
-        3 => handle_vte_right_click(vte, event, user_data),
-        _ => 0,
-    }
-}
+#[path = "event_link.rs"]
+mod event_link;
+pub use event_link::{register_link_cwd_lookup, register_vte_menu_hook, LinkCwd, VteLink};
+use event_link::register_vte_url_matches;
+#[cfg(test)]
+use event_link::{check_vte_event_link, handle_vte_left_click, on_vte_button_press, should_open_vte_link, take_c_string, URL_PATTERNS};
 
 fn apply_vte_style(vte: *mut GtkWidget) {
     apply_vte_preferences(vte, "DejaVu Sans Mono 10.5", 15_000);
@@ -543,6 +398,10 @@ pub fn parse_osc7_directory_uri(uri: &str) -> Option<String> {
 
 fn update_session_osc7_cwd(s: &mut TermSession, vte: *mut GtkWidget, dir: &str) {
     if let Some(pane) = s.pane_registry.by_vte_mut(vte) {
+        let info = crate::proc_radar::inspect_proc_tree(pane.child_pid);
+        let in_tmux = info.ssh_pid > 0 && crate::session_ops::read_vte_window_title(vte)
+            .is_some_and(|t| t.starts_with("AKHTERM_TMUX:"));
+        pane.ssh_directory = (info.ssh_pid > 0 && !in_tmux).then(|| (info.ssh_pid, dir.to_owned()));
         pane.cwd = dir.to_owned();
     }
     if let Some(pane) = s.panes.extra.iter_mut().find(|p| p.vte == vte) {
@@ -685,22 +544,6 @@ fn session_tap_sink() -> crate::pty_tap::PtyTapSink {
     }
 }
 
-fn register_vte_url_matches(vte: *mut GtkWidget) {
-    unsafe {
-        for pat in URL_PATTERNS {
-            let Ok(pat_c) = CString::new(*pat) else { continue };
-            let vreg = vte_regex_new_for_match(pat_c.as_ptr(), -1, PCRE2_MULTILINE_UTF, ptr::null_mut());
-            if !vreg.is_null() {
-                let tag = vte_terminal_match_add_regex(vte, vreg, 0);
-                if tag >= 0 {
-                    vte_terminal_match_set_cursor_name(vte, tag, c"pointer".as_ptr());
-                }
-                vte_regex_unref(vreg);
-            }
-        }
-    }
-}
-
 fn spawn_vte_command(vte: *mut GtkWidget, cwd: &str, argv_strs: &[&str]) -> i32 {
     crate::pty_tap::spawn_vte_with_tap(vte, cwd, argv_strs, session_tap_sink())
 }
@@ -712,18 +555,7 @@ pub fn create_vte_widget(cwd: &str, argv_strs: &[&str]) -> (*mut GtkWidget, i32)
         register_vte_url_matches(vte);
         crate::file_drop::setup_vte_file_drop(vte);
         let pid = spawn_vte_command(vte, cwd, argv_strs);
-        let ctx = Box::into_raw(Box::new(VteLinkCtx {
-            pid,
-            fallback_cwd: expand_home(cwd),
-        }));
-        g_signal_connect_data(
-            vte,
-            c"button-press-event".as_ptr(),
-            on_vte_button_press as *const c_void,
-            ctx.cast(),
-            drop_vte_link_ctx as *const c_void,
-            0,
-        );
+        event_link::connect(vte, pid, cwd);
         crate::tmux_copy::attach_vte_handlers(vte);
         g_signal_connect_data(
             vte,

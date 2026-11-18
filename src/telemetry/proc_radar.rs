@@ -80,7 +80,7 @@ fn parse_stat_groups(stat: &str) -> Option<(i32, i32)> {
     Some((pgrp, tpgid))
 }
 
-fn read_proc_groups(pid: i32) -> Option<(i32, i32)> {
+pub(crate) fn read_proc_groups(pid: i32) -> Option<(i32, i32)> {
     if pid <= 0 {
         return None;
     }
@@ -96,7 +96,7 @@ fn read_proc_cwd(pid: i32) -> Option<String> {
     path.into_os_string().into_string().ok()
 }
 
-fn read_proc_cmdline(pid: i32) -> Option<Vec<String>> {
+pub(crate) fn read_proc_cmdline(pid: i32) -> Option<Vec<String>> {
     let raw = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
     let parts: Vec<String> = raw
         .split(|&b| b == 0)
@@ -268,7 +268,7 @@ pub fn query_ssh_servers(hosts: &[String]) -> BoxTelemetry {
     let remote_cmd = concat!(
         "tmux set -g set-titles on 2>/dev/null; ",
         "tmux set-option -g set-clipboard on 2>/dev/null; ",
-        "tmux set -g set-titles-string 'AKHTERM_TMUX:#{pane_id}|#{session_name}|#{window_index}:#{window_name}|#{pane_current_command}|#{pane_current_path}' 2>/dev/null; ",
+        "tmux set -g set-titles-string 'AKHTERM_TMUX:v2:#{pid}:#{pane_id}|#{session_name}|#{window_index}:#{window_name}|#{pane_current_command}|#{pane_current_path}' 2>/dev/null; ",
         "tmux list-sessions -F '#{session_name} (#{session_windows} окн.)' 2>/dev/null; ",
         "echo '---CLIENTS---'; ",
         "tmux list-clients -F '#{session_name}|#{window_index}:#{window_name}|#{pane_current_command}|#{pane_current_path}' 2>/dev/null | tail -n 1; ",

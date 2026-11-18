@@ -17,7 +17,8 @@ pub enum ContextAction {
     CopySelection(*mut GtkWidget),
     PasteSmart { sid: usize, vte: *mut GtkWidget },
     OpenLink(String),
-    PreviewMarkdown(PathBuf),
+    PreviewMarkdown(PathBuf, Option<crate::markdown::Origin>),
+    PreviewRemote(crate::markdown::RemoteDocument),
     CopyText(String),
     OpenContainingFolder(PathBuf),
     ForwardToTab { source_sid: usize, source_vte: *mut GtkWidget, target_sid: usize, selected_text: Option<String> },
@@ -197,7 +198,7 @@ pub struct VteMenuSpec {
     pub vte: *mut GtkWidget,
     pub has_selection: bool,
     pub selected_text: Option<String>,
-    pub link_target: Option<String>,
+    pub link_target: Option<crate::session::VteLink>,
     pub is_local: bool,
     pub targets: Vec<SessionTarget>,
 }
@@ -344,17 +345,24 @@ fn append_forward_submenu(menu: *mut GtkWidget, spec: &VteMenuSpec, dispatch: &D
 }
 
 fn append_vte_link_items(menu: *mut GtkWidget, spec: &VteMenuSpec, dispatch: &DispatchFn, items: &mut Vec<*mut GtkWidget>) {
-    let Some(url) = spec.link_target.as_deref() else {
+    let Some(link) = spec.link_target.as_ref() else {
         return;
     };
     append_separator(menu);
-    let open_act = ContextAction::OpenLink(url.to_owned());
-    items.push(append_bound_item(menu, text::ctx_open_link().as_ptr(), true, open_act, dispatch));
-    let copy_act = ContextAction::CopyText(url.to_owned());
-    items.push(append_bound_item(menu, text::ctx_copy_link().as_ptr(), true, copy_act, dispatch));
+    let url = link.url.as_str();
+    let (label, open) = match &link.document {
+        Some(doc) => (text::MD_PREVIEW.as_ptr(), ContextAction::PreviewRemote(doc.clone())),
+        None => (text::ctx_open_link().as_ptr(), ContextAction::OpenLink(url.to_owned())),
+    };
+    items.push(append_bound_item(menu, label, true, open, dispatch));
+    let copy = ContextAction::CopyText(url.to_owned());
+    items.push(append_bound_item(menu, text::ctx_copy_link().as_ptr(), true, copy, dispatch));
+    if link.document.is_some() {
+        return;
+    }
     if let Some(local_path) = resolve_local_link_path(url) {
         if spec.is_local && crate::markdown::accepts(&local_path) {
-            let preview = ContextAction::PreviewMarkdown(local_path.clone());
+            let preview = ContextAction::PreviewMarkdown(local_path.clone(), crate::markdown::for_vte(spec.vte));
             items.push(append_bound_item(menu, text::MD_PREVIEW.as_ptr(), true, preview, dispatch));
         }
         let folder_act = ContextAction::OpenContainingFolder(local_path);
@@ -705,7 +713,7 @@ mod tests {
             vte,
             has_selection: true,
             selected_text: Some("ошибка".to_owned()),
-            link_target: Some("https://example.org".to_owned()),
+            link_target: Some(crate::session::VteLink { url: "https://example.org".to_owned(), document: None }),
             is_local: true,
             targets: vec![SessionTarget { sid: 7, label: "Агент · Claude".to_owned() }],
         };
@@ -852,7 +860,7 @@ mod tests {
             vte,
             has_selection: false,
             selected_text: None,
-            link_target: Some(link),
+            link_target: Some(crate::session::VteLink { url: link, document: None }),
             is_local: true,
             targets: Vec::new(),
         }

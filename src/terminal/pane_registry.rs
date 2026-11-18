@@ -26,6 +26,8 @@ impl PaneId {
 pub struct PaneRecord {
     pub id: PaneId,
     pub probe_id: usize,
+    pub ssh_directory: Option<(i32, String)>,
+    pub tmux_server: Option<u32>,
     pub tmux_pane: Option<String>,
     pub vte: *mut GtkWidget,
     #[cfg(test)]
@@ -62,6 +64,8 @@ impl PaneRecord {
         Self {
             id,
             probe_id: NEXT_PROBE.fetch_add(1, Ordering::Relaxed),
+            ssh_directory: None,
+            tmux_server: None,
             tmux_pane: None,
             vte,
             #[cfg(test)]
@@ -94,6 +98,8 @@ impl PaneRecord {
         if self.proc_info.ssh_host != next.ssh_host || self.proc_info.ssh_pid != next.ssh_pid {
             self.remote_tmux = None;
             self.tmux_pane = None;
+            self.tmux_server = None;
+            self.ssh_directory = self.ssh_directory.take().filter(|(pid, _)| *pid == next.ssh_pid);
             self.telemetry.reset_transport(self.vte);
             self.osc_title.clear();
         }

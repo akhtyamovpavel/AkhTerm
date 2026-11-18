@@ -226,7 +226,7 @@ extern "C" fn on_vte_title_changed(vte: *mut GtkWidget, user_data: *mut c_void) 
     }
 }
 
-fn read_vte_window_title(vte: *mut GtkWidget) -> Option<String> {
+pub(crate) fn read_vte_window_title(vte: *mut GtkWidget) -> Option<String> {
     unsafe {
         let ptr = vte_terminal_get_window_title(vte);
         (!ptr.is_null()).then(|| CStr::from_ptr(ptr).to_string_lossy().into_owned())

@@ -917,7 +917,8 @@ fn execute_vte_action(action: ContextAction) -> Result<(), ContextAction> {
         ContextAction::PasteSmart { sid, vte } => {
             let _ = paste_routed_to(Some(sid), vte, false, false);
         }
-        ContextAction::PreviewMarkdown(path) => crate::markdown::open(&path),
+        ContextAction::PreviewMarkdown(path, origin) => crate::markdown::open_local(&path, origin),
+        ContextAction::PreviewRemote(doc) => crate::markdown::open_remote(doc),
         ContextAction::OpenLink(url) => proc_radar::open_external_link(&url),
         ContextAction::CopyText(value) => context_menu::copy_text_to_clipboard(&value),
         ContextAction::OpenContainingFolder(path) => {
@@ -968,7 +969,7 @@ fn make_context_dispatcher() -> DispatchFn {
 
 fn build_vte_menu_spec(
     vte: *mut GtkWidget,
-    link_target: Option<String>,
+    link_target: Option<session::VteLink>,
 ) -> Option<context_menu::VteMenuSpec> {
     let has_selection = context_menu::has_vte_selection(vte);
     let selected_text = has_selection.then(|| context_menu::read_vte_selection(vte)).flatten();
@@ -988,7 +989,7 @@ fn build_vte_menu_spec(
 pub(crate) fn open_vte_context_menu(
     vte: *mut GtkWidget,
     event: *const GdkEvent,
-    link_target: Option<String>,
+    link_target: Option<session::VteLink>,
 ) {
     if let Some(spec) = build_vte_menu_spec(vte, link_target) {
         context_menu::popup_vte_menu(&spec, event, make_context_dispatcher());
