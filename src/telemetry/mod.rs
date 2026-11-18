@@ -5,6 +5,7 @@ pub mod mi_watch;
 pub mod pane_radar;
 pub mod proc_radar;
 pub mod remote_telemetry;
+pub(crate) mod ssh_connection;
 pub mod ssh_detect;
 pub mod telemetry;
 pub mod telemetry_agy;

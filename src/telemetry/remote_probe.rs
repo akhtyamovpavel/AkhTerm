@@ -1,10 +1,54 @@
 //! Build the bounded transcript query sent over each SSH transport.
 use super::{
-    posix_quote, source_kind_slug, ssh_connection, SessionProbeQuery, REMOTE_FULL_MAX_BYTES,
+    posix_quote, source_kind_slug, ssh_connection, HostBatchJob, SessionProbeQuery, REMOTE_FULL_MAX_BYTES,
     REMOTE_HEAD_BYTES, REMOTE_TAIL_BYTES,
 };
+use ssh_connection::SshRoute;
+use std::{collections::HashMap, process::Stdio};
 
-pub fn build_posix_probe_script(queries: &[SessionProbeQuery]) -> String {
+type VersionedQuery = (u64, SessionProbeQuery);
+
+pub(super) fn probe_host(
+    batch: HostBatchJob,
+    mut apply: impl FnMut(&[VersionedQuery], &[u8]) -> usize,
+) -> usize {
+    group_routes(batch, route_for_probe).into_iter().map(|(route, queries)| {
+        let script = format!("sh -c {}", super::shell_quote(&probe_script(&queries)));
+        let output = route.spawn(&script, Stdio::null(), "10")
+            .and_then(|child| child.wait_with_output());
+        match output {
+            Ok(out) if out.status.success() => apply(&queries, &out.stdout),
+            _ => 0,
+        }
+    }).sum()
+}
+
+fn route_for_probe(host: &str, pid: i32) -> Option<SshRoute> {
+    if pid > 0 {
+        return SshRoute::from_client(pid, host);
+    }
+    SshRoute::for_host(host)
+}
+
+fn group_routes(
+    batch: HostBatchJob,
+    route: impl Fn(&str, i32) -> Option<SshRoute>,
+) -> HashMap<SshRoute, Vec<VersionedQuery>> {
+    let mut groups: HashMap<_, Vec<_>> = HashMap::new();
+    for entry in batch.queries {
+        if let Some(key) = route(&batch.host, entry.1.ssh_pid) {
+            groups.entry(key).or_default().push(entry);
+        }
+    }
+    groups
+}
+
+pub(super) fn probe_script(queries: &[VersionedQuery]) -> String {
+    let plain: Vec<_> = queries.iter().map(|(_, query)| query.clone()).collect();
+    build_posix_probe_script(&plain)
+}
+
+fn build_posix_probe_script(queries: &[SessionProbeQuery]) -> String {
     let mut out = String::with_capacity(4864 + queries.len() * 192);
     for chunk in posix_core_helpers() {
         out.push_str(chunk);
@@ -108,8 +152,17 @@ fn posix_tree_pids_fn() -> &'static str {
 
 fn posix_tree_agent_fn() -> &'static str {
     concat!(
+        "process_groups() {\n",
+        "  _stat=$(cat \"$P_ROOT/$1/stat\" 2>/dev/null) || return 1\n",
+        "  set -- ${_stat##*) }; [ \"$#\" -ge 6 ] || return 1\n",
+        "  [ \"$6\" -gt 0 ] 2>/dev/null || return 1\n",
+        "  printf '%s|%s' \"$3\" \"$6\"\n}\n",
         "find_tree_agent() {\n",
         "  for _c in $(tree_pids \"$1\"); do\n",
+        "    if [ -n \"${2:-}\" ]; then\n",
+        "      _groups=$(process_groups \"$_c\") || continue\n",
+        "      [ \"${_groups%%|*}\" = \"$2\" ] || continue\n",
+        "    fi\n",
         "    if _k=$(proc_kind \"$_c\"); then printf '%s|%s' \"$_c\" \"$_k\"; return 0; fi\n",
         "  done; return 1\n}\n",
     )
@@ -358,5 +411,37 @@ fn append_query_call(out: &mut String, q: &SessionProbeQuery) {
         out.push_str(&format!(
             "probe_plain {sid} {client} {server} {ppath} {poff}\n"
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn routes_with_distinct_ssh_ports_are_probed_separately() {
+        let query = |sid, ssh_pid| {
+            (1, SessionProbeQuery {
+                sid, ssh_pid, ports: None, tmux_session: Some("work".into()),
+                tmux_window: Some("%4".into()), pane_cwd_hint: String::new(),
+                agent_hint: String::new(), prev_path: String::new(),
+                prev_kind: super::super::TelemetrySource::None, prev_offset: 0,
+            })
+        };
+        let batch = HostBatchJob {
+            host: "same-alias".into(),
+            queries: vec![query(1, 2201), query(2, 2202), query(3, 2201)],
+        };
+        let groups = group_routes(batch, |host, port| {
+            let args = ["ssh", "-t", "-p", &port.to_string(), host, "tmux"]
+                .map(str::to_owned);
+            SshRoute::from_argv(&args, PathBuf::from("/tmp"))
+        });
+        let mut groups: Vec<_> = groups.values()
+            .map(|queries| queries.iter().map(|(_, q)| q.sid).collect::<Vec<_>>())
+            .collect();
+        groups.sort();
+        assert_eq!(groups, vec![vec![1, 3], vec![2]]);
     }
 }
