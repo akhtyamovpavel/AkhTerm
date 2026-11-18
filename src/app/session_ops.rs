@@ -25,6 +25,7 @@ pub(crate) fn sidebar_search_cb() -> extern "C" fn(*mut GtkWidget, *mut c_void) 
 }
 
 extern "C" fn on_window_destroy(_w: *mut GtkWidget, _data: *mut c_void) {
+    crate::ctl_wire::shutdown_server();
     save_tabs();
     unsafe { gtk_main_quit() };
 }
@@ -117,7 +118,12 @@ extern "C" fn on_vte_contents_changed(vte: *mut GtkWidget, user_data: *mut c_voi
         let session = app.sessions.iter_mut().find(|s| s.id == sid && s.has_vte(vte));
         if let Some(s) = session.filter(|s| s.pid_for_vte(vte) > 0 || s.active_pid() > 0) {
             mark_pane_working(s, vte, sid == active);
-            mark_session_working(s, sid == active);
+            if s.pane_registry.is_empty() {
+                mark_session_working(s, sid == active);
+            } else {
+                s.state = s.pane_registry.aggregated_state();
+                s.unread = s.pane_registry.has_unread();
+            }
         }
     });
 }
@@ -992,6 +998,46 @@ pub(crate) fn split_pane_in_session(
     save_tabs();
 }
 
+fn focus_matching_session_pane(s: &mut TermSession, target_id: crate::pane_registry::PaneId) -> Option<(usize, *mut GtkWidget)> {
+    let vte = s.pane_registry.get(target_id)?.vte;
+    if s.panes.is_zoomed() && s.panes.zoomed_vte(s.scroll_wrap, s.vte) != Some(vte) {
+        s.panes.unzoom_in_place(s.scroll_wrap);
+    }
+    s.focus_pane(vte);
+    clear_pane_unread_for(s, vte);
+    s.state = s.pane_registry.aggregated_state();
+    s.unread = s.pane_registry.has_unread();
+    Some((s.id, vte))
+}
+
+fn find_pane_focus_target(app: &mut AppState, raw_id: u64) -> Option<(usize, *mut GtkWidget, *mut GtkWidget, crate::search_bar::SearchBar)> {
+    let target_id = crate::pane_registry::PaneId::new(raw_id);
+    let (win, bar) = (app.win, app.search_bar.clone());
+    let (sid, vte) = app.sessions.iter_mut().find_map(|s| focus_matching_session_pane(s, target_id))?;
+    Some((sid, vte, win, bar))
+}
+
+fn apply_pane_window_focus(sid: usize, vte: *mut GtkWidget, win: *mut GtkWidget, bar: &crate::search_bar::SearchBar) {
+    select_session(sid);
+    if !vte.is_null() {
+        unsafe { gtk_widget_grab_focus(vte) };
+        bar.sync_active_vte(vte);
+    }
+    if !win.is_null() {
+        unsafe { gtk_window_present(win.cast()) };
+    }
+}
+
+pub(crate) fn focus_pane_by_id(pane_id: &str) -> Result<(), String> {
+    let raw_id = crate::ctl_protocol::parse_pane_id_num(pane_id)
+        .ok_or_else(|| format!("invalid pane_id '{pane_id}'"))?;
+    let (sid, vte, win, bar) = app_state::with_app_mut(|app| find_pane_focus_target(app, raw_id))
+        .flatten()
+        .ok_or_else(|| format!("pane not found: {pane_id}"))?;
+    apply_pane_window_focus(sid, vte, win, &bar);
+    Ok(())
+}
+
 pub(crate) fn focus_pane_direction(dir: split_pane::FocusDir) -> bool {
     let moved = app_state::with_app_mut(|app| {
         let sid = app.active_id;
@@ -1476,6 +1522,10 @@ fn restore_session_splits(sid: usize, tree: &SplitTree) {
     let (spawned, raw_scrolls) = spawn_secondary_panes(sid, tree, &fallback_cwd, &shell, scale);
     let op = app_state::with_app_mut(|app| {
         let s = app.sessions.iter_mut().find(|s| s.id == sid)?;
+        for p in &spawned {
+            let host = p.remote.as_ref().map(|r| r.host.as_str());
+            register_split_pane(s, p.vte, p.scroll, p.child_pid, p.cwd.clone(), host);
+        }
         s.panes.prepare_restore_splits(s.scroll_wrap, s.vte, tree.clone(), spawned)
     })
     .flatten();

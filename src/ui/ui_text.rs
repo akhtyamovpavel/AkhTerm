@@ -113,6 +113,9 @@ pub const PIN_TAB_PLACEHOLDER: &CStr = c"Закреплённое имя (пус
 pub const PIN_TAB_SAVE: &CStr = c"Закрепить";
 pub const PIN_TAB_RESET: &CStr = c"Сбросить";
 pub const STATUS_APPROVAL: &CStr = c"Ждёт апрува";
+pub const STATUS_ERROR: UiText = UiText::new(c"Ошибка", c"Error");
+pub const NOTIFY_FOCUS_ACTION: UiText = UiText::new(c"Перейти", c"Focus");
+pub const NOTIFY_ERROR_TITLE: UiText = UiText::new(c"AkhTerm · Ошибка", c"AkhTerm · Error");
 pub const APPROVAL_TAB_TIP: &CStr = c"Ждёт апрува (Ctrl+Shift+U — перейти)";
 pub const NOTIFY_APPROVAL_TITLE: &CStr = c"AkhTerm · Ждёт апрува";
 pub const NOTIFY_READY_TITLE: &CStr = c"AkhTerm · Готово";
@@ -581,6 +584,7 @@ mod tests {
             i18n_text::CLOSE_TAB_TIP, i18n_text::PIN_TAB_TITLE, i18n_text::PIN_TAB_PLACEHOLDER,
             i18n_text::PIN_TAB_SAVE, i18n_text::PIN_TAB_RESET, i18n_text::STATUS_APPROVAL,
             i18n_text::APPROVAL_TAB_TIP, i18n_text::NOTIFY_APPROVAL_TITLE, i18n_text::NOTIFY_READY_TITLE,
+            STATUS_ERROR, NOTIFY_FOCUS_ACTION, NOTIFY_ERROR_TITLE,
             i18n_text::AGENTS_WORKTREE_HEADER, i18n_text::AGENT_WORKTREE_TIP, i18n_text::WORKTREE_LOCAL_ONLY,
             i18n_text::PALETTE_TITLE, i18n_text::PALETTE_HINT, i18n_text::PALETTE_PLACEHOLDER,
             i18n_text::PALETTE_EMPTY, i18n_text::PALETTE_BADGE_TAB, i18n_text::PALETTE_BADGE_PROFILE,

@@ -191,6 +191,7 @@ extern "C" {
     pub fn gtk_window_is_maximized(window: *mut GtkWindow) -> c_int;
     pub fn gtk_window_fullscreen(window: *mut GtkWindow);
     pub fn gtk_window_unfullscreen(window: *mut GtkWindow);
+    pub fn gtk_window_present(window: *mut GtkWindow);
     pub fn gtk_window_get_focus(window: *mut GtkWindow) -> *mut GtkWidget;
 
     pub fn gtk_header_bar_new() -> *mut GtkWidget;

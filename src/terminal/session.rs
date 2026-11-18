@@ -474,9 +474,9 @@ fn maybe_notify_osc133(
         s.last_notified = Some(now);
         let summary = crate::pty_tap::osc133_notify_title().to_owned();
         let body = crate::pty_tap::format_osc133_notify_body(&s.title, done.exit_code, done.elapsed_secs);
-        std::thread::spawn(move || {
-            let _ = crate::platform::build_notify_command("notify-send", &summary, &body).status();
-        });
+        let target_vte = done.vte_addr as *mut GtkWidget;
+        let pane_id = s.pane_registry.by_vte(target_vte).map(|p| p.id.raw().to_string());
+        crate::platform::spawn_clickable_notification(summary, body, pane_id);
     }
 }
 
@@ -545,7 +545,15 @@ fn session_tap_sink() -> crate::pty_tap::PtyTapSink {
 }
 
 fn spawn_vte_command(vte: *mut GtkWidget, cwd: &str, argv_strs: &[&str]) -> i32 {
-    crate::pty_tap::spawn_vte_with_tap(vte, cwd, argv_strs, session_tap_sink())
+    let pane_id = crate::pane_registry::allocate_global_pane_id();
+    crate::pane_registry::remember_spawned_pane_id(vte, pane_id);
+    crate::pty_tap::spawn_vte_with_tap_for_pane(
+        vte,
+        cwd,
+        argv_strs,
+        Some(pane_id.raw()),
+        session_tap_sink(),
+    )
 }
 
 pub fn create_vte_widget(cwd: &str, argv_strs: &[&str]) -> (*mut GtkWidget, i32) {

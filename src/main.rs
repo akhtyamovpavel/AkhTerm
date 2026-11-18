@@ -12,11 +12,11 @@ mod terminal;
 mod ui;
 mod workspace;
 
-pub(crate) use app::{app_state, session_ops, shortcuts, updater_wire};
+pub(crate) use app::{app_state, ctl_wire, session_ops, shortcuts, updater_wire};
 #[cfg(test)]
 pub(crate) use app::app_tests as tests;
 pub(crate) use swarm::{git_review, git_status, git_wt, handoff, swarm_view, task_dispatch};
-pub(crate) use sys::{config, ffi, paths, platform, ssh_config, updater};
+pub(crate) use sys::{config, ctl_cli, ctl_protocol, ctl_socket, ffi, paths, platform, ssh_config, updater};
 pub(crate) use telemetry::{
     agent_detect, approval, mi, mi_watch, pane_radar, proc_radar, remote_telemetry, ssh_detect,
     sys_monitor, telemetry_agy, tmux_local,
@@ -60,6 +60,9 @@ fn main() -> std::process::ExitCode {
     if let Some(version_line) = about::check_version_arg(&args) {
         println!("{version_line}");
         return std::process::ExitCode::SUCCESS;
+    }
+    if let Some(code) = ctl_cli::try_run(&args) {
+        return code;
     }
     let workspace = match tabs::lock_workspace() {
         Ok(file) => file,
@@ -321,6 +324,7 @@ extern "C" fn on_main_radar_tick(data: *mut c_void) -> c_int {
 }
 
 fn finish_startup(win: *mut GtkWidget) {
+    ctl_wire::start_server();
     session_ops::restore_tabs();
     updater_wire::trigger_startup_check();
     unsafe {
@@ -328,6 +332,7 @@ fn finish_startup(win: *mut GtkWidget) {
         g_timeout_add(900, on_main_radar_tick, ptr::null_mut());
         gtk_main();
     }
+    ctl_wire::shutdown_server();
 }
 
 fn run_app() {

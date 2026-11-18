@@ -1,13 +1,72 @@
 //! Canonical per-pane registry, state model, and priority aggregation.
 
+use std::collections::HashMap;
 #[cfg(test)]
 use std::ptr;
-use std::time::Instant;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
+use crate::ctl_protocol::HookState;
 use crate::ffi::GtkWidget;
 use crate::proc_radar::ProcInfo;
 use crate::session::{detect_agent_name, WorkState};
 use crate::telemetry::SessionTelemetry;
+
+const HOOK_WORKING_TTL: Duration = Duration::from_secs(900);
+const HOOK_WAITING_TTL: Duration = Duration::from_secs(1800);
+const HOOK_DONE_TTL: Duration = Duration::from_secs(120);
+const HOOK_ERROR_TTL: Duration = Duration::from_secs(1800);
+const HOOK_OUTPUT_GRACE: Duration = Duration::from_secs(3);
+
+static NEXT_GLOBAL_PANE: AtomicU64 = AtomicU64::new(1);
+static SPAWNED_PANE_IDS: OnceLock<Mutex<HashMap<usize, PaneId>>> = OnceLock::new();
+
+pub fn allocate_global_pane_id() -> PaneId {
+    PaneId::new(NEXT_GLOBAL_PANE.fetch_add(1, Ordering::Relaxed))
+}
+
+pub fn remember_spawned_pane_id(vte: *mut GtkWidget, id: PaneId) {
+    if vte.is_null() {
+        return;
+    }
+    let map = SPAWNED_PANE_IDS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut guard) = map.lock() {
+        guard.insert(vte as usize, id);
+    }
+}
+
+pub fn take_spawned_pane_id(vte: *mut GtkWidget) -> Option<PaneId> {
+    if vte.is_null() {
+        return None;
+    }
+    SPAWNED_PANE_IDS.get()?.lock().ok()?.remove(&(vte as usize))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaneHookState {
+    pub state: HookState,
+    pub title: Option<String>,
+    pub message: Option<String>,
+    pub updated_at: Instant,
+    pub expires_at: Instant,
+    pub saw_non_shell: bool,
+}
+
+impl PaneHookState {
+    pub fn ttl_for(state: HookState) -> Duration {
+        match state {
+            HookState::Working => HOOK_WORKING_TTL,
+            HookState::Waiting => HOOK_WAITING_TTL,
+            HookState::Done => HOOK_DONE_TTL,
+            HookState::Error => HOOK_ERROR_TTL,
+        }
+    }
+
+    pub fn is_expired(&self, now: Instant) -> bool {
+        now >= self.expires_at
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PaneId(pub u64);
@@ -17,7 +76,6 @@ impl PaneId {
         Self(raw)
     }
 
-    #[cfg(test)]
     pub const fn raw(self) -> u64 {
         self.0
     }
@@ -47,6 +105,7 @@ pub struct PaneRecord {
     pub approval_snippet: Option<String>,
     pub telemetry: SessionTelemetry,
     pub last_exit_code: Option<i32>,
+    pub hook_state: Option<PaneHookState>,
 }
 
 impl PaneRecord {
@@ -85,6 +144,7 @@ impl PaneRecord {
             approval_snippet: None,
             telemetry: SessionTelemetry::default(),
             last_exit_code: None,
+            hook_state: None,
         }
     }
 
@@ -123,12 +183,103 @@ impl PaneRecord {
 
     pub fn mark_output(&mut self, now: Instant, is_focused_active: bool) {
         self.last_output = now;
+        if let Some(hook) = &self.hook_state {
+            if !hook.is_expired(now) && hook.state != HookState::Working {
+                if now.saturating_duration_since(hook.updated_at) < HOOK_OUTPUT_GRACE {
+                    return;
+                }
+                if hook.state == HookState::Done {
+                    self.hook_state = None;
+                } else {
+                    return;
+                }
+            }
+        }
         if self.state != WorkState::Working {
             self.set_state(WorkState::Working, now);
         }
         if is_focused_active {
             self.unread = false;
         }
+    }
+
+    pub fn apply_hook_state(
+        &mut self,
+        state: HookState,
+        title: Option<String>,
+        message: Option<String>,
+        is_focused: bool,
+        now: Instant,
+    ) {
+        let saw_non_shell = !self.proc_info.shell_owns_pane(self.remote_tmux.as_ref());
+        let ttl = PaneHookState::ttl_for(state);
+        self.apply_hook_work_state(state, &title, &message, is_focused, now);
+        self.hook_state = Some(PaneHookState {
+            state,
+            title,
+            message,
+            updated_at: now,
+            expires_at: now + ttl,
+            saw_non_shell,
+        });
+    }
+
+    fn apply_hook_work_state(
+        &mut self,
+        state: HookState,
+        title: &Option<String>,
+        message: &Option<String>,
+        is_focused: bool,
+        now: Instant,
+    ) {
+        match state {
+            HookState::Working => {
+                self.set_state(WorkState::Working, now);
+                self.unread = false;
+                self.last_exit_code = None;
+            }
+            HookState::Waiting => {
+                let snippet = message.clone().or_else(|| title.clone());
+                self.set_approval(snippet, !is_focused, now);
+            }
+            HookState::Done => {
+                self.set_state(WorkState::Ready, now);
+                self.unread = !is_focused;
+                self.last_exit_code = Some(0);
+            }
+            HookState::Error => {
+                let snippet = message.clone().or_else(|| title.clone());
+                self.set_approval(snippet, !is_focused, now);
+                self.last_exit_code = Some(1);
+            }
+        }
+    }
+
+    pub fn expire_hook_state(&mut self, now: Instant) -> bool {
+        let Some(hook) = &self.hook_state else {
+            return false;
+        };
+        if !hook.is_expired(now) {
+            return false;
+        }
+        let prev = hook.state;
+        self.hook_state = None;
+        if prev == HookState::Working && self.state == WorkState::Working {
+            self.set_state(WorkState::Idle, now);
+        }
+        true
+    }
+
+    pub fn active_hook_state(&self, now: Instant) -> Option<&PaneHookState> {
+        self.hook_state.as_ref().filter(|h| !h.is_expired(now))
+    }
+
+    pub fn has_hook_error(&self) -> bool {
+        self.hook_state.as_ref().is_some_and(|h| h.state == HookState::Error)
+    }
+
+    pub fn clear_hook_state(&mut self) {
+        self.hook_state = None;
     }
 
     pub fn set_approval(&mut self, snippet: Option<String>, unread: bool, now: Instant) {
@@ -151,7 +302,12 @@ impl PaneRecord {
 
     pub fn sync_agent(&mut self, info: &mut ProcInfo) {
         if info.shell_owns_pane(self.remote_tmux.as_ref()) {
-            if !self.proc_info.agent.is_empty() || self.agent_title_hint().is_some() || self.telemetry.detected_agent_label().is_some() {
+            let hook_agent_exited = self.hook_state.as_ref().is_some_and(|h| h.saw_non_shell);
+            if !self.proc_info.agent.is_empty()
+                || self.agent_title_hint().is_some()
+                || self.telemetry.detected_agent_label().is_some()
+                || hook_agent_exited
+            {
                 self.clear_finished_agent();
             }
         } else if info.agent.is_empty() && !crate::tmux_local::is_local_tmux_pane(info) {
@@ -178,6 +334,7 @@ impl PaneRecord {
         self.state = WorkState::Idle;
         self.work_started_at = None;
         self.unread = false;
+        self.hook_state = None;
     }
 
     pub fn apply_telemetry(&mut self, next: SessionTelemetry) {
@@ -253,7 +410,15 @@ impl PaneRegistry {
         child_pid: i32,
         cwd: String,
     ) -> PaneId {
-        let id = self.allocate_id();
+        let id = match take_spawned_pane_id(vte) {
+            Some(global_id) => {
+                if global_id.0 > self.next_id {
+                    self.next_id = global_id.0;
+                }
+                global_id
+            }
+            None => self.allocate_id(),
+        };
         self.panes.push(PaneRecord::new(id, vte, scroll, child_pid, cwd));
         id
     }
@@ -277,7 +442,6 @@ impl PaneRegistry {
         Some(self.panes.remove(idx))
     }
 
-    #[cfg(test)]
     pub fn get(&self, id: PaneId) -> Option<&PaneRecord> {
         self.panes.iter().find(|pane| pane.id == id)
     }
@@ -331,6 +495,10 @@ impl PaneRegistry {
         self.panes.iter().filter_map(|p| p.last_turn_secs).max()
     }
 
+    pub fn has_hook_error(&self) -> bool {
+        self.panes.iter().any(PaneRecord::has_hook_error)
+    }
+
     pub fn focus_pane(&mut self, vte: *mut GtkWidget, now: Instant) {
         let Some(pane) = self.by_vte_mut(vte) else {
             return;
@@ -338,6 +506,9 @@ impl PaneRegistry {
         pane.unread = false;
         if pane.state == WorkState::Ready {
             pane.set_state(WorkState::Idle, now);
+            if pane.hook_state.as_ref().is_some_and(|h| h.state == HookState::Done) {
+                pane.clear_hook_state();
+            }
         }
     }
 

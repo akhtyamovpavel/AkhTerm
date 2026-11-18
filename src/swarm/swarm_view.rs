@@ -206,12 +206,16 @@ fn build_card_spec(session: &TermSession, vte: *mut GtkWidget, now: Instant) -> 
         .or_else(|| session.live_turn_secs(now).or_else(|| session.settled_turn_secs()));
     let snap = reg_pane.map_or_else(|| session.telemetry.snapshot(), |p| p.telemetry.snapshot());
     let agent = reg_pane.map(crate::pane_registry::PaneRecord::effective_agent).filter(|a| !a.is_empty())
+        .or_else(|| reg_pane.and_then(|p| p.active_hook_state(now)).and_then(|h| h.title.clone()))
         .unwrap_or_else(|| card_agent_label(session));
+    let approval_line = (state == WorkState::NeedsApproval)
+        .then(|| reg_pane.and_then(|p| p.approval_snippet.clone()).or_else(|| extract_approval_line(&visible)))
+        .flatten();
     SwarmCardSpec {
         sid: session.id, vte, agent, repo_name, branch_badge, is_worktree, state, elapsed_secs,
         context_badge: snap.compact_context_badge(), cost_usd: snap.has_data().then_some(snap.cost_usd).flatten(),
         preview_lines: extract_preview_lines(&visible, 3),
-        approval_line: (state == WorkState::NeedsApproval).then(|| extract_approval_line(&visible)).flatten(),
+        approval_line,
     }
 }
 

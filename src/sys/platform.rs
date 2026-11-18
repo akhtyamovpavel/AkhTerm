@@ -431,6 +431,93 @@ pub fn build_notify_command(program: &str, summary: &str, body: &str) -> Command
     cmd
 }
 
+pub fn notify_action_command_args(summary: &str, body: &str, action_label: &str) -> [String; 7] {
+    [
+        "--app-name=AkhTerm".to_owned(),
+        "--icon=org.akhterm.AkhTerm".to_owned(),
+        format!("--action=focus={action_label}"),
+        "--wait".to_owned(),
+        "--".to_owned(),
+        summary.to_owned(),
+        body.to_owned(),
+    ]
+}
+
+pub fn build_action_notify_command(
+    program: &str,
+    summary: &str,
+    body: &str,
+    action_label: &str,
+) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.args(notify_action_command_args(summary, body, action_label))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    cmd
+}
+
+pub fn is_focus_action_reply(stdout: &str) -> bool {
+    matches!(stdout.trim(), "focus" | "default" | "0")
+}
+
+pub fn run_clickable_notify<F: FnOnce(&str)>(
+    program: &str,
+    summary: &str,
+    body: &str,
+    action_label: &str,
+    pane_id: Option<&str>,
+    on_focus: F,
+) -> bool {
+    let Some(pid) = pane_id.filter(|p| !p.is_empty()) else {
+        return build_notify_command(program, summary, body)
+            .status()
+            .is_ok_and(|st| st.success());
+    };
+    let out = build_action_notify_command(program, summary, body, action_label).output();
+    if let Ok(result) = out {
+        if result.status.success() {
+            let text = String::from_utf8_lossy(&result.stdout);
+            if is_focus_action_reply(&text) {
+                on_focus(pid);
+            }
+            return true;
+        }
+    }
+    build_notify_command(program, summary, body)
+        .status()
+        .is_ok_and(|st| st.success())
+}
+
+pub fn invoke_focus_cli(pane_id: &str) -> bool {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("akhterm"));
+    let mut cmd = Command::new(exe);
+    cmd.args(["focus", pane_id])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(sock) = crate::sys::ctl_socket::current_socket_path() {
+        cmd.env("AKHTERM_SOCKET", sock);
+    }
+    cmd.status().is_ok_and(|st| st.success())
+}
+
+pub fn spawn_clickable_notification(summary: String, body: String, pane_id: Option<String>) {
+    let action_label = crate::ui_text::NOTIFY_FOCUS_ACTION.as_str().to_owned();
+    std::thread::spawn(move || {
+        let _ = run_clickable_notify(
+            "notify-send",
+            &summary,
+            &body,
+            &action_label,
+            pane_id.as_deref(),
+            |pid| {
+                let _ = invoke_focus_cli(pid);
+            },
+        );
+    });
+}
+
 pub fn is_clipboard_image_ext(ext: &str) -> bool {
     matches!(
         ext.to_ascii_lowercase().as_str(),
@@ -750,6 +837,34 @@ mod tests {
             verify_broadway_coordinate_translation();
             assert_eq!(resolve_category_icon(SessionCategory::Project), c"utilities-terminal-symbolic");
         });
+    }
+
+    #[test]
+    fn clickable_notify_invokes_focus_on_click_and_falls_back_when_action_unsupported() {
+        let dir = std::env::temp_dir().join(format!("akhterm_notify_act_{}", std::process::id()));
+        clean_test_dir(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let click_bin = dir.join("mock-notify-click");
+        fs::write(&click_bin, "#!/bin/sh\necho focus\n").unwrap();
+        fs::set_permissions(&click_bin, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut focused = String::new();
+        let ok = run_clickable_notify(
+            click_bin.to_str().unwrap(), "AkhTerm", "Done", "Focus", Some("17"),
+            |pid| focused = pid.to_owned(),
+        );
+        assert!(ok && focused == "17");
+
+        let legacy_bin = dir.join("mock-notify-legacy");
+        fs::write(&legacy_bin, "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --action=*) exit 1;; esac; done\nexit 0\n").unwrap();
+        fs::set_permissions(&legacy_bin, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut fallback_clicked = false;
+        let ok_fb = run_clickable_notify(
+            legacy_bin.to_str().unwrap(), "AkhTerm", "Done", "Focus", Some("17"),
+            |_| fallback_clicked = true,
+        );
+        assert!(ok_fb && !fallback_clicked);
+        clean_test_dir(&dir);
     }
 
     #[test]
