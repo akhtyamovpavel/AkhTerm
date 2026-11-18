@@ -204,6 +204,46 @@ fn isolated_ssh_config(env: &tests::MockRemoteEnv, base: &str, context: u32) -> 
 }
 
 #[test]
+fn managed_tmux_shell_title_keeps_context_of_the_actual_foreground_process() {
+    let now = Instant::now();
+    let env = tests::MockRemoteEnv::new("managed-shell-title");
+    let _ = isolated_ssh_config(&env, "ProxyCommand test-peer", 1_200);
+    let shell = env.add_proc(4100, "-zsh\0", &env.home, &[4200]);
+    let agent = env.proc_dir.join("4200");
+    fs::write(shell.join("stat"), "4100 (zsh) S 1 4100 4100 34816 4200").unwrap();
+    fs::write(agent.join("stat"), "4200 (codex) S 4100 4200 4100 34816 4200").unwrap();
+    fs::write(&env.tmux_panes_file, format!("work|1|1|4100|zsh|{}|0|work|%4\n", env.home.display())).unwrap();
+
+    let mut session = tests::dummy_session(7, SessionCategory::Remote, Tab::remote("host-a", Some("work")), "host-a");
+    let pane_id = session.pane_registry.register(ptr::null_mut(), ptr::null_mut(), 1, String::new());
+    let scheduler = RemoteTelemetryScheduler::default();
+    for (title, next) in [
+        (None, now),
+        (Some("v2:51:%4|work|0:work|zsh|/repo"), now + Duration::from_secs(1)),
+    ] {
+        if let Some(title) = title {
+            apply_pane_tmux_title(session.pane_registry.get_mut(pane_id).unwrap(), title);
+        }
+        let pane = &session.pane_registry.panes()[0];
+        let target = RemoteSessionTarget::from_pane(&session, pane).unwrap();
+        scheduler.sync_targets(&[target]);
+        scheduler.refresh_due_with(next, |host, cmd| run_ssh_probe_with_program(env.ssh_bin.to_str().unwrap(), host, cmd));
+        let jobs = crate::pane_radar::collect_sessions_pane_jobs(std::slice::from_ref(&session));
+        let result = crate::pane_radar::run_pane_poll_jobs(jobs, &scheduler.snapshot(), &env.home, next);
+        assert_eq!(result[0].2.snapshot().context_tokens, 1_200);
+    }
+
+    fs::write(shell.join("stat"), "4100 (zsh) S 1 4100 4100 34816 4100").unwrap();
+    fs::write(agent.join("stat"), "4200 (codex) S 4100 4200 4100 34816 4100").unwrap();
+    scheduler.refresh_due_with(now + REMOTE_PROBE_TTL + Duration::from_secs(1), |host, cmd| {
+        run_ssh_probe_with_program(env.ssh_bin.to_str().unwrap(), host, cmd)
+    });
+    let snap = scheduler.snapshot();
+    let tailer = snap.values().next().unwrap();
+    assert!(tailer.foreground_shell && !tailer.snapshot.has_data());
+}
+
+#[test]
 #[ignore = "requires the isolated stdio OpenSSH test peer"]
 fn scheduler_reads_tmux_usage_through_each_live_ssh_config() {
     use crate::telemetry::ssh_connection::FixtureClient;

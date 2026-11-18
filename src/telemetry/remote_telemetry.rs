@@ -124,7 +124,7 @@ impl RemoteSessionTarget {
             tmux_window: live.and_then(|_| crate::tmux_local::pane_tmux_window(pane)),
             pane_cwd_hint: live.map(|t| t.3.clone()).unwrap_or_default(),
             remote_cwd: live.map(|t| t.3.clone()),
-            agent_hint: live.and_then(|t| classify_agent_hint(&t.2)).unwrap_or("").to_owned(),
+            agent_hint: live.map(|t| t.2.clone()).unwrap_or_default(),
         })
     }
 
@@ -136,21 +136,6 @@ impl RemoteSessionTarget {
         pane.proc_info.clone_from(&s.proc_info);
         pane.remote_tmux.clone_from(&s.remote_tmux);
         Self::from_pane(s, &pane)
-    }
-}
-
-fn classify_agent_hint(raw: &str) -> Option<&'static str> {
-    let low = raw.to_ascii_lowercase();
-    if low.contains("agy") || low.contains("antigravity") {
-        Some("agy")
-    } else if low.contains("opencode") {
-        Some("opencode")
-    } else if low.contains("codex") {
-        Some("codex")
-    } else if low.contains("claude") {
-        Some("claude")
-    } else {
-        None
     }
 }
 

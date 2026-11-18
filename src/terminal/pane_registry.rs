@@ -166,8 +166,9 @@ impl PaneRecord {
             .or_else(|| detect_agent_name(&self.osc_title))
     }
 
-    pub fn should_poll_usage(&self) -> bool {
-        self.child_pid > 0 && !self.proc_info.shell_owns_pane(self.remote_tmux.as_ref())
+    pub fn should_poll_usage(&self, is_remote: bool) -> bool {
+        self.child_pid > 0 && (is_remote || self.proc_info.ssh_pid > 0
+            || !self.proc_info.shell_owns_pane(self.remote_tmux.as_ref()))
     }
 
     pub fn clear_finished_agent(&mut self) {

@@ -72,13 +72,21 @@ probe_tmux() {
   _fk=""; _ff=""; _rw=$(printf '%s\n' "${TMUX_PANES:-}" | pick_pane "$_ts" "$_tw")
   if [ -n "$_rw" ]; then
     _ppid="${_rw%%|*}"; _rs="${_rw#*|}"; _pcmd="${_rs%%|*}"; _ppath="${_rs#*|}"
-    _ag=$(find_tree_agent "$_ppid")
+    _groups=$(process_groups "$_ppid")
+    _ag=$(find_tree_agent "$_ppid" "${_groups#*|}")
     if [ -n "$_ag" ]; then
       _ap="${_ag%%|*}"; _fk="${_ag#*|}"
       _ac=$(readlink "$P_ROOT/$_ap/cwd" 2>/dev/null); [ -n "$_ac" ] || _ac="${_ppath:-$_ch}"
       _ff=$(resolve_pane_transcript "$_fk" "$_ac" "$_ap" || true)
     fi
-    if [ -z "$_ff" ]; then
+    if [ -z "$_ag" ] && [ -n "$_groups" ] && [ "${_groups%%|*}" = "${_groups#*|}" ]; then
+      case "${_pcmd#-}" in
+        bash|zsh|sh|fish|dash|ksh|tcsh|csh|nu)
+          printf 'AKHTERM_RTELEM1|%s|SHELL|-|0|0|0|0|\n\nAKHTERM_RTELEM_END\n' "$_s"
+          return ;;
+      esac
+    fi
+    if [ -z "$_ag" ]; then
       _hm=$(tmux_hint "$_pcmd" "$_ah" "${_ppath:-$_ch}" "$_ppid" || true)
       [ -n "$_hm" ] && { _fk="${_hm%%|*}"; _ff="${_hm#*|}"; }
     fi

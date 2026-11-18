@@ -192,7 +192,7 @@ impl PanePollJob {
 }
 
 pub fn collect_pane_poll_jobs(sid: usize, reg: &PaneRegistry, is_daemon: bool, is_remote: bool) -> Vec<PanePollJob> {
-    reg.panes().iter().filter(|p| p.should_poll_usage())
+    reg.panes().iter().filter(|p| p.should_poll_usage(is_remote))
         .map(|p| PanePollJob::from_pane(sid, p, is_daemon, is_remote)).collect()
 }
 

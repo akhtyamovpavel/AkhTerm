@@ -152,8 +152,17 @@ fn posix_tree_pids_fn() -> &'static str {
 
 fn posix_tree_agent_fn() -> &'static str {
     concat!(
+        "process_groups() {\n",
+        "  _stat=$(cat \"$P_ROOT/$1/stat\" 2>/dev/null) || return 1\n",
+        "  set -- ${_stat##*) }; [ \"$#\" -ge 6 ] || return 1\n",
+        "  [ \"$6\" -gt 0 ] 2>/dev/null || return 1\n",
+        "  printf '%s|%s' \"$3\" \"$6\"\n}\n",
         "find_tree_agent() {\n",
         "  for _c in $(tree_pids \"$1\"); do\n",
+        "    if [ -n \"${2:-}\" ]; then\n",
+        "      _groups=$(process_groups \"$_c\") || continue\n",
+        "      [ \"${_groups%%|*}\" = \"$2\" ] || continue\n",
+        "    fi\n",
         "    if _k=$(proc_kind \"$_c\"); then printf '%s|%s' \"$_c\" \"$_k\"; return 0; fi\n",
         "  done; return 1\n}\n",
     )
