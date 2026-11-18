@@ -18,6 +18,13 @@ Keep changes small and reuse the existing modules. Aim for a Maintainability Ind
 
 Every hotfix landed on top of a released version is a SemVer patch release: bump `X.Y.Z` to `X.Y.(Z+1)` in `Cargo.toml`, `Cargo.lock` and `README.md`, write curated release notes in `packaging/releases/vX.Y.(Z+1).md` (never leave a bare `--generate-notes` changelog link on GitHub Releases), rebuild the binary, and tag `vX.Y.(Z+1)`.
 
+## Git workflow
+
+- Start every feature, bug fix, or documentation change with a GitHub Issue (`#<id>`).
+- Develop work on a dedicated branch created from `main`: `feature/<id>-<slug>` for features and docs, `fix/<id>-<slug>` for hotfixes, and `release/vX.Y.Z` for version bumps. Never commit directly to `main`.
+- Land changes on `main` exclusively via a Pull Request referencing `Closes #<id>` after `cargo test --offline --locked`, `cargo build --release --offline --locked`, and Maintainability Index (`MI`) checks pass.
+- Follow the SemVer patch-release and curated release-notes rule above for every hotfix on top of a released version, landing the bump via a Pull Request before tagging `vX.Y.(Z+1)`.
+
 ## Interface
 
 - Use GTK widgets and the Zinc palette in `src/ui/theme.css`, `src/workspace/tab_strip.css` and `src/workspace/sidebar.css`. Keep the dark preference and native header bar together so the top of the window follows the application theme.
