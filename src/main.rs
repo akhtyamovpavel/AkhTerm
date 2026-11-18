@@ -17,15 +17,15 @@ pub(crate) use swarm::{git_review, git_status, git_wt, handoff, swarm_view, task
 pub(crate) use sys::{config, ffi, paths, platform, ssh_config, updater};
 pub(crate) use telemetry::{
     agent_detect, approval, mi, mi_watch, pane_radar, proc_radar, remote_telemetry, ssh_detect,
-    telemetry_agy, tmux_local,
+    sys_monitor, telemetry_agy, tmux_local,
 };
 pub(crate) use terminal::{
     file_drop, osc_parser, pane_actions, pane_header, pane_registry, paste_route, pty_tap, session,
     split_pane, tmux_copy,
 };
 pub(crate) use ui::{
-    about, context_menu, i18n, palette, search_bar, settings_dialog, ssh_ui, theme, theme_mode,
-    topbar, ui_font, ui_text, update_banner,
+    about, context_menu, i18n, palette, search_bar, settings_dialog, ssh_ui, sys_monitor_ui, theme,
+    theme_mode, topbar, ui_font, ui_text, update_banner,
 };
 pub(crate) use workspace::{sidebar, sidebar_folders, tab_order, tab_strip, tabs};
 
@@ -148,15 +148,17 @@ fn build_workspace_area(
     }
 }
 
-fn build_footer_bar(root_vbox: *mut GtkWidget) -> *mut GtkWidget {
+fn build_footer_bar(root_vbox: *mut GtkWidget) -> (*mut GtkWidget, sys_monitor_ui::SysMonitorWidget) {
     unsafe {
         let footer_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         add_class(footer_box, "footer-bar");
         let lbl = gtk_label_new(CString::new("Запуск ядра VTE-2.91...").unwrap().as_ptr());
         gtk_label_set_xalign(lbl, 0.0);
         gtk_box_pack_start(footer_box, lbl, 1, 1, 0);
+        let sys_mon = sys_monitor_ui::SysMonitorWidget::new(session_ops::sys_mon_open_cb());
+        gtk_box_pack_end(footer_box, sys_mon.button(), 0, 0, 0);
         gtk_box_pack_start(root_vbox, footer_box, 0, 1, 0);
-        lbl
+        (lbl, sys_mon)
     }
 }
 
@@ -227,6 +229,7 @@ struct AppAssembly {
     overlay: *mut GtkWidget,
     stack: *mut GtkWidget,
     footer_status: *mut GtkWidget,
+    sys_monitor: sys_monitor_ui::SysMonitorWidget,
     ssh_hosts: Vec<proc_radar::SshHostEntry>,
     ssh_fingerprint: ssh_config::SshConfigFingerprint,
     sched: Schedulers,
@@ -258,6 +261,8 @@ fn build_app_state(
     swarm_view: swarm_view::SwarmView,
     update_banner: update_banner::UpdateBanner,
 ) -> AppState {
+    let sys_sampler = sys_monitor::SysSampler::new();
+    a.sys_monitor.update(sys_sampler.snapshot());
     AppState {
         config: a.config, win: a.win, is_fullscreen: false, sidebar: a.sidebar,
         sidebar_visible: true, theme_mode: a.initial_theme, theme_btn: a.tb.theme_btn,
@@ -284,6 +289,7 @@ fn build_app_state(
         remote_telemetry: a.sched.remote, box_state: a.sched.box_state,
         palette, search_bar: a.search_bar, pin_pop, swarm_pop, swarm_view,
         update_scheduler: updater::UpdateScheduler::new(), update_banner,
+        sys_monitor: a.sys_monitor, sys_sampler,
     }
 }
 
@@ -295,12 +301,12 @@ fn assemble_and_install(config: WorkspaceConfig, initial_theme: theme_mode::Them
     let settings_pop = ssh_ui::build_settings_popover(tb.settings_btn, &ssh_hosts);
     let box_pop = ssh_ui::build_box_popover(tb.box_btn, &config, &ssh_hosts);
     let (sidebar, search_bar, overlay, stack) = build_workspace_area(root_vbox);
-    let footer_status = build_footer_bar(root_vbox);
+    let (footer_status, sys_monitor) = build_footer_bar(root_vbox);
     let sched = make_schedulers(&config, &ssh_hosts);
     spawn_background_workers(&sched);
     install_app_state(AppAssembly {
         config, win, initial_theme, tb, settings_pop, box_pop, sidebar,
-        search_bar, overlay, stack, footer_status, ssh_hosts, ssh_fingerprint, sched,
+        search_bar, overlay, stack, footer_status, sys_monitor, ssh_hosts, ssh_fingerprint, sched,
     });
     finish_startup(win);
 }

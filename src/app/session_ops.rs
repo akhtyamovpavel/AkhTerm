@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
-use std::{path::PathBuf, ptr, time::Instant};
+use std::{path::PathBuf, ptr, time::{Duration, Instant}};
 
 use crate::app_state::{self, AppState, APP};
 use crate::ffi::*;
@@ -1228,6 +1228,30 @@ pub(crate) fn radar_tick_cb() -> extern "C" fn(*mut c_void) -> c_int {
     on_radar_tick
 }
 
+pub(crate) fn sys_mon_open_cb() -> extern "C" fn(*mut GtkWidget, *mut c_void) {
+    on_sys_mon_clicked
+}
+
+extern "C" fn on_sys_mon_clicked(_btn: *mut GtkWidget, _data: *mut c_void) {
+    let widget = app_state::with_app_mut(|app| {
+        let pids = app_state::collect_focused_tab_pids(app);
+        let snap = app.sys_sampler.sample_now(&pids).clone();
+        app.sys_monitor.update(&snap);
+        app.sys_monitor.clone()
+    });
+    if let Some(mon) = widget {
+        mon.toggle_popover();
+    }
+}
+
+fn refresh_sys_monitor_if_due(app: &mut AppState, now: Instant) {
+    let pids = app_state::collect_focused_tab_pids(app);
+    if app.sys_sampler.sample_if_due(now, Duration::from_millis(1800), &pids) {
+        let snap = app.sys_sampler.snapshot().clone();
+        app.sys_monitor.update(&snap);
+    }
+}
+
 fn tick_radar_app(app: &mut AppState) {
     let box_snap = app.box_state.lock().map(|g| g.clone()).unwrap_or_default();
     let now = Instant::now();
@@ -1245,6 +1269,7 @@ fn tick_radar_app(app: &mut AppState) {
         set_label_text(app.box_gpu_label, &box_snap.gpu_lines.join("\n"));
     }
     ssh_ui::sync_tmux_jump_buttons(app, &box_snap.tmux_items);
+    refresh_sys_monitor_if_due(app, now);
 }
 
 extern "C" fn on_radar_tick(_data: *mut c_void) -> c_int {

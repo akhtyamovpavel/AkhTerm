@@ -67,6 +67,8 @@
 @define-color update_accent_fg #ffffff;
 @define-color update_link #60a5fa;
 @define-color update_shadow rgba(0, 0, 0, 0.48);
+@define-color sys_mon_bg #141418;
+@define-color sys_mon_fg #d4d4d8;
 
 .tab-icon,
 .sidebar-icon {
@@ -1110,4 +1112,85 @@ button.update-card-primary:hover {
     background-color: @update_accent_hover;
     border-color: @update_accent_hover;
     color: @update_accent_fg;
+}
+
+button.sys-mon-btn {
+    background-image: none;
+    background-color: @sys_mon_bg;
+    color: @sys_mon_fg;
+    border: 1px solid @border;
+    border-radius: 5px;
+    padding: 1px 8px;
+    min-height: 20px;
+    font-family: monospace;
+    font-size: 11px;
+    font-weight: 500;
+}
+
+button.sys-mon-btn:hover {
+    background-image: none;
+    background-color: @hover;
+    border-color: @border_strong;
+    color: @text_strong;
+}
+
+button.sys-mon-btn.sys-mon-warn {
+    background-color: @amber_tint;
+    border-color: @amber_border;
+    color: @amber_fg;
+}
+
+button.sys-mon-btn.sys-mon-warn:hover {
+    border-color: @amber_border_strong;
+}
+
+button.sys-mon-btn.sys-mon-hot {
+    background-color: @danger_bg;
+    border-color: @danger_border;
+    color: @danger;
+}
+
+.sys-mon-pop {
+    min-width: 280px;
+    padding: 8px 10px;
+}
+
+.sys-mon-title {
+    color: @text_strong;
+    font-size: 12px;
+    font-weight: 600;
+    padding-bottom: 4px;
+}
+
+.sys-mon-key {
+    color: @muted;
+    font-size: 12px;
+}
+
+.sys-mon-val {
+    color: @text_strong;
+    font-family: monospace;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.sys-mon-val.sys-mon-warn {
+    color: @amber_fg;
+}
+
+.sys-mon-val.sys-mon-hot {
+    color: @danger;
+}
+
+.sys-mon-sub {
+    color: @text_secondary;
+    font-family: monospace;
+    font-size: 11px;
+}
+
+.sys-mon-divider {
+    background-image: none;
+    background-color: @border;
+    min-height: 1px;
+    margin: 4px 0;
 }
