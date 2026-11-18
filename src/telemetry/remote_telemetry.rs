@@ -48,6 +48,7 @@ pub struct RemoteTailer {
     pub tmux_window: Option<String>,
     pub agent_hint: String,
     pub remote_path: String,
+    pub foreground_shell: bool,
     pub remote_offset: u64,
     pub mtime: u64,
     pub tailer: TranscriptTailer,
@@ -57,6 +58,7 @@ pub struct RemoteTailer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameMode {
     None,
+    Shell,
     Unchanged,
     Full,
     HeadTail,
@@ -181,8 +183,10 @@ impl RemoteTailer {
     }
 
     pub fn apply_frame(&mut self, frame: &RemoteProbeFrame) -> bool {
-        match frame.mode {
-            FrameMode::None => self.clear_tailer(),
+        let shell = frame.mode == FrameMode::Shell;
+        let shell_changed = std::mem::replace(&mut self.foreground_shell, shell) != shell;
+        let updated = match frame.mode {
+            FrameMode::None | FrameMode::Shell => self.clear_tailer(),
             FrameMode::Unchanged => {
                 self.mtime = frame.mtime;
                 false
@@ -191,7 +195,8 @@ impl RemoteTailer {
             FrameMode::HeadTail => self.apply_head_tail(frame),
             FrameMode::Delta => self.apply_delta(frame),
             FrameMode::TailDelta => self.apply_tail_delta(frame),
-        }
+        };
+        updated || shell_changed
     }
 
     fn clear_tailer(&mut self) -> bool {
@@ -331,6 +336,7 @@ impl FrameMode {
     fn parse(raw: &str) -> Option<Self> {
         match raw {
             "NONE" => Some(Self::None),
+            "SHELL" => Some(Self::Shell),
             "UNCHANGED" => Some(Self::Unchanged),
             "FULL" => Some(Self::Full),
             "HEAD_TAIL" => Some(Self::HeadTail),

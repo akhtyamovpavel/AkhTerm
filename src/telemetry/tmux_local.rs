@@ -18,7 +18,9 @@ use crate::proc_radar::ProcInfo;
 use crate::remote_telemetry::RemoteTailer;
 #[cfg(test)]
 use crate::session::TermSession;
-use crate::telemetry::{SessionPollJob, SessionTelemetry};
+use crate::telemetry::SessionPollJob;
+#[cfg(test)]
+use crate::telemetry::SessionTelemetry;
 
 pub const TMUX_TITLE_FORMAT: &str =
     "AKHTERM_TMUX:#{pane_id}|#{session_name}|#{window_index}:#{window_name}|#{pane_current_command}|#{pane_current_path}";
@@ -72,9 +74,8 @@ pub fn apply_pane_tmux_title(pane: &mut PaneRecord, rest: &str) {
         .is_some_and(|(ps, pw, ..)| (ps.as_str(), pw.as_str()) != (sess.as_str(), win.as_str()));
     let target = title_target(rest).0.map(str::to_owned);
     if switched || target != pane.tmux_pane || pane.remote_tmux.as_ref().is_some_and(|t| t.2 != cmd) {
+        pane.clear_finished_agent();
         pane.proc_info.agent.clear();
-        pane.osc_title.clear();
-        pane.telemetry = SessionTelemetry::default();
     }
     pane.tmux_pane = target;
     pane.proc_info.tmux_session.clone_from(&sess);
@@ -225,8 +226,8 @@ pub fn find_matching_client<'a>(
     clients.iter().find(|c| visited.contains(&c.client_pid))
 }
 
-fn is_shell_name(cmd: &str) -> bool {
-    matches!(cmd, "" | "zsh" | "bash" | "sh" | "fish")
+pub fn is_shell_name(cmd: &str) -> bool {
+    matches!(cmd.trim_start_matches('-'), "zsh" | "bash" | "sh" | "fish" | "dash" | "ksh" | "tcsh" | "csh" | "nu")
 }
 
 pub fn apply_local_tmux_client<F>(
@@ -255,6 +256,7 @@ fn apply_pane_cwd_and_agent(
     }
     info.ssh_host = pane_info.ssh_host;
     info.ssh_pid = pane_info.ssh_pid;
+    info.foreground_shell = pane_info.foreground_shell;
     info.agent = if !pane_info.agent.is_empty() {
         pane_info.agent
     } else {

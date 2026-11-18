@@ -38,6 +38,17 @@ fn disconnect_discards_previous_screen_and_agent() {
 }
 
 #[test]
+fn tmux_window_named_after_agent_clears_badge_and_status_when_shell_returns() {
+    let mut p = PaneRecord::new(PaneId(1), ptr::null_mut(), ptr::null_mut(), 1, "/repo".into());
+    apply_pane_tmux_title(&mut p, "%4|work|0:codex|codex|/repo");
+    assert_eq!(p.effective_agent(), "Codex");
+    p.set_approval(Some("Allow?".into()), true, Instant::now());
+    apply_pane_tmux_title(&mut p, "%4|work|0:codex|zsh|/repo");
+    assert!(p.effective_agent().is_empty() && p.approval_snippet.is_none() && !p.unread);
+    assert_eq!(p.state, crate::session::WorkState::Idle);
+}
+
+#[test]
 fn cumulative_codex_input_cannot_become_current_context() {
     let mut tail = crate::telemetry::TranscriptTailer::default();
     tail.kind = TelemetrySource::Codex;
@@ -114,6 +125,9 @@ fn empty_remote_shell_does_not_inherit_another_ssh_clients_agent() {
         ports: Some((50002, 22)),
         ..a.clone()
     };
+    let shell = env.add_proc(3201, "-zsh\0", cwd, &[]);
+    fs::write(shell.join("environ"), b"SSH_CONNECTION=127.0.0.1 50002 127.0.0.1 22\0").unwrap();
+    fs::write(shell.join("stat"), "3201 (zsh) S 1 3201 3201 34816 3201").unwrap();
     sched.sync_targets(&[a, b]);
     sched.refresh_due_with(Instant::now(), |host, cmd| {
         run_ssh_probe_with_program(env.ssh_bin.to_str().unwrap(), host, cmd)
@@ -123,6 +137,7 @@ fn empty_remote_shell_does_not_inherit_another_ssh_clients_agent() {
         TelemetrySource::OpenCode
     );
     assert!(!sched.snapshot()[&2].snapshot.has_data());
+    assert!(sched.snapshot()[&2].foreground_shell);
 }
 
 #[test]

@@ -12,7 +12,7 @@ use crate::paths::expand_home;
 use crate::paths::shorten_home;
 use crate::proc_radar::{inspect_proc_tree, ProcInfo};
 use crate::remote_telemetry::RemoteTailer;
-use crate::session::{detect_agent_name, TermSession, WorkState};
+use crate::session::{TermSession, WorkState};
 use crate::telemetry::{build_tokens_view_with_keys, run_poll_job_with_remote, SessionPollJob, SessionTelemetry, TabTokenRow, TokensViewData};
 #[cfg(test)]
 use crate::telemetry::{format_turn_duration, ContextAlert, TelemetrySource, TokenSnapshot};
@@ -62,21 +62,8 @@ pub fn sync_pane_proc(
     if let Some(tmux) = remote_tmux {
         pane.remote_tmux = Some(tmux);
     }
-    fill_pane_agent_from_hints(pane, &mut proc_info);
+    pane.sync_agent(&mut proc_info);
     pane.proc_info = proc_info;
-}
-
-fn fill_pane_agent_from_hints(pane: &PaneRecord, proc_info: &mut ProcInfo) {
-    if !proc_info.agent.is_empty() || crate::tmux_local::is_local_tmux_pane(proc_info) {
-        return;
-    }
-    let tmux_agent = pane
-        .remote_tmux
-        .as_ref()
-        .and_then(|(_, win, cmd, _)| detect_agent_name(cmd).or_else(|| detect_agent_name(win)));
-    if let Some(agent) = tmux_agent.or_else(|| detect_agent_name(&pane.osc_title)) {
-        proc_info.agent = agent.to_owned();
-    }
 }
 
 pub fn sync_registry_procs(reg: &mut PaneRegistry) {
@@ -205,7 +192,8 @@ impl PanePollJob {
 }
 
 pub fn collect_pane_poll_jobs(sid: usize, reg: &PaneRegistry, is_daemon: bool, is_remote: bool) -> Vec<PanePollJob> {
-    reg.panes().iter().map(|p| PanePollJob::from_pane(sid, p, is_daemon, is_remote)).collect()
+    reg.panes().iter().filter(|p| p.should_poll_usage())
+        .map(|p| PanePollJob::from_pane(sid, p, is_daemon, is_remote)).collect()
 }
 
 pub struct PaneTokenSource<'a> {
@@ -230,7 +218,7 @@ pub fn run_pane_poll_job(
 pub fn apply_pane_telemetry(reg: &mut PaneRegistry, updates: Vec<(PaneId, SessionTelemetry)>) {
     for (pane_id, telem) in updates {
         if let Some(pane) = reg.get_mut(pane_id) {
-            pane.telemetry = telem;
+            pane.apply_telemetry(telem);
         }
     }
 }
@@ -490,10 +478,7 @@ pub fn apply_sessions_pane_telemetry(sessions: &mut [TermSession], updates: Vec<
         }
     }
     for s in sessions {
-        let active_vte = s.active_vte();
-        if let Some(p) = s.pane_registry.by_vte(active_vte).or_else(|| s.pane_registry.panes().first()) {
-            s.telemetry = p.telemetry.clone();
-        }
+        s.sync_focused_telemetry();
     }
 }
 

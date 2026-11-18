@@ -157,6 +157,10 @@ impl TermSession {
     pub fn apply_proc_snapshot(&mut self, proc_info: ProcInfo) {
         let prev_host = std::mem::take(&mut self.proc_info.ssh_host);
         let prev_win = std::mem::take(&mut self.proc_info.tmux_window);
+        if proc_info.foreground_shell && !self.proc_info.agent.is_empty() {
+            self.telemetry = SessionTelemetry::default();
+            self.osc_title.clear();
+        }
         self.proc_info = proc_info;
         if self.category == SessionCategory::Project && prev_host != self.proc_info.ssh_host {
             self.telemetry = SessionTelemetry::default();
@@ -222,14 +226,35 @@ impl TermSession {
     }
 
     pub fn effective_agent(&self) -> String {
+        if self.active_pid() <= 0 || self.at_shell() {
+            return String::new();
+        }
         if !self.proc_info.agent.is_empty() {
             return self.proc_info.agent.clone();
         }
-        detect_agent_name(&self.title)
-            .or_else(|| detect_agent_name(&self.osc_title))
+        detect_agent_name(&self.osc_title)
             .or_else(|| self.telemetry.detected_agent_label())
             .unwrap_or("")
             .to_owned()
+    }
+
+    fn at_shell(&self) -> bool {
+        self.proc_info.shell_owns_pane(self.remote_tmux.as_ref())
+    }
+
+    pub fn sync_focused_telemetry(&mut self) {
+        let Some(pane) = self.pane_registry.by_vte(self.active_vte()).or_else(|| self.pane_registry.panes().first()) else {
+            return;
+        };
+        let returned = pane.telemetry.remote_tailer.foreground_shell && !self.telemetry.remote_tailer.foreground_shell;
+        self.telemetry.clone_from(&pane.telemetry);
+        if returned {
+            self.osc_title.clear();
+            self.proc_info.agent.clear();
+            self.state = self.pane_registry.aggregated_state();
+            self.unread = self.pane_registry.has_unread();
+            refresh_smart_title(self);
+        }
     }
 
     pub fn snapshot_tab(&mut self) -> Tab {
@@ -788,11 +813,18 @@ fn format_remote_title(host: &str, sess: &str, win: &str, folder: &str, agent: &
 }
 
 fn update_detected_agent(s: &mut TermSession) {
+    if s.at_shell() {
+        s.proc_info.agent.clear();
+        if detect_agent_name(&s.osc_title).is_some() {
+            s.osc_title.clear();
+        }
+        return;
+    }
     if !s.proc_info.agent.is_empty() {
         return;
     }
-    if let Some((_, ref win, ref cmd, _)) = s.remote_tmux {
-        if let Some(a) = detect_agent_name(cmd).or_else(|| detect_agent_name(win)) {
+    if let Some((_, _, ref cmd, _)) = s.remote_tmux {
+        if let Some(a) = detect_agent_name(cmd) {
             s.proc_info.agent = a.to_string();
         }
         return;

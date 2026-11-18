@@ -468,6 +468,10 @@ pub fn run_poll_job_with_remote(
     if job.is_daemon {
         return (job.sid, job.telemetry);
     }
+    if remote_tailer.as_ref().is_some_and(|r| r.foreground_shell) {
+        let telemetry = SessionTelemetry { remote_tailer: remote_tailer.unwrap(), ..Default::default() };
+        return (job.sid, telemetry);
+    }
     sync_tmux_window_change(&mut job.telemetry, &job.tmux_window);
     let local_cwd = (!has_live_ssh(&job)).then_some(job.local_cwd.as_deref()).flatten();
     if let Some(cwd) = local_cwd {

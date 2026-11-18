@@ -174,19 +174,28 @@ extern "C" fn on_vte_child_exited(vte: *mut GtkWidget, _status: c_int, user_data
     .unwrap_or(false);
     if reap_split {
         unsafe { g_idle_add(on_reap_split_pane, vte as *mut c_void) };
+    } else {
+        topbar::refresh_ui();
     }
 }
 
 fn reset_exited_primary_pane(s: &mut TermSession) {
     s.child_pid = 0;
+    s.proc_info = Default::default();
+    s.osc_title.clear();
+    s.remote_tmux = None;
+    s.tmux_title_from_vte = false;
+    s.telemetry = Default::default();
+    session::refresh_smart_title(s);
     s.state = WorkState::Idle;
     s.unread = false;
     s.work_started_at = None;
     if let Some(pane) = s.pane_registry.by_vte_mut(s.vte) {
         pane.child_pid = 0;
-        pane.state = WorkState::Idle;
-        pane.unread = false;
-        pane.work_started_at = None;
+        pane.proc_info = Default::default();
+        pane.remote_tmux = None;
+        pane.tmux_pane = None;
+        pane.clear_finished_agent();
     }
 }
 

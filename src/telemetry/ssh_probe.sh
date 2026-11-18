@@ -27,6 +27,8 @@ probe_plain() {
   esac
   selected=""
   kind=""
+  shell_pid=""
+  foreground_groups=""
   for dir in "$P_ROOT"/[0-9]*; do
     pid=${dir##*/}
     [ -d "$dir" ] && [ -O "$dir" ] || continue
@@ -36,6 +38,13 @@ probe_plain() {
       stat=$(cat "$dir/stat" 2>/dev/null)
       set -- ${stat##*) }
       [ "$3" = "$6" ] || continue
+      case " $foreground_groups " in *" $6 "*) ;; *) foreground_groups="${foreground_groups:+$foreground_groups }$6" ;; esac
+      if [ "$pid" = "$6" ]; then
+        executable=$(tr '\000' '\n' < "$dir/cmdline" 2>/dev/null | head -n 1)
+        case "${executable##*/}" in
+          bash|-bash|zsh|-zsh|sh|-sh|fish|-fish|dash|-dash|ksh|-ksh|tcsh|-tcsh|csh|-csh|nu|-nu) shell_pid=$pid ;;
+        esac
+      fi
     fi
     candidate=$(proc_kind "$pid") || continue
     cwd=$(readlink "$dir/cwd" 2>/dev/null)
@@ -47,5 +56,9 @@ probe_plain() {
     selected=$file
     kind=$candidate
   done
-  emit_slice "$slot" "$kind" "$selected" "$previous" "$offset"
+  if [ -z "$selected" ] && [ -n "$shell_pid" ] && [ "$shell_pid" = "$foreground_groups" ]; then
+    printf 'AKHTERM_RTELEM1|%s|SHELL|-|0|0|0|0|\n\nAKHTERM_RTELEM_END\n' "$slot"
+  else
+    emit_slice "$slot" "$kind" "$selected" "$previous" "$offset"
+  fi
 }

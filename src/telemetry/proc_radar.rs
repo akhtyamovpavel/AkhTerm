@@ -23,7 +23,14 @@ pub struct ProcInfo {
     pub active_pane_pid: i32,
     pub agent: String,
     pub fg_cmd: String,
+    pub foreground_shell: bool,
     pub cwd: String,
+}
+
+impl ProcInfo {
+    pub fn shell_owns_pane(&self, tmux: Option<&(String, String, String, String)>) -> bool {
+        self.foreground_shell || tmux.is_some_and(|(_, _, cmd, _)| crate::tmux_local::is_shell_name(cmd))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -201,7 +208,10 @@ fn inspect_proc_tree_inner(root_pid: i32, allow_tmux: bool) -> ProcInfo {
     if let Some(agent) = crate::agent_detect::select_tree_agent(root_pid, tpgid, &procs) {
         info.agent = agent.to_owned();
     }
-    for entry in &procs {
+    info.foreground_shell = info.agent.is_empty() && procs.iter().any(|p| {
+        p.pid == tpgid && crate::tmux_local::is_shell_name(&exe_basename(&p.argv[0]))
+    });
+    for entry in procs.iter().filter(|p| tpgid <= 0 || p.pgrp == tpgid) {
         if entry.pid != root_pid {
             apply_proc_cmd(&mut info, &entry.argv);
         } else if exe_basename(&entry.argv[0]) == "tmux" {
