@@ -31,10 +31,15 @@ impl VteLink {
         Some(Self { url, document })
     }
 
-    fn open(self) {
+    fn open(self, vte: *mut GtkWidget) {
         match self.document {
             Some(doc) => markdown::open_remote(doc),
-            None => open_external_link(&self.url),
+            None => {
+                if LINK_OPEN_FN.with(Cell::get).is_some_and(|hook| hook(vte, &self.url)) {
+                    return;
+                }
+                open_external_link(&self.url);
+            }
         }
     }
 }
@@ -105,14 +110,20 @@ struct VteLinkCtx {
 }
 
 pub type VteMenuHook = fn(*mut GtkWidget, *const GdkEvent, Option<VteLink>);
+pub type LinkOpenHook = fn(*mut GtkWidget, &str) -> bool;
 
 thread_local! {
     static LINK_CWD_FN: Cell<Option<fn(*mut GtkWidget) -> LinkCwd>> = const { Cell::new(None) };
+    static LINK_OPEN_FN: Cell<Option<LinkOpenHook>> = const { Cell::new(None) };
     static VTE_MENU_FN: Cell<Option<VteMenuHook>> = const { Cell::new(None) };
 }
 
 pub fn register_link_cwd_lookup(lookup: fn(*mut GtkWidget) -> LinkCwd) {
     LINK_CWD_FN.with(|slot| slot.set(Some(lookup)));
+}
+
+pub fn register_link_open_hook(hook: LinkOpenHook) {
+    LINK_OPEN_FN.with(|slot| slot.set(Some(hook)));
 }
 
 pub fn register_vte_menu_hook(hook: VteMenuHook) {
@@ -175,7 +186,7 @@ pub(super) fn handle_vte_left_click(
     let Some(link) = event_target(vte, event, cwd.as_deref()) else {
         return 0;
     };
-    link.open();
+    link.open(vte);
     1
 }
 

@@ -25,6 +25,9 @@ pub(crate) fn sidebar_search_cb() -> extern "C" fn(*mut GtkWidget, *mut c_void) 
 }
 
 extern "C" fn on_window_destroy(_w: *mut GtkWidget, _data: *mut c_void) {
+    app_state::with_app_mut(|app| {
+        app.ssh_tunnels.stop_all();
+    });
     crate::ctl_wire::shutdown_server();
     save_tabs();
     unsafe { gtk_main_quit() };
@@ -1125,6 +1128,7 @@ fn teardown_session(s: TermSession) {
 
 fn pop_session_by_id(app: &mut AppState, sid: usize) -> Option<(TermSession, tab_order::TabPinPopover)> {
     let pos = app.sessions.iter().position(|s| s.id == sid)?;
+    app.ssh_tunnels.stop_tunnels_for_session(sid);
     let removed = app.sessions.remove(pos);
     if sid == app.active_id {
         let neighbor = pos.min(app.sessions.len().saturating_sub(1));
@@ -1154,7 +1158,9 @@ fn drain_other_sessions(app: &mut AppState, keep_sid: usize) -> Vec<TermSession>
         if app.sessions[idx].id == keep_sid {
             idx += 1;
         } else {
-            removed.push(app.sessions.remove(idx));
+            let s = app.sessions.remove(idx);
+            app.ssh_tunnels.stop_tunnels_for_session(s.id);
+            removed.push(s);
         }
     }
     removed
@@ -1315,6 +1321,7 @@ fn tick_radar_app(app: &mut AppState) {
         set_label_text(app.box_gpu_label, &box_snap.gpu_lines.join("\n"));
     }
     ssh_ui::sync_tmux_jump_buttons(app, &box_snap.tmux_items);
+    crate::ports_ui::refresh_radar_ports(app);
     refresh_sys_monitor_if_due(app, now);
 }
 

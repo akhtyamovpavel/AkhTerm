@@ -40,9 +40,10 @@ pub enum PaletteKind {
     About = 13,
     Locale = 14,
     Updates = 15,
+    Ports = 16,
 }
 
-const KIND_BADGES: [UiText; 16] = [
+const KIND_BADGES: [UiText; 17] = [
     UiText::new(text::PALETTE_BADGE_TAB, c"Tab"),
     UiText::new(text::PALETTE_BADGE_TMUX, c"tmux"),
     UiText::new(text::PALETTE_BADGE_PROFILE, c"Profile"),
@@ -59,13 +60,15 @@ const KIND_BADGES: [UiText; 16] = [
     UiText::new(c"Справка", c"About"),
     UiText::new(c"Язык", c"Language"),
     UiText::new(c"Обновление", c"Updates"),
+    UiText::new(c"Порты", c"Ports"),
 ];
 
-const KIND_CLASSES: [&str; 16] = [
+const KIND_CLASSES: [&str; 17] = [
     "palette-badge-tab", "palette-badge-tmux", "palette-badge", "palette-badge-ssh",
     "palette-badge-ssh", "palette-badge-agent", "palette-badge-handoff", "palette-badge",
     "palette-badge", "palette-badge-git", "palette-badge-agent", "palette-badge-tmux",
     "palette-badge", "palette-badge", "palette-badge-tab", "palette-badge-tab",
+    "palette-badge-ssh",
 ];
 
 impl PaletteKind {
@@ -104,6 +107,7 @@ pub enum PaletteAction {
     OpenAbout,
     SwitchLocale,
     CheckUpdates,
+    OpenPortsMenu,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -461,6 +465,16 @@ fn make_check_updates_item(locale: UiLocale) -> PaletteItem {
     new_ui_item(PaletteKind::Updates, title, detail, kw, PaletteAction::CheckUpdates, locale)
 }
 
+fn make_ports_item(locale: UiLocale) -> PaletteItem {
+    let title = UiText::new(c"Порты и SSH-туннели", c"Ports & SSH Tunnels");
+    let detail = UiText::new(
+        c"Открытые локальные и удалённые порты, проброс SSH-туннелей",
+        c"Inspect listening local and remote ports, manage SSH tunnels",
+    );
+    let kw = "ports tunnel ssh forward localhost http порты туннель проброс локалхост";
+    new_ui_item(PaletteKind::Ports, title, detail, kw, PaletteAction::OpenPortsMenu, locale)
+}
+
 fn make_diff_review_item(locale: UiLocale) -> PaletteItem {
     let kw = "diff review git hunk stage revert comment agent ssh ревью ханк комментарий";
     new_ui_item(PaletteKind::Git, text::DIFF_PALETTE_TITLE, text::DIFF_PALETTE_DETAIL, kw, PaletteAction::OpenDiffReview, locale)
@@ -470,6 +484,7 @@ fn push_v1_command_items(out: &mut Vec<PaletteItem>, locale: UiLocale) {
     out.push(make_diff_review_item(locale));
     out.push(make_dispatch_item(locale));
     out.push(make_swarm_item(locale));
+    out.push(make_ports_item(locale));
     out.push(make_settings_item(locale));
     out.push(make_about_item(locale));
     out.push(make_locale_item(locale));

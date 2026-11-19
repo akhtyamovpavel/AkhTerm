@@ -33,6 +33,7 @@ pub(crate) struct TopbarWidgets {
     pub(crate) mi_pop_label: *mut GtkWidget,
     pub(crate) mi_refactor_btn: *mut GtkWidget,
     pub(crate) tokens_menu: telemetry::TokensMenu,
+    pub(crate) ports_menu: crate::ports_ui::PortsMenu,
     pub(crate) agents_pop: *mut GtkWidget,
 }
 
@@ -218,7 +219,7 @@ fn create_topbar_shell(root_vbox: *mut GtkWidget) -> (*mut GtkWidget, tab_strip:
 
 fn pack_right_menus(
     topbar: *mut GtkWidget,
-) -> ([*mut GtkWidget; 7], telemetry::TokensMenu) {
+) -> ([*mut GtkWidget; 7], telemetry::TokensMenu, crate::ports_ui::PortsMenu) {
     let settings_btn = add_end_button(topbar, text::i18n_text::servers(), None);
     let prefs_btn = add_end_button(
         topbar,
@@ -232,8 +233,9 @@ fn pack_right_menus(
     app_state::connect_click(swarm_btn, on_swarm_open, ptr::null_mut());
     let git_btn = add_end_button(topbar, text::i18n_text::git_menu(), Some(text::i18n_text::git_menu_tip()));
     let mi_btn = add_end_button(topbar, text::i18n_text::maintainability(), None);
+    let ports_menu = crate::ports_ui::PortsMenu::new(topbar);
     let tokens_menu = telemetry::TokensMenu::new(topbar, on_tokens_open);
-    ([settings_btn, handoff_btn, agents_btn, prefs_btn, swarm_btn, git_btn, mi_btn], tokens_menu)
+    ([settings_btn, handoff_btn, agents_btn, prefs_btn, swarm_btn, git_btn, mi_btn], tokens_menu, ports_menu)
 }
 
 pub(crate) fn build_topbar_widgets(
@@ -243,7 +245,7 @@ pub(crate) fn build_topbar_widgets(
     let (topbar, tab_strip, box_btn) = create_topbar_shell(root_vbox);
     let [theme_btn, split_horiz_btn, split_vert_btn, reconnect_btn, zoom_btn] =
         pack_left_controls(topbar, initial_theme);
-    let ([settings_btn, handoff_btn, agents_btn, prefs_btn, swarm_btn, git_btn, mi_btn], tokens_menu) =
+    let ([settings_btn, handoff_btn, agents_btn, prefs_btn, swarm_btn, git_btn, mi_btn], tokens_menu, ports_menu) =
         pack_right_menus(topbar);
     let (mi_pop, mi_pop_label, mi_refactor_btn) = build_mi_popover(mi_btn);
     let agents_pop = build_agents_popover(agents_btn);
@@ -251,7 +253,7 @@ pub(crate) fn build_topbar_widgets(
         topbar, tab_strip, box_btn, theme_btn, zoom_btn, reconnect_btn,
         split_vert_btn, split_horiz_btn, settings_btn, handoff_btn, agents_btn,
         prefs_btn, swarm_btn, git_btn, mi_btn, mi_pop, mi_pop_label,
-        mi_refactor_btn, tokens_menu, agents_pop,
+        mi_refactor_btn, tokens_menu, ports_menu, agents_pop,
     }
 }
 
@@ -591,6 +593,7 @@ struct UiRefreshPlan {
     git: (*mut GtkWidget, bool, Option<GitRepoStatus>),
     mi: MiUiPlan,
     tokens: (telemetry::TokensMenu, telemetry::TokensViewData),
+    ports: (crate::ports_ui::PortsMenu, crate::ports_ui::PortsSnapshot, i18n::UiLocale),
     footer: Option<(*mut GtkWidget, String)>,
     pane_headers: Vec<(PaneHeader, PaneHeaderState, bool)>,
     swarm: (*mut GtkWidget, swarm_view::SwarmView, bool, Vec<swarm_view::SwarmCardSpec>, i18n::UiLocale),
@@ -643,6 +646,7 @@ impl UiRefreshPlan {
             git: (app.git_menu.button(), views.active_cwd.is_some(), active_git),
             mi: MiUiPlan::from_state(app, cur_mi, self_mi),
             tokens: collect_tokens_view(app, now),
+            ports: (app.ports_menu.clone(), crate::ports_ui::collect_active_snapshot(app), i18n::current_locale()),
             footer: prepare_footer_update(app, working, ready, ssh_count),
             pane_headers: pane_radar::collect_pane_header_updates(&app.sessions, app.active_id),
             swarm: (app.swarm_btn, app.swarm_view.clone(), swarm_active, swarm_cards, i18n::current_locale()),
@@ -657,6 +661,7 @@ impl UiRefreshPlan {
         git_status::update_git_button(self.git.0, self.git.1, self.git.2.as_ref());
         self.mi.apply();
         self.tokens.0.apply(&self.tokens.1);
+        self.ports.0.sync_button(&self.ports.1, self.ports.2);
         self.pane_headers.into_iter().for_each(|(h, s, v)| h.update(&s, v));
         swarm_view::SwarmPopover::sync_topbar_button(self.swarm.0, &self.swarm.3, self.swarm.4);
         if self.swarm.2 {
@@ -737,6 +742,7 @@ fn sync_localized_chrome() {
     specs.into_iter().for_each(|(b, l, t)| set_btn_text_and_tip(b, l, t));
     app_state::with_app(|app| {
         app.update_banner.refresh_locale();
+        app.ports_menu.refresh_locale();
         app.sys_monitor.refresh_locale();
     });
 }
