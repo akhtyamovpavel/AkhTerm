@@ -50,34 +50,53 @@ pub struct Buffer {
     code: *mut c_void,
 }
 
+fn create_readonly_view() -> *mut GtkWidget {
+    unsafe {
+        let view = gtk_text_view_new();
+        gtk_text_view_set_editable(view, 0);
+        gtk_text_view_set_wrap_mode(view, 3);
+        view
+    }
+}
+
+fn create_heading_tag(buffer: *mut c_void) -> *mut c_void {
+    let end = ptr::null::<c_char>();
+    unsafe {
+        gtk_text_buffer_create_tag(buffer, c"heading".as_ptr(), c"weight".as_ptr(), 700, end)
+    }
+}
+
+fn create_code_tag(buffer: *mut c_void) -> *mut c_void {
+    let end = ptr::null::<c_char>();
+    unsafe {
+        gtk_text_buffer_create_tag(
+            buffer,
+            c"code".as_ptr(),
+            c"family".as_ptr(),
+            c"monospace".as_ptr(),
+            end,
+        )
+    }
+}
+
+fn is_in_code_block(blocks: &[(usize, usize)], index: &mut usize, byte: usize) -> bool {
+    while *index < blocks.len() && blocks[*index].1 <= byte {
+        *index += 1;
+    }
+    blocks.get(*index).is_some_and(|&(start, _)| start <= byte)
+}
+
 impl Buffer {
     pub fn new() -> Self {
-        unsafe {
-            let view = gtk_text_view_new();
-            gtk_text_view_set_editable(view, 0);
-            gtk_text_view_set_wrap_mode(view, 3);
-            let buffer = gtk_text_view_get_buffer(view);
-            let end = ptr::null::<c_char>();
-            let heading = gtk_text_buffer_create_tag(
-                buffer,
-                c"heading".as_ptr(),
-                c"weight".as_ptr(),
-                700,
-                end,
-            );
-            let code = gtk_text_buffer_create_tag(
-                buffer,
-                c"code".as_ptr(),
-                c"family".as_ptr(),
-                c"monospace".as_ptr(),
-                end,
-            );
-            Self {
-                view,
-                buffer,
-                heading,
-                code,
-            }
+        let view = create_readonly_view();
+        let buffer = unsafe { gtk_text_view_get_buffer(view) };
+        let heading = create_heading_tag(buffer);
+        let code = create_code_tag(buffer);
+        Self {
+            view,
+            buffer,
+            heading,
+            code,
         }
     }
 
@@ -109,34 +128,33 @@ impl Buffer {
         }
     }
 
+    fn line_tag(&self, line: &str, is_code: bool) -> *mut c_void {
+        if is_code {
+            self.code
+        } else if line.trim_start().starts_with('#') {
+            self.heading
+        } else {
+            ptr::null_mut()
+        }
+    }
+
+    fn apply_tag_range(&self, tag: *mut c_void, start: i32, end: i32) {
+        if tag.is_null() {
+            return;
+        }
+        let first = self.iter(start);
+        let last = self.iter(end);
+        unsafe { gtk_text_buffer_apply_tag(self.buffer, tag, &first, &last) };
+    }
+
     pub fn render(&self, text: &str, blocks: &[(usize, usize)]) {
         unsafe { gtk_text_buffer_set_text(self.buffer, text.as_ptr().cast(), text.len() as c_int) };
-        let mut offset = 0;
-        let mut byte = 0;
-        let mut index = 0;
+        let (mut offset, mut byte, mut index) = (0, 0, 0);
         for line in text.split_inclusive('\n') {
             let next = offset + line.chars().count() as i32;
-            while index < blocks.len() && blocks[index].1 <= byte {
-                index += 1;
-            }
-            let is_code = blocks.get(index).is_some_and(|&(start, _)| start <= byte);
-            let tag = if is_code {
-                self.code
-            } else if line.trim_start().starts_with('#') {
-                self.heading
-            } else {
-                ptr::null_mut()
-            };
-            if !tag.is_null() {
-                unsafe {
-                    gtk_text_buffer_apply_tag(
-                        self.buffer,
-                        tag,
-                        &self.iter(offset),
-                        &self.iter(next),
-                    )
-                };
-            }
+            let is_code = is_in_code_block(blocks, &mut index, byte);
+            let tag = self.line_tag(line, is_code);
+            self.apply_tag_range(tag, offset, next);
             byte += line.len();
             offset = next;
         }
