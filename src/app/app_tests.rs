@@ -455,7 +455,8 @@ fn check_min_targets(name: &str, file: &str, score: f64, targets: &[(&str, f64)]
 fn check_module_mi_gates(name: &str, score: f64, failures: &mut Vec<String>) {
     let core_and_v04: &[(&str, f64)] = &[
         ("main.rs", 58.0), ("platform.rs", 60.0), ("remote_telemetry.rs", 59.0),
-        ("telemetry.rs", 58.5), ("telemetry_agy.rs", 62.0), ("context_menu.rs", 58.0),
+        ("telemetry.rs", 60.5), ("jsonl_parse.rs", 60.5), ("tokens_ui.rs", 60.5), ("telemetry_tests.rs", 60.5),
+        ("telemetry_agy.rs", 62.0), ("context_menu.rs", 58.0),
         ("file_drop.rs", 58.0), ("git_status.rs", 58.0), ("search_bar.rs", 58.0),
         ("ssh_detect.rs", 58.0), ("tab_order.rs", 58.0), ("theme_mode.rs", 58.0),
     ];
@@ -904,6 +905,9 @@ fn k8_full_stack_maintainability_index_targets() {
     }
     for (name, sloc, cc, score, grade) in collect_src_mi_rows() {
         println!("{name:<30} | SLOC {sloc:>4} | CC {cc:>2} | MI {score:>6.2} | Grade {grade}");
+        if score < 58.0 {
+            failures.push(format!("{name} MI {score:.2} < 58.0 (Grade {grade}, zero-Grade-C invariant)"));
+        }
         check_module_mi_gates(&name, score, &mut failures);
     }
     assert!(failures.is_empty(), "MI gate failures:\n{}", failures.join("\n"));
