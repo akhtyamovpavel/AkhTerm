@@ -296,8 +296,8 @@ impl PaneRecord {
         if self.state != WorkState::Working || self.child_pid <= 0 {
             return None;
         }
-        let started = self.work_started_at.unwrap_or(self.work_started);
-        Some(now.saturating_duration_since(started).as_secs())
+        self.work_started_at
+            .map(|started| now.saturating_duration_since(started).as_secs())
     }
 
     pub fn sync_agent(&mut self, info: &mut ProcInfo) {
@@ -486,7 +486,6 @@ impl PaneRegistry {
         self.panes.iter().filter(|p| p.is_active_agent()).count()
     }
 
-    #[cfg(test)]
     pub fn live_turn_secs(&self, now: Instant) -> Option<u64> {
         self.panes.iter().filter_map(|p| p.live_turn_secs(now)).max()
     }
@@ -578,6 +577,19 @@ mod tests {
         assert_eq!(rec.last_exit_code, Some(130));
         assert!(reg.remove_by_vte(fake_widget(3)).is_some());
         assert!(reg.is_empty());
+    }
+
+    #[test]
+    fn pane_live_turn_secs_requires_active_turn_start_not_creation_time() {
+        let mut reg = PaneRegistry::default();
+        let id = sample_pane(&mut reg, 9, WorkState::Idle);
+        let t0 = Instant::now();
+        let rec = reg.get_mut(id).expect("pane exists");
+        rec.state = WorkState::Working;
+        rec.work_started_at = None;
+        assert_eq!(rec.live_turn_secs(t0 + std::time::Duration::from_secs(32_400)), None);
+        rec.set_state(WorkState::Working, t0);
+        assert_eq!(reg.live_turn_secs(t0 + std::time::Duration::from_secs(12)), Some(12));
     }
 
     #[test]

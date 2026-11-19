@@ -853,6 +853,32 @@ mod tests {
     }
 
     #[test]
+    fn session_live_turn_secs_delegates_to_pane_registry_not_stale_tab_age() {
+        with_headless_gtk(|| unsafe {
+            let (win, root) = (gtk_window_new(GTK_WINDOW_TOPLEVEL), gtk_box_new(GTK_ORIENTATION_VERTICAL, 0));
+            let vte = vte_terminal_new();
+            let scroll = wrap_vte_scroll(vte);
+            let mut session = make_dummy_session(root, TabPanes::new(scroll, vte), vte, scroll);
+            let created = Instant::now();
+            let turn_start = created + Duration::from_secs(32_400);
+            let now = turn_start + Duration::from_secs(15);
+            session.work_started = created;
+            session.work_started_at = None;
+            session.state = WorkState::Working;
+            assert_eq!(session.live_turn_secs(now), None);
+
+            let id = session.pane_registry.allocate_id();
+            let mut pane = PaneRecord::new(id, vte, scroll, 1001, "/tmp".into());
+            pane.set_state(WorkState::Working, turn_start);
+            session.pane_registry.insert(pane);
+            sync_session_aggregate(&mut session);
+            assert_eq!(session.live_turn_secs(now), Some(15));
+            gtk_widget_destroy(win);
+            pump_gtk_events();
+        });
+    }
+
+    #[test]
     fn pane_radar_maintains_grade_b_mi_target() {
         let (_, _, score) = crate::mi::compute_file_mi(include_str!("pane_radar.rs"));
         assert!(score >= 60.0, "pane_radar.rs MI {score:.2} < 60.0");
