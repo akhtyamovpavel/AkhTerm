@@ -22,10 +22,13 @@ AkhTerm is a native Linux terminal built with **Rust**, **GTK 3**, and **VTE 2.9
 - **Swarm Dashboard (`Ctrl+Shift+S`):** Overview grid of all active agent panes with ANSI-stripped output previews, 1-click **Quick Approve**, direct pane focus jump, and targeted multi-pane prompt **Broadcast** (`Escape` returns to your previous terminal).
 - **1-Click Agent Worktrees (`Агенты` / `Agents`):** Run an agent directly in the current shell, or click `⎇` next to any agent to create a sibling worktree (`<repo>-wt-<agent>-<stamp>` on branch `wt/<agent>-<stamp>`) in a new tab. Install each CLI (for example, [Claude Code](https://code.claude.com/docs/en/quickstart)) on the host where the shell runs.
 - **Two-Layer Git Review & Cleanup (`Git ▾` / `Ctrl+Shift+G`):** Shows active branch (`[wt]` for linked worktrees) and asynchronous dirty stats (`+ins -del` or `±files`) in the sidebar and top bar. Inspect both uncommitted working-tree changes and committed `wt/*` branch history (`merge-base..HEAD` vs `main`/`master`), open file or branch diffs in a vertical split pane, open untracked files externally, and merge or remove clean `wt/*` worktrees in one click.
+- **Interactive Local & SSH Diff Review Panel (`Ctrl+Shift+B`):** Open from `Git ▾` (**Review Diff**), Command Palette, or `Ctrl+Shift+B` to inspect working-tree, staged, and branch (`merge-base..HEAD`) diffs side by side in Dark or Light Zinc, track per-file reviewed checkboxes, stage or revert individual local hunks (`Stage hunk` / `Revert hunk`), and queue inline review comments batched directly into the target local, `SSH`, or `tmux` agent prompt.
 
 ### Per-Pane Radar, Telemetry & PTY/OSC Bridge
 - **Per-Pane Status Headers:** Multi-pane tabs show a compact `22 px` header on each pane with agent/process state, exit code, live elapsed turn timer (`⏱`), and context usage (`ctx`) alongside the project Maintainability Index (`MI`).
 - **Attention Jump & Notifications:** `Ctrl+Shift+U` jumps straight to the next pane waiting for confirmation or holding unread output. When unfocused, AkhTerm highlights the tab and sends a desktop notification (`notify-send`) on approval prompts or long commands (`>= notify-secs`).
+- **Unix Socket Control Plane, CLI API & Official Agent Hooks:** Each window exposes a private local Unix socket (`0600`) and exports `AKHTERM_SOCKET` and `AKHTERM_PANE_ID` into every pane. Run `akhterm status [--json]`, `focus`, `notify`, `send`, `open-doc`, or `hooks install` (for Claude Code and Codex CLI, plus the `ctl` alias) to automate workflows, drive authoritative agent hook states across pane headers, sidebar, and Swarm Dashboard, and focus the exact source pane by clicking desktop notifications.
+- **System Resource & Battery Wattage Monitor:** Compact live status-bar widget and Dark/Light Zinc popover showing host `CPU` load and breakdown, `RAM` / `Swap` usage with focused-tab process-tree `RSS`, and laptop battery percentage, wattage (`W`), remaining time estimate (`ETA`), and health, sampled directly from `/proc` and `/sys` with zero external processes.
 - **Focused context and cache:** The Tokens button follows the focused pane. For example, `ctx 40k · cache 80%` means that 80% of the latest request’s input came from the prompt cache. Open the menu for the last request, recent cache readings, and session totals. A missing counter leaves the percentage blank. Changing the SSH connection or tmux pane clears the previous reading. Direct interactive SSH on Linux matches the foreground agent using the connection ports. The background probe reuses supported connection options from the SSH client, including custom ports, identity files, and jump hosts. SSH reads use noninteractive authentication and require a known host key. Port rewriting, multiplexing, and jump hosts can prevent a match.
 - **OpenCode:** Launch OpenCode from the Agents menu. AkhTerm supplies a TUI plugin that reports token counts for the displayed session. Its totals cover the assistant messages loaded by the TUI. When you set `OPENCODE_TUI_CONFIG` yourself or run OpenCode on a remote host, copy [usage.mjs](assets/opencode/usage.mjs) to that host, append its absolute path to the `plugin` array in your OpenCode `tui.json`, and restart OpenCode. For example, use `{"plugin":["/home/alice/.config/opencode/usage.mjs"]}` for an otherwise empty config.
 - **Transparent `OSC 52` / `OSC 8` / `OSC 7` / `OSC 133` PTY Bridge:** User-space PTY tap over `VTE 2.91` enabling write-only `OSC 52` clipboard copy across `SSH` and `tmux` (`?` clipboard read queries are strictly blocked), streaming percent-encoding of non-ASCII UTF-8 `OSC 8` hyperlinks and `OSC 7` directory URIs (preventing C1 `0x9C` `ST` truncation on Cyrillic paths), and `OSC 133` command completion notifications.
@@ -34,6 +37,7 @@ AkhTerm is a native Linux terminal built with **Rust**, **GTK 3**, and **VTE 2.9
 - **Local & Remote Splits:** Split panes vertically (`Ctrl+Shift+D`) or horizontally (`Ctrl+Shift+E`) in the foreground directory across local shells, plain `SSH` tabs, and remote `tmux` tabs (attaching grouped `tmux` sessions so splits share server windows with independent focus).
 - **Layout Persistence, Drag Reorder & Project Folders:** Restores tab order, active tab, pinned custom titles, nested split trees, and local directories (`tabs-v2`). Hold-and-drag reorders tabs in both the top tab strip and the vertical sidebar, while local tabs automatically group into collapsible project folders (with `git worktree` roots merged under their primary repo and a `+` button to open a tab in that folder).
 - **SSH & `tmux` Grouping:** Open plain `SSH` shells or persistent `tmux` sessions from `Профили / SSH` (which live-reloads `~/.ssh/config` and `Include` files automatically) and reconnect dropped sessions with `Ctrl+Shift+R`. Running an interactive `ssh` command inside a local tab automatically moves that tab into the `SSH` sidebar group until `ssh` exits. Split `tmux` panes support pane-bounded mouse selection without bleeding across pane borders.
+- **Live Port Radar & 1-Click Managed SSH Port Forwarding (`Ports ▾`):** Discovers local listening TCP ports from `/proc/net/tcp{,6}` scoped to each tab's process tree alongside remote listening ports on active `SSH` tabs. Use the `Ports ▾` popover (or Command Palette) to start or stop collision-free `ssh -N -L` tunnels in one click, or `Ctrl+Click` a remote `localhost:<port>` link to forward and open it automatically, with clean tunnel teardown when the tab or window closes.
 
 ### Everyday Terminal Ergonomics
 - **Command Palette (`Ctrl+Shift+P` / `Ctrl+K`):** Fuzzy launcher across open tabs, live remote `tmux` sessions, profiles, SSH hosts, agents, theme/locale switches, Settings, About, Swarm Dashboard, Task Dispatch, and Handoff briefs.
@@ -68,6 +72,7 @@ AkhTerm is a native Linux terminal built with **Rust**, **GTK 3**, and **VTE 2.9
 | `Ctrl+Shift+S` | Toggle **Swarm Dashboard** (`Escape` returns to terminal) |
 | `Ctrl+Shift+U` | Jump to the next pane waiting for approval or holding unread output |
 | `Ctrl+Shift+G` | Open **Git** dirty status, branch review (`merge-base..HEAD`), diff, and worktree cleanup |
+| `Ctrl+Shift+B` | Open interactive **Diff Review** panel (local & `SSH` diffs, inline comments for agent, local hunk stage/revert) |
 | `Ctrl+Shift+P` / `Ctrl+K` | Open **Command Palette** (`Up`/`Down` selects, `Enter` runs, `Escape` closes) |
 | `Ctrl+Shift+F` | Search terminal output and scrollback (`Enter` / `Shift+Enter`, `Aa`, `.*`, `Escape`) |
 
@@ -77,7 +82,7 @@ AkhTerm is a native Linux terminal built with **Rust**, **GTK 3**, and **VTE 2.9
 | --- | --- |
 | `Ctrl+C` / `Ctrl+Shift+C` | Copy selected terminal text (`Ctrl+C` sends `SIGINT` when nothing is selected) |
 | `Ctrl+V` / `Ctrl+Shift+V` | Paste text, clipboard images, or copied file paths |
-| `Ctrl+Click` | Open URL or local `file:line` path under the cursor |
+| `Ctrl+Click` | Open URL or local `file:line` path under the cursor (auto-forwards remote `localhost:<port>` links on `SSH` tabs) |
 | `Shift + Right-Click` | Pass right-click directly through to `tmux`, `vim`, and mouse-aware terminal apps |
 | `Ctrl+Shift+L` | Switch live between **Dark Zinc** and **Light Zinc** themes |
 | `Ctrl+,` | Open **Settings** dialog |
@@ -91,7 +96,7 @@ Prebuilt `.deb`, `.rpm`, and portable Linux `.tar.gz` archives are attached to [
 Tested on Ubuntu 24.04 and 26.04 (`amd64`):
 
 ```sh
-sudo apt install ./akhterm_1.3.1-1_amd64.deb
+sudo apt install ./akhterm_1.4.0-1_amd64.deb
 ```
 
 Launch **AkhTerm** from your application menu or run `akhterm` (`akhterm --version` prints version and build metadata). Remove with `sudo apt remove akhterm` (your configuration and saved state in `~` are preserved). See [.github/workflows/build-deb.yml](.github/workflows/build-deb.yml) and [.github/workflows/release.yml](.github/workflows/release.yml).
@@ -101,14 +106,14 @@ Launch **AkhTerm** from your application menu or run `akhterm` (`akhterm --versi
 Tested on Fedora 41 and 42 (`x86_64`), including KDE Breeze GTK 3 and icon packages:
 
 ```sh
-sudo dnf install ./akhterm-1.3.1-1.x86_64.rpm
+sudo dnf install ./akhterm-1.4.0-1.x86_64.rpm
 ```
 
 Launch **AkhTerm** from your application menu or run `akhterm`. Remove with `sudo dnf remove akhterm`. See [.github/workflows/build-rpm.yml](.github/workflows/build-rpm.yml).
 
 ### Portable Linux Tarball (`.tar.gz`)
 
-Extract `akhterm_1.3.1_linux_x86_64.tar.gz` to a user-writable directory (such as `~/.local/bin`) to run `akhterm` without root privileges and receive one-click atomic in-app self-updates.
+Extract `akhterm_1.4.0_linux_x86_64.tar.gz` to a user-writable directory (such as `~/.local/bin`) to run `akhterm` without root privileges and receive one-click atomic in-app self-updates.
 
 AkhTerm runs natively under **Wayland** and **X11** on **GNOME** and **KDE Plasma** (`StartupWMClass=AkhTerm` in `org.akhterm.AkhTerm.desktop`).
 
