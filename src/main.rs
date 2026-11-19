@@ -29,8 +29,8 @@ pub(crate) use telemetry::{
     sys_monitor, telemetry_agy, tmux_local,
 };
 pub(crate) use terminal::{
-    file_drop, osc_parser, pane_actions, pane_header, pane_registry, paste_route, pty_tap, session,
-    split_pane, tmux_copy,
+    clipboard_paste, file_drop, osc_parser, pane_actions, pane_header, pane_registry, paste_route,
+    pty_tap, session, split_pane, tmux_copy,
 };
 pub(crate) use ui::{
     about, context_menu, i18n, palette, search_bar, settings_dialog, ssh_ui, sys_monitor_ui, theme,
