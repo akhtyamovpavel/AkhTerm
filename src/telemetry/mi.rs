@@ -23,121 +23,155 @@ pub struct ProjectMiReport {
     pub worst_files: Vec<FileMetrics>,
 }
 
-const SKIP_DIRS: &[&str] = &[
-    ".git",
-    "node_modules",
-    "target",
-    ".venv",
-    "venv",
-    "__pycache__",
-    "dist",
-    "build",
-    ".next",
-    ".cache",
-    "akhterm_vendor",
-    "archive",
-];
+enum TokenKind {
+    Branch,
+    Operator,
+    Operand,
+}
 
-const CODE_EXTS: &[&str] = &["rs", "py", "ts", "tsx", "js", "go", "cpp", "c"];
+struct BlockStats<'a> {
+    sloc: usize,
+    cc: usize,
+    n1: usize,
+    n2: usize,
+    ops: HashSet<&'a str>,
+    opnds: HashSet<&'a str>,
+}
+
+fn new_block_stats<'a>() -> BlockStats<'a> {
+    BlockStats {
+        sloc: 0,
+        cc: 1,
+        n1: 0,
+        n2: 0,
+        ops: HashSet::new(),
+        opnds: HashSet::new(),
+    }
+}
+
+fn is_code_line(trimmed: &str) -> bool {
+    !trimmed.is_empty() && !trimmed.starts_with("//") && !trimmed.starts_with('#')
+}
+
+fn is_token_delim(c: char) -> bool {
+    c.is_whitespace() || "(),;[]{}".contains(c)
+}
+
+fn is_branch_token(token: &str) -> bool {
+    const TOKENS: &[&str] = &[
+        "if", "elif", "for", "while", "match", "case", "catch", "except",
+        "&&", "||", "and", "or", "?",
+    ];
+    TOKENS.contains(&token)
+}
+
+fn is_operator_token(token: &str) -> bool {
+    const TOKENS: &[&str] = &[
+        "fn", "def", "return", "let", "const", "mut", "pub", "async", "await",
+        "class", "struct", "impl", "=", "==", "!=", "+=", "-=", "->", "=>",
+    ];
+    TOKENS.contains(&token)
+}
+
+fn classify_token(token: &str) -> TokenKind {
+    if is_branch_token(token) {
+        TokenKind::Branch
+    } else if is_operator_token(token) {
+        TokenKind::Operator
+    } else {
+        TokenKind::Operand
+    }
+}
+
+fn record_operator<'a>(stats: &mut BlockStats<'a>, token: &'a str, is_branch: bool) {
+    if is_branch {
+        stats.cc += 1;
+    }
+    stats.n1 += 1;
+    stats.ops.insert(token);
+}
+
+fn record_operand<'a>(stats: &mut BlockStats<'a>, token: &'a str) {
+    stats.n2 += 1;
+    if stats.opnds.len() < 256 {
+        stats.opnds.insert(token);
+    }
+}
+
+fn record_token<'a>(stats: &mut BlockStats<'a>, token: &'a str) {
+    match classify_token(token) {
+        TokenKind::Branch => record_operator(stats, token, true),
+        TokenKind::Operator => record_operator(stats, token, false),
+        TokenKind::Operand => record_operand(stats, token),
+    }
+}
+
+fn scan_code_line<'a>(stats: &mut BlockStats<'a>, line: &'a str) {
+    stats.sloc += 1;
+    for token in line.split(is_token_delim).filter(|t| !t.is_empty()) {
+        record_token(stats, token);
+    }
+}
+
+fn score_block(sloc: usize, cc: usize, n_total: usize, eta_total: usize) -> f64 {
+    let n = n_total.max(2) as f64;
+    let eta = eta_total.max(2) as f64;
+    let volume = (n * eta.log2()).max(1.0);
+    let raw_mi = 171.0 - 5.2 * volume.ln() - 0.23 * (cc as f64) - 16.2 * (sloc as f64).ln();
+    (raw_mi * 100.0 / 171.0).clamp(0.0, 100.0)
+}
 
 fn compute_block_mi(lines: &[&str]) -> (usize, usize, f64) {
-    let mut sloc = 0usize;
-    let mut cc = 1usize;
-    let mut n1_total = 0usize;
-    let mut n2_total = 0usize;
-    let mut uniq_ops: HashSet<&str> = HashSet::new();
-    let mut uniq_opnds: HashSet<&str> = HashSet::new();
-
-    for raw_line in lines {
-        let line = raw_line.trim();
-        if line.is_empty() || line.starts_with("//") || line.starts_with('#') {
-            continue;
-        }
-        sloc += 1;
-        for token in line.split(|c: char| c.is_whitespace() || "(),;[]{}".contains(c)) {
-            if token.is_empty() {
-                continue;
-            }
-            match token {
-                "if" | "elif" | "for" | "while" | "match" | "case" | "catch" | "except"
-                | "&&" | "||" | "and" | "or" | "?" => {
-                    cc += 1;
-                    n1_total += 1;
-                    uniq_ops.insert(token);
-                }
-                "fn" | "def" | "return" | "let" | "const" | "mut" | "pub" | "async" | "await"
-                | "class" | "struct" | "impl" | "=" | "==" | "!=" | "+=" | "-=" | "->" | "=>" => {
-                    n1_total += 1;
-                    uniq_ops.insert(token);
-                }
-                _ => {
-                    n2_total += 1;
-                    if uniq_opnds.len() < 256 {
-                        uniq_opnds.insert(token);
-                    }
-                }
-            }
-        }
+    let mut stats = new_block_stats();
+    for line in lines.iter().map(|raw| raw.trim()).filter(|l| is_code_line(l)) {
+        scan_code_line(&mut stats, line);
     }
-
-    if sloc == 0 {
+    if stats.sloc == 0 {
         return (0, 1, 100.0);
     }
-
-    let n = (n1_total + n2_total).max(2) as f64;
-    let eta = (uniq_ops.len() + uniq_opnds.len()).max(2) as f64;
-    let volume = (n * eta.log2()).max(1.0);
-    let sloc_f = sloc as f64;
-    let cc_f = cc as f64;
-
-    let raw_mi = 171.0 - 5.2 * volume.ln() - 0.23 * cc_f - 16.2 * sloc_f.ln();
-    let normalized = (raw_mi * 100.0 / 171.0).clamp(0.0, 100.0);
-    (sloc, cc, normalized)
+    let mi = score_block(
+        stats.sloc,
+        stats.cc,
+        stats.n1 + stats.n2,
+        stats.ops.len() + stats.opnds.len(),
+    );
+    (stats.sloc, stats.cc, mi)
 }
 
 fn is_fn_boundary(trimmed: &str) -> bool {
-    trimmed.starts_with("fn ")
-        || trimmed.starts_with("pub fn ")
-        || trimmed.starts_with("pub(crate) fn ")
-        || trimmed.starts_with("extern \"C\" fn ")
-        || trimmed.starts_with("async fn ")
-        || trimmed.starts_with("def ")
-        || trimmed.starts_with("async def ")
-        || trimmed.starts_with("function ")
-        || trimmed.starts_with("export function ")
-        || trimmed.starts_with("export async function ")
+    const PREFIXES: &[&str] = &[
+        "fn ", "pub fn ", "pub(crate) fn ", "extern \"C\" fn ", "async fn ",
+        "def ", "async def ", "function ", "export function ", "export async function ",
+    ];
+    PREFIXES.iter().any(|prefix| trimmed.starts_with(prefix))
 }
 
-pub fn compute_file_mi(content: &str) -> (usize, usize, f64) {
-    let code_lines: Vec<&str> = content
+fn extract_code_lines(content: &str) -> Vec<&str> {
+    content
         .lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with("//") && !l.starts_with('#'))
-        .collect();
+        .filter(|line| is_code_line(line))
+        .collect()
+}
 
-    if code_lines.is_empty() {
-        return (0, 1, 100.0);
-    }
-
-    // Split into function blocks (or 45-line logical chunks if top-level script)
+fn split_function_blocks<'a>(code_lines: &[&'a str]) -> Vec<Vec<&'a str>> {
     let mut blocks: Vec<Vec<&str>> = Vec::new();
     let mut cur: Vec<&str> = Vec::new();
-    for line in &code_lines {
+    for &line in code_lines {
         if (is_fn_boundary(line) && cur.len() >= 6) || cur.len() >= 55 {
             blocks.push(std::mem::take(&mut cur));
         }
-        cur.push(*line);
+        cur.push(line);
     }
     if !cur.is_empty() {
         blocks.push(cur);
     }
+    blocks
+}
 
-    let mut total_sloc = 0usize;
-    let mut total_cc = 0usize;
-    let mut mi_sum = 0.0f64;
-    let mut count = 0usize;
-
-    for blk in &blocks {
+fn aggregate_blocks(blocks: &[Vec<&str>]) -> (usize, usize, f64) {
+    let (mut total_sloc, mut total_cc, mut mi_sum, mut count) = (0, 0, 0.0, 0);
+    for blk in blocks {
         let (s, c, m) = compute_block_mi(blk);
         if s > 0 {
             total_sloc += s;
@@ -146,10 +180,52 @@ pub fn compute_file_mi(content: &str) -> (usize, usize, f64) {
             count += 1;
         }
     }
-
     let avg_mi = if count > 0 { mi_sum / (count as f64) } else { 85.0 };
-    let avg_block_cc = if count > 0 { (total_cc / count).max(1) } else { 1 };
-    (total_sloc, avg_block_cc, avg_mi)
+    let avg_cc = if count > 0 { (total_cc / count).max(1) } else { 1 };
+    (total_sloc, avg_cc, avg_mi)
+}
+
+pub fn compute_file_mi(content: &str) -> (usize, usize, f64) {
+    let code_lines = extract_code_lines(content);
+    if code_lines.is_empty() {
+        return (0, 1, 100.0);
+    }
+    let blocks = split_function_blocks(&code_lines);
+    aggregate_blocks(&blocks)
+}
+
+fn should_visit_dir(name: &str) -> bool {
+    const SKIP_DIRS: &[&str] = &[
+        ".git", "node_modules", "target", ".venv", "venv", "__pycache__",
+        "dist", "build", ".next", ".cache", "akhterm_vendor", "archive",
+    ];
+    !name.starts_with('.') && !SKIP_DIRS.contains(&name)
+}
+
+fn is_code_file(path: &Path, entry: &fs::DirEntry) -> bool {
+    const CODE_EXTS: &[&str] = &["rs", "py", "ts", "tsx", "js", "go", "cpp", "c"];
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    if !CODE_EXTS.contains(&ext) {
+        return false;
+    }
+    entry
+        .metadata()
+        .is_ok_and(|meta| meta.len() > 60 && meta.len() < 350_000)
+}
+
+fn visit_dir_entry(root: &Path, entry: fs::DirEntry, depth: usize, out: &mut Vec<PathBuf>) {
+    let path = entry.path();
+    let name = entry.file_name();
+    let name_str = name.to_string_lossy();
+    if path.is_dir() {
+        if should_visit_dir(&name_str) {
+            collect_code_files(root, &path, depth + 1, out);
+        }
+    } else if is_code_file(&path, &entry) {
+        out.push(path);
+    }
 }
 
 fn collect_code_files(root: &Path, current: &Path, depth: usize, out: &mut Vec<PathBuf>) {
@@ -163,22 +239,7 @@ fn collect_code_files(root: &Path, current: &Path, depth: usize, out: &mut Vec<P
         if out.len() >= 180 {
             break;
         }
-        let path = entry.path();
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if path.is_dir() {
-            if !name_str.starts_with('.') && !SKIP_DIRS.contains(&name_str.as_ref()) {
-                collect_code_files(root, &path, depth + 1, out);
-            }
-        } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            if CODE_EXTS.contains(&ext) {
-                if let Ok(meta) = entry.metadata() {
-                    if meta.len() > 60 && meta.len() < 350_000 {
-                        out.push(path);
-                    }
-                }
-            }
-        }
+        visit_dir_entry(root, entry, depth, out);
     }
 }
 
@@ -192,63 +253,51 @@ pub fn grade_for_mi(mi: f64) -> &'static str {
     }
 }
 
+fn measure_file(root_path: &Path, path: &Path) -> Option<FileMetrics> {
+    let content = fs::read_to_string(path).ok()?;
+    let (sloc, cc, mi) = compute_file_mi(&content);
+    if sloc < 4 {
+        return None;
+    }
+    let rel_path = path
+        .strip_prefix(root_path)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned();
+    Some(FileMetrics {
+        rel_path,
+        sloc,
+        cc,
+        mi,
+    })
+}
+
+fn summarize_metrics(root_dir: &str, mut metrics: Vec<FileMetrics>) -> ProjectMiReport {
+    let files_count = metrics.len();
+    let total_sloc: usize = metrics.iter().map(|m| m.sloc).sum();
+    let total_cc: usize = metrics.iter().map(|m| m.cc).sum();
+    let mi_sum: f64 = metrics.iter().map(|m| m.mi).sum();
+    let avg_mi = if files_count > 0 { mi_sum / (files_count as f64) } else { 85.0 };
+    let avg_cc = if files_count > 0 { (total_cc as f64) / (files_count as f64) } else { 1.0 };
+    metrics.sort_by(|a, b| a.mi.partial_cmp(&b.mi).unwrap_or(std::cmp::Ordering::Equal));
+    ProjectMiReport {
+        root: root_dir.to_string(),
+        avg_mi,
+        grade: grade_for_mi(avg_mi),
+        files_count,
+        total_sloc,
+        avg_cc,
+        worst_files: metrics.into_iter().take(4).collect(),
+    }
+}
+
 pub fn analyze_project_mi(root_dir: &str) -> ProjectMiReport {
     let root_path = Path::new(root_dir);
     let mut files = Vec::new();
     collect_code_files(root_path, root_path, 0, &mut files);
-
-    let mut metrics = Vec::new();
-    let mut total_sloc = 0usize;
-    let mut mi_sum = 0.0f64;
-    let mut total_cc = 0usize;
-
-    for path in files {
-        let Ok(content) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let (sloc, cc, mi) = compute_file_mi(&content);
-        if sloc < 4 {
-            continue;
-        }
-        let rel = path
-            .strip_prefix(root_path)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .into_owned();
-        total_sloc += sloc;
-        total_cc += cc;
-        mi_sum += mi;
-        metrics.push(FileMetrics {
-            rel_path: rel,
-            sloc,
-            cc,
-            mi,
-        });
-    }
-
-    let files_count = metrics.len();
-    let avg_mi = if files_count > 0 {
-        mi_sum / (files_count as f64)
-    } else {
-        85.0
-    };
-    let avg_cc = if files_count > 0 {
-        (total_cc as f64) / (files_count as f64)
-    } else {
-        1.0
-    };
-
-    metrics.sort_by(|a, b| a.mi.partial_cmp(&b.mi).unwrap_or(std::cmp::Ordering::Equal));
-    let worst_files = metrics.into_iter().take(4).collect();
-    let grade = grade_for_mi(avg_mi);
-
-    ProjectMiReport {
-        root: root_dir.to_string(),
-        avg_mi,
-        grade,
-        files_count,
-        total_sloc,
-        avg_cc,
-        worst_files,
-    }
+    let metrics: Vec<FileMetrics> = files
+        .iter()
+        .filter_map(|path| measure_file(root_path, path))
+        .collect();
+    summarize_metrics(root_dir, metrics)
 }

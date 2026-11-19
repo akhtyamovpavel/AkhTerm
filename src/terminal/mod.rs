@@ -1,3 +1,4 @@
+pub mod clipboard_paste;
 pub mod file_drop;
 pub mod osc_parser;
 pub mod pane_actions;
