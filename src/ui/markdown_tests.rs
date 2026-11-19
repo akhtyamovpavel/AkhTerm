@@ -1,5 +1,50 @@
 use super::*;
 use crate::proc_radar::tests::{pump_gtk_events, with_headless_gtk};
+use std::io::Write;
+use std::process::{Command, Stdio};
+
+fn mount_test_reader_window(show_all: bool) -> *mut GtkWidget {
+    unsafe {
+        let win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+        let parent = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+        let terminal = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+        gtk_container_add(win, parent);
+        mount(parent, terminal);
+        if show_all {
+            gtk_widget_show_all(win);
+        }
+        win
+    }
+}
+
+fn with_mounted_reader(show_all: bool, body: impl FnOnce()) -> bool {
+    let mut ran = false;
+    with_headless_gtk(|| {
+        ran = true;
+        let win = mount_test_reader_window(show_all);
+        body();
+        unsafe { gtk_widget_destroy(win) };
+        assert!(READER.with_borrow(Option::is_none));
+    });
+    ran
+}
+
+fn assert_gtk_ran_if_required(ran: bool) {
+    if std::env::var_os("AKHTERM_REQUIRE_GTK").is_some() {
+        assert!(ran, "GTK display required");
+    }
+}
+
+fn reader_request_id() -> u64 {
+    READER.with_borrow(|r| r.as_ref().unwrap().request.unwrap())
+}
+
+fn is_reader_widget_visible(pick: impl FnOnce(&Reader) -> *mut GtkWidget) -> bool {
+    READER.with_borrow(|r| {
+        let widget = pick(r.as_ref().unwrap());
+        unsafe { gtk_widget_get_visible(widget) != 0 }
+    })
+}
 
 #[test]
 fn longer_fences_preserve_nested_fences_and_cyrillic() {
@@ -26,17 +71,9 @@ fn finds_recent_markdown_with_spaces_in_terminal_output() {
 
 #[test]
 fn gtk_reader_searches_cyrillic_preserves_selection_and_reloads() {
-    let mut ran = false;
-    with_headless_gtk(|| {
-        ran = true;
+    let ran = with_mounted_reader(true, || {
         let path = std::env::temp_dir().join(format!("akhterm-reader-{}.md", std::process::id()));
         fs::write(&path, "# Задача\n\n```rs\nкод\n```\n").unwrap();
-        let win = unsafe { gtk_window_new(GTK_WINDOW_TOPLEVEL) };
-        let parent = unsafe { gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0) };
-        let terminal = unsafe { gtk_box_new(GTK_ORIENTATION_VERTICAL, 0) };
-        unsafe { gtk_container_add(win, parent) };
-        mount(parent, terminal);
-        unsafe { gtk_widget_show_all(win) };
         open(&path);
         let entry = READER.with_borrow(|slot| slot.as_ref().unwrap().search);
         unsafe { gtk_entry_set_text(entry, c"код".as_ptr()) };
@@ -48,13 +85,9 @@ fn gtk_reader_searches_cyrillic_preserves_selection_and_reloads() {
             assert_eq!(r.buffer.bounds(), (16, 19));
             assert!(r.source.ends_with("ещё строка\n"));
         });
-        unsafe { gtk_widget_destroy(win) };
-        assert!(READER.with_borrow(Option::is_none));
         fs::remove_file(path).unwrap();
     });
-    if std::env::var_os("AKHTERM_REQUIRE_GTK").is_some() {
-        assert!(ran, "GTK display required");
-    }
+    assert_gtk_ran_if_required(ran);
 }
 
 #[test]
@@ -83,39 +116,30 @@ fn test_pane() -> crate::pane_registry::PaneRecord {
     )
 }
 
-#[test]
-fn same_relative_markdown_tracks_the_clicked_tmux_pane_and_connection() {
-    let mut p = test_pane();
-    p.proc_info.ssh_pid = 123;
-    p.ssh_directory = Some((123, "/old".into()));
-    let info = p.proc_info.clone();
-    let file = remote::candidate("docs/план.md:17:2").unwrap();
-    let mut previous = None;
-    for (pane, directory) in [("%7", "/srv/one"), ("%8", "/srv/two")] {
-        let payload = format!("v2:225:{pane}|main|0:dev|opencode|{directory}");
-        crate::tmux_local::apply_pane_tmux_title(&mut p, &payload);
-        let title = format!("AKHTERM_TMUX:{payload}");
-        assert_eq!(
-            origin::remote_directory(&p, &info, "AKHTERM_TMUX:%99|main|0:dev|opencode|/wrong"),
-            None
-        );
-        assert_eq!(p.tmux_server, Some(225));
-        let key = Origin::new(&p, &info);
-        assert_ne!(previous.as_ref(), Some(&key));
-        previous = Some(key);
-        assert_eq!(
-            remote::resolve(&file, origin::remote_directory(&p, &info, &title)),
-            Some(Path::new(directory).join(&file))
-        );
-    }
-    let next = crate::proc_radar::ProcInfo {
-        ssh_pid: 456,
-        ..info
-    };
-    assert_eq!(origin::remote_directory(&p, &next, ""), None);
-    p.sync_connection(&next);
-    assert!(p.ssh_directory.is_none());
-    assert_eq!(remote::resolve(&file, None), None);
+fn assert_tmux_pane_tracks_directory(
+    p: &mut crate::pane_registry::PaneRecord,
+    info: &crate::proc_radar::ProcInfo,
+    file: &Path,
+    pane: &str,
+    directory: &str,
+) -> Origin {
+    let payload = format!("v2:225:{pane}|main|0:dev|opencode|{directory}");
+    crate::tmux_local::apply_pane_tmux_title(p, &payload);
+    let title = format!("AKHTERM_TMUX:{payload}");
+    assert_eq!(
+        origin::remote_directory(p, info, "AKHTERM_TMUX:%99|main|0:dev|opencode|/wrong"),
+        None
+    );
+    assert_eq!(p.tmux_server, Some(225));
+    assert_eq!(
+        remote::resolve(file, origin::remote_directory(p, info, &title)),
+        Some(Path::new(directory).join(file))
+    );
+    Origin::new(p, info)
+}
+
+fn assert_remote_path_fallbacks(file: &Path) {
+    assert_eq!(remote::resolve(file, None), None);
     assert_eq!(
         remote::resolve(Path::new("/srv/absolute.md"), None),
         Some("/srv/absolute.md".into())
@@ -128,45 +152,49 @@ fn same_relative_markdown_tracks_the_clicked_tmux_pane_and_connection() {
 }
 
 #[test]
+fn same_relative_markdown_tracks_the_clicked_tmux_pane_and_connection() {
+    let mut p = test_pane();
+    p.proc_info.ssh_pid = 123;
+    p.ssh_directory = Some((123, "/old".into()));
+    let info = p.proc_info.clone();
+    let file = remote::candidate("docs/план.md:17:2").unwrap();
+    let first = assert_tmux_pane_tracks_directory(&mut p, &info, &file, "%7", "/srv/one");
+    let second = assert_tmux_pane_tracks_directory(&mut p, &info, &file, "%8", "/srv/two");
+    assert_ne!(first, second);
+    let next = crate::proc_radar::ProcInfo {
+        ssh_pid: 456,
+        ..info
+    };
+    assert_eq!(origin::remote_directory(&p, &next, ""), None);
+    p.sync_connection(&next);
+    assert!(p.ssh_directory.is_none());
+    assert_remote_path_fallbacks(&file);
+}
+
+fn sample_remote_doc(pane: &crate::pane_registry::PaneRecord, path: &str) -> RemoteDocument {
+    RemoteDocument {
+        origin: Origin::new(pane, &pane.proc_info),
+        host: "dev".into(),
+        connection: None,
+        path: path.into(),
+    }
+}
+
+#[test]
 fn late_remote_result_cannot_replace_the_new_document_or_reopen_a_closed_preview() {
-    with_headless_gtk(|| {
-        let win = unsafe { gtk_window_new(GTK_WINDOW_TOPLEVEL) };
-        let parent = unsafe { gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0) };
-        unsafe { gtk_container_add(win, parent) };
-        mount(parent, unsafe { gtk_box_new(GTK_ORIENTATION_VERTICAL, 0) });
+    with_mounted_reader(false, || {
         let p = test_pane();
-        let doc = RemoteDocument {
-            origin: Origin::new(&p, &p.proc_info),
-            host: "dev".into(),
-            connection: None,
-            path: "plan.md".into(),
-        };
-        open_remote(doc.clone());
-        let request = || READER.with_borrow(|r| r.as_ref().unwrap().request.unwrap());
-        let old = request();
-        READER.with_borrow(|r| {
-            assert_ne!(
-                unsafe { gtk_widget_get_visible(r.as_ref().unwrap().entry) },
-                0
-            )
-        });
-        open_remote(RemoteDocument {
-            path: "/srv/b/plan.md".into(),
-            ..doc
-        });
-        let new = request();
+        open_remote(sample_remote_doc(&p, "plan.md"));
+        let old = reader_request_id();
+        assert!(is_reader_widget_visible(|r| r.entry));
+        open_remote(sample_remote_doc(&p, "/srv/b/plan.md"));
+        let new = reader_request_id();
         remote_reader::complete(new, Ok("вторая панель".into()));
         remote_reader::complete(old, Ok("первая панель".into()));
         READER.with_borrow(|r| assert_eq!(r.as_ref().unwrap().source, "вторая панель"));
         close(ptr::null_mut(), ptr::null_mut());
         remote_reader::complete(new, Ok("поздно".into()));
-        READER.with_borrow(|r| {
-            assert_eq!(
-                unsafe { gtk_widget_get_visible(r.as_ref().unwrap().root) },
-                0
-            )
-        });
-        unsafe { gtk_widget_destroy(win) }
+        assert!(!is_reader_widget_visible(|r| r.root));
     });
 }
 
@@ -182,81 +210,78 @@ fn local_and_ssh_reads_enforce_the_same_text_limit() {
     assert!(file::read_text(&b"x\0"[..]).is_err());
 }
 
-#[test]
-fn tmux_inserts_only_into_the_selected_live_recipient() {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-    if Command::new("tmux").arg("-V").output().is_err() {
-        return;
+struct TmuxFixture {
+    dir: PathBuf,
+    sock: PathBuf,
+}
+
+impl TmuxFixture {
+    fn new(tag: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("akhterm-{tag}-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("socket");
+        Self { dir, sock }
     }
-    let dir = std::env::temp_dir().join(format!("akhterm-quote-{}", std::process::id()));
-    fs::create_dir_all(&dir).unwrap();
-    let sock = dir.join("socket");
-    let tmux = |args: &[&str]| {
+
+    fn run(&self, args: &[&str]) -> String {
         let out = Command::new("tmux")
             .args(["-S"])
-            .arg(&sock)
+            .arg(&self.sock)
             .args(args)
             .output()
             .unwrap();
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         String::from_utf8(out.stdout).unwrap().trim().to_owned()
-    };
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = Command::new("tmux")
-                .arg("-S")
-                .arg(self.0.join("socket"))
-                .arg("kill-server")
-                .output();
-            let _ = fs::remove_dir_all(&self.0);
-        }
     }
-    let _cleanup = Cleanup(dir.clone());
-    let id = tmux(&[
-        "-f",
-        "/dev/null",
-        "new-session",
-        "-dP",
-        "-F",
-        "#{pane_id}",
-        "cat",
-    ]);
-    let server: u32 = tmux(&["display-message", "-p", "#{pid}"]).parse().unwrap();
-    let send = |agent, text: &str| {
-        let target = remote::TmuxAddress::new(server, &id, agent).unwrap();
+
+    fn start_cat_pane(&self) -> (String, u32) {
+        let id = self.run(&[
+            "-f", "/dev/null", "new-session", "-dP", "-F", "#{pane_id}", "cat",
+        ]);
+        let server = self.run(&["display-message", "-p", "#{pid}"]).parse().unwrap();
+        (id, server)
+    }
+
+    fn send_quote(&self, server: u32, id: &str, agent: &str, text: &str) -> String {
+        let target = remote::TmuxAddress::new(server, id, agent).unwrap();
         let mut shell = Command::new("sh")
             .args(["-c", &target.paste_command()])
-            .env("TMUX", format!("{},{server},0", sock.display()))
+            .env("TMUX", format!("{},{server},0", self.sock.display()))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        shell
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(text.as_bytes())
-            .unwrap();
+        shell.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
         let out = shell.wait_with_output().unwrap();
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         String::from_utf8(out.stdout).unwrap()
-    };
-    assert_eq!(send("cat", "first passage"), "inserted\n");
-    assert_eq!(send("opencode", "wrong process"), "stale\n");
-    let next = tmux(&["split-window", "-P", "-F", "#{pane_id}", "cat"]);
-    assert_eq!(send("cat", "wrong pane"), "stale\n");
-    assert!(!tmux(&["capture-pane", "-p", "-t", &next]).contains("wrong pane"));
-    let screen = tmux(&["capture-pane", "-p", "-t", &id]);
+    }
+}
+
+impl Drop for TmuxFixture {
+    fn drop(&mut self) {
+        let _ = Command::new("tmux")
+            .arg("-S")
+            .arg(&self.sock)
+            .arg("kill-server")
+            .output();
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[test]
+fn tmux_inserts_only_into_the_selected_live_recipient() {
+    if Command::new("tmux").arg("-V").output().is_err() {
+        return;
+    }
+    let tmux = TmuxFixture::new("quote");
+    let (id, server) = tmux.start_cat_pane();
+    assert_eq!(tmux.send_quote(server, &id, "cat", "first passage"), "inserted\n");
+    assert_eq!(tmux.send_quote(server, &id, "opencode", "wrong process"), "stale\n");
+    let next = tmux.run(&["split-window", "-P", "-F", "#{pane_id}", "cat"]);
+    assert_eq!(tmux.send_quote(server, &id, "cat", "wrong pane"), "stale\n");
+    assert!(!tmux.run(&["capture-pane", "-p", "-t", &next]).contains("wrong pane"));
+    let screen = tmux.run(&["capture-pane", "-p", "-t", &id]);
     assert!(screen.contains("first passage") && !screen.contains("wrong"));
 }

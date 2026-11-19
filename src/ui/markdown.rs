@@ -99,13 +99,19 @@ fn button(
     }
 }
 
-pub fn mount(parent: *mut GtkWidget, terminal: *mut GtkWidget) {
+fn build_paned_shell(parent: *mut GtkWidget, terminal: *mut GtkWidget) -> (*mut GtkWidget, *mut GtkWidget) {
     unsafe {
         let pane = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
         let root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
         gtk_paned_pack1(pane, terminal, 1, 1);
         gtk_paned_pack2(pane, root, 0, 1);
         gtk_box_pack_start(parent, pane, 1, 1, 0);
+        (pane, root)
+    }
+}
+
+fn build_header_bar(root: *mut GtkWidget) -> (*mut GtkWidget, *mut GtkWidget) {
+    unsafe {
         let bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
         let name = gtk_label_new(ptr::null());
         gtk_label_set_ellipsize(name, 3);
@@ -114,21 +120,42 @@ pub fn mount(parent: *mut GtkWidget, terminal: *mut GtkWidget) {
         gtk_widget_set_no_show_all(refresh, 1);
         button(bar, text::MD_CLOSE, close);
         gtk_box_pack_start(root, bar, 0, 1, 0);
-        let entry = remote_reader::mount_path(root);
+        (name, refresh)
+    }
+}
+
+fn build_search_entry(root: *mut GtkWidget) -> *mut GtkWidget {
+    unsafe {
         let search = gtk_search_entry_new();
         gtk_entry_set_placeholder_text(search, text::MD_SEARCH.as_ptr());
         gtk_box_pack_start(root, search, 0, 1, 0);
         crate::connect_entry_changed(search, search_changed);
         connect_entry_activate(search, search_next);
+        search
+    }
+}
+
+fn build_action_bar(root: *mut GtkWidget) {
+    unsafe {
         let actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
         button(actions, text::MD_CODE, copy_code);
         button(actions, text::MD_PASTE, paste);
         gtk_box_pack_start(root, actions, 0, 1, 0);
-        let picker = quote::Picker::mount(root);
+    }
+}
+
+fn build_reader_scroll(root: *mut GtkWidget) -> (*mut GtkWidget, buffer::Buffer) {
+    unsafe {
         let scroll = gtk_scrolled_window_new(ptr::null_mut(), ptr::null_mut());
         let buffer = buffer::Buffer::new();
         gtk_container_add(scroll, buffer.view);
         gtk_box_pack_start(root, scroll, 1, 1, 0);
+        (scroll, buffer)
+    }
+}
+
+fn finalize_reader_root(root: *mut GtkWidget) {
+    unsafe {
         gtk_widget_show_all(root);
         gtk_widget_set_no_show_all(root, 1);
         gtk_widget_set_visible(root, 0);
@@ -140,24 +167,23 @@ pub fn mount(parent: *mut GtkWidget, terminal: *mut GtkWidget) {
             ptr::null(),
             0,
         );
-        READER.replace(Some(Reader {
-            pane,
-            root,
-            name,
-            search,
-            scroll,
-            buffer,
-            path: PathBuf::new(),
-            entry,
-            refresh,
-            picker,
-            remote: None,
-            request: None,
-            stamp: None,
-            source: String::new(),
-            blocks: Vec::new(),
-        }));
     }
+}
+
+pub fn mount(parent: *mut GtkWidget, terminal: *mut GtkWidget) {
+    let (pane, root) = build_paned_shell(parent, terminal);
+    let (name, refresh) = build_header_bar(root);
+    let entry = remote_reader::mount_path(root);
+    let search = build_search_entry(root);
+    build_action_bar(root);
+    let picker = quote::Picker::mount(root);
+    let (scroll, buffer) = build_reader_scroll(root);
+    finalize_reader_root(root);
+    READER.replace(Some(Reader {
+        pane, root, name, search, scroll, buffer, entry, refresh, picker,
+        path: PathBuf::new(), remote: None, request: None, stamp: None,
+        source: String::new(), blocks: Vec::new(),
+    }));
 }
 
 extern "C" fn destroyed(_: *mut GtkWidget, _: *mut c_void) {
@@ -180,7 +206,7 @@ fn stamp(path: &Path) -> Option<(SystemTime, u64)> {
 }
 
 impl Reader {
-    fn show(&self) {
+    fn update_header(&self) {
         let full_path = self.path.to_string_lossy();
         let short_name = self.path.file_name().unwrap_or_default().to_string_lossy();
         let title = self
@@ -189,16 +215,28 @@ impl Reader {
             .map(|doc| format!("{} · {full_path}", doc.host));
         set_label_text(self.name, title.as_deref().unwrap_or(&short_name));
         set_tooltip(self.name, title.as_deref().unwrap_or(&full_path));
-        let remote = self.remote.is_some();
+    }
+
+    fn reveal_root(&self) {
         unsafe {
-            gtk_widget_set_visible(self.refresh, i32::from(remote));
-            gtk_widget_set_visible(self.entry, i32::from(remote && !self.path.is_absolute()));
             if gtk_widget_get_visible(self.root) == 0 {
-                gtk_paned_set_position(self.pane, gtk_widget_get_allocated_width(self.pane) / 2);
+                let half = gtk_widget_get_allocated_width(self.pane) / 2;
+                gtk_paned_set_position(self.pane, half);
                 gtk_widget_set_visible(self.root, 1);
             }
             gtk_widget_grab_focus(self.buffer.view);
         }
+    }
+
+    fn show(&self) {
+        self.update_header();
+        let remote = self.remote.is_some();
+        let needs_abs = remote && !self.path.is_absolute();
+        unsafe {
+            gtk_widget_set_visible(self.refresh, i32::from(remote));
+            gtk_widget_set_visible(self.entry, i32::from(needs_abs));
+        }
+        self.reveal_root();
     }
 
     fn update(&mut self, source: String, preserve: bool) {
@@ -214,25 +252,56 @@ impl Reader {
         unsafe { gtk_adjustment_set_value(adj, if preserve { y } else { 0.0 }) };
     }
 
-    fn find(&self, next: bool) {
-        let query = unsafe { CStr::from_ptr(gtk_entry_get_text(self.search)) }.to_string_lossy();
-        if query.is_empty() {
-            return;
-        }
+    fn find_match_byte(&self, query: &str, next: bool) -> Option<usize> {
         let from = if next {
             file::byte_at(&self.source, self.buffer.bounds().1)
         } else {
             0
         };
-        let hit = self.source[from..]
-            .find(query.as_ref())
+        self.source[from..]
+            .find(query)
             .map(|n| n + from)
-            .or_else(|| self.source.find(query.as_ref()));
-        if let Some(byte) = hit {
-            let start = self.source[..byte].chars().count() as i32;
-            self.buffer
-                .select(start, start + query.chars().count() as i32, true);
+            .or_else(|| self.source.find(query))
+    }
+
+    fn find(&self, next: bool) {
+        let query = unsafe { CStr::from_ptr(gtk_entry_get_text(self.search)) }.to_string_lossy();
+        if query.is_empty() {
+            return;
         }
+        if let Some(byte) = self.find_match_byte(query.as_ref(), next) {
+            let start = self.source[..byte].chars().count() as i32;
+            let len = query.chars().count() as i32;
+            self.buffer.select(start, start + len, true);
+        }
+    }
+
+    fn reload_local(&mut self) {
+        let observed = stamp(&self.path);
+        if self.stamp == observed {
+            return;
+        }
+        self.stamp = observed;
+        match file::read(&self.path) {
+            Ok(source) => self.update(source, true),
+            Err(err) => app_state::set_footer_message(&format!("{} · {err}", self.path.display())),
+        }
+    }
+    fn apply_local(
+        &mut self,
+        path: &Path,
+        origin: Option<Origin>,
+        observed: Option<(SystemTime, u64)>,
+        source: String,
+    ) {
+        let preserve = self.remote.is_none() && self.path == path;
+        self.remote = None;
+        self.request = None;
+        self.picker.reset(origin.as_ref());
+        self.path = path.to_path_buf();
+        self.stamp = observed;
+        self.update(source, preserve);
+        self.show();
     }
 }
 
@@ -247,15 +316,9 @@ pub fn open_local(path: &Path, origin: Option<Origin>) {
         Err(err) => return app_state::set_footer_message(&format!("{} · {err}", path.display())),
     };
     READER.with_borrow_mut(|r| {
-        let Some(r) = r else { return };
-        let preserve = r.remote.is_none() && r.path == path;
-        r.remote = None;
-        r.request = None;
-        r.picker.reset(origin.as_ref());
-        r.path = path.to_path_buf();
-        r.stamp = observed;
-        r.update(source, preserve);
-        r.show();
+        if let Some(r) = r {
+            r.apply_local(path, origin, observed, source);
+        }
     });
 }
 
@@ -266,17 +329,8 @@ pub fn reload() {
             return;
         }
         r.picker.sync();
-        if r.remote.is_some() {
-            return;
-        }
-        let observed = stamp(&r.path);
-        if r.stamp == observed {
-            return;
-        }
-        r.stamp = observed;
-        match file::read(&r.path) {
-            Ok(source) => r.update(source, true),
-            Err(err) => app_state::set_footer_message(&format!("{} · {err}", r.path.display())),
+        if r.remote.is_none() {
+            r.reload_local();
         }
     });
 }
@@ -288,6 +342,7 @@ extern "C" fn search_changed(_: *mut GtkWidget, _: *mut c_void) {
         }
     });
 }
+
 extern "C" fn search_next(_: *mut GtkWidget, _: *mut c_void) {
     READER.with_borrow(|r| {
         if let Some(r) = r {
@@ -308,18 +363,22 @@ extern "C" fn copy_code(_: *mut GtkWidget, _: *mut c_void) {
     });
 }
 
-extern "C" fn paste(_: *mut GtkWidget, _: *mut c_void) {
-    let selected = READER.with_borrow(|slot| {
+fn selected_paste_cstring() -> Option<CString> {
+    READER.with_borrow(|slot| {
         let r = slot.as_ref()?;
         let (a, b) = r.buffer.bounds();
-        (a != b)
-            .then(|| {
-                CString::new(&r.source[file::byte_at(&r.source, a)..file::byte_at(&r.source, b)])
-                    .ok()
-            })
-            .flatten()
-    });
-    let Some(text) = selected else { return };
+        if a == b {
+            return None;
+        }
+        let slice = &r.source[file::byte_at(&r.source, a)..file::byte_at(&r.source, b)];
+        CString::new(slice).ok()
+    })
+}
+
+extern "C" fn paste(_: *mut GtkWidget, _: *mut c_void) {
+    let Some(text) = selected_paste_cstring() else {
+        return;
+    };
     let vte = crate::shortcuts::active_search_vte();
     if app_state::has_live_vte(vte) {
         unsafe {
@@ -343,13 +402,24 @@ pub fn open_last() {
     }
 }
 
-pub fn route_key(win: *mut GtkWidget, key: u32, mods: u32) -> Option<c_int> {
+fn focused_reader_search(win: *mut GtkWidget) -> Option<*mut GtkWidget> {
     let focus = unsafe { gtk_window_get_focus(win) };
-    let search = READER.with_borrow(|r| {
+    READER.with_borrow(|r| {
         let r = r.as_ref()?;
-        (!focus.is_null() && unsafe { gtk_widget_is_ancestor(focus, r.root) != 0 })
-            .then_some(r.search)
-    })?;
+        let inside = !focus.is_null() && unsafe { gtk_widget_is_ancestor(focus, r.root) != 0 };
+        inside.then_some(r.search)
+    })
+}
+
+fn is_global_passthrough_shortcut(key: u32, modifiers: u32) -> bool {
+    if modifiers & GDK_MOD1_MASK != 0 || modifiers == GDK_CONTROL_MASK | GDK_SHIFT_MASK {
+        return true;
+    }
+    modifiers == GDK_CONTROL_MASK && matches!(char::from_u32(key), Some('k' | ','))
+}
+
+pub fn route_key(win: *mut GtkWidget, key: u32, mods: u32) -> Option<c_int> {
+    let search = focused_reader_search(win)?;
     if key == 0xff1b {
         close(ptr::null_mut(), ptr::null_mut());
         return Some(1);
@@ -359,11 +429,5 @@ pub fn route_key(win: *mut GtkWidget, key: u32, mods: u32) -> Option<c_int> {
         unsafe { gtk_widget_grab_focus(search) };
         return Some(1);
     }
-    if modifiers & GDK_MOD1_MASK != 0 || modifiers == GDK_CONTROL_MASK | GDK_SHIFT_MASK {
-        return None;
-    }
-    if modifiers == GDK_CONTROL_MASK && matches!(char::from_u32(key), Some('k' | ',')) {
-        return None;
-    }
-    Some(0)
+    (!is_global_passthrough_shortcut(key, modifiers)).then_some(0)
 }
