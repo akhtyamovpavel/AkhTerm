@@ -146,17 +146,11 @@ fn is_ctrl_shift_p(keyval: c_uint, state: c_uint, keycode: u16) -> bool {
     shift && is_p
 }
 
-fn is_plain_ctrl_k(keyval: c_uint, state: c_uint, keycode: u16) -> bool {
-    let no_shift = (state & GDK_SHIFT_MASK) == 0;
-    let is_k = matches!(keyval, 0x4b | 0x6b | 0x6cc | 0x6ec) || keycode == 45;
-    no_shift && is_k
-}
-
 pub fn is_palette_shortcut(keyval: c_uint, state: c_uint, keycode: u16) -> bool {
     if (state & GDK_CONTROL_MASK) == 0 || (state & GDK_MOD1_MASK) != 0 {
         return false;
     }
-    is_ctrl_shift_p(keyval, state, keycode) || is_plain_ctrl_k(keyval, state, keycode)
+    is_ctrl_shift_p(keyval, state, keycode)
 }
 
 #[cfg(test)]
@@ -971,8 +965,9 @@ mod tests {
         assert!(is_palette_shortcut(b'P' as u32, cs, 0));
         assert!(is_palette_shortcut(b'p' as u32, cs, 0));
         assert!(is_palette_shortcut(0x6da, cs, 33));
-        assert!(is_palette_shortcut(b'k' as u32, GDK_CONTROL_MASK, 0));
-        assert!(is_palette_shortcut(0x6cc, GDK_CONTROL_MASK, 45));
+        assert!(!is_palette_shortcut(b'k' as u32, GDK_CONTROL_MASK, 0));
+        assert!(!is_palette_shortcut(b'k' as u32, GDK_CONTROL_MASK, 45));
+        assert!(!is_palette_shortcut(0x6cc, GDK_CONTROL_MASK, 45));
         assert!(!is_palette_shortcut(b'K' as u32, cs, 45));
         assert!(!is_palette_shortcut(b'p' as u32, GDK_CONTROL_MASK, 33));
         assert!(!is_palette_shortcut(b'k' as u32, GDK_CONTROL_MASK | GDK_MOD1_MASK, 45));
@@ -1194,7 +1189,8 @@ mod tests {
         pump_events();
         assert_eq!(read_entry_query(palette.ctx.entry), "");
         assert_eq!(palette.ctx.state.borrow().rows.len(), 6);
-        assert!(palette.handle_key(b'k' as u32, GDK_CONTROL_MASK, 45));
+        assert!(!palette.handle_key(b'k' as u32, GDK_CONTROL_MASK, 45));
+        assert!(palette.handle_key(b'P' as u32, GDK_CONTROL_MASK | GDK_SHIFT_MASK, 33));
         pump_events();
         assert!(!palette.is_open());
         assert_eq!(unsafe { gtk_window_get_focus(win) }, vte);

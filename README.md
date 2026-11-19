@@ -40,7 +40,7 @@ AkhTerm is a native Linux terminal built with **Rust**, **GTK 3**, and **VTE 2.9
 - **Live Port Radar & 1-Click Managed SSH Port Forwarding (`Ports ▾`):** Discovers local listening TCP ports from `/proc/net/tcp{,6}` scoped to each tab's process tree alongside remote listening ports on active `SSH` tabs. Use the `Ports ▾` popover (or Command Palette) to start or stop collision-free `ssh -N -L` tunnels in one click, or `Ctrl+Click` a remote `localhost:<port>` link to forward and open it automatically, with clean tunnel teardown when the tab or window closes.
 
 ### Everyday Terminal Ergonomics
-- **Command Palette (`Ctrl+Shift+P` / `Ctrl+K`):** Fuzzy launcher across open tabs, live remote `tmux` sessions, profiles, SSH hosts, agents, theme/locale switches, Settings, About, Swarm Dashboard, Task Dispatch, and Handoff briefs.
+- **Command Palette (`Ctrl+Shift+P`):** Fuzzy launcher across open tabs, live remote `tmux` sessions, profiles, SSH hosts, agents, theme/locale switches, Settings, About, Swarm Dashboard, Task Dispatch, and Handoff briefs.
 - **Scrollback Search (`Ctrl+Shift+F`):** Search active-pane output with `Enter` / `Shift+Enter`, case sensitivity (`Aa`), and PCRE2 regex (`.*`).
 - **Smart Clipboard, Links & File Drop:** `Ctrl+C` copies selected text or sends `SIGINT` when nothing is selected; `Ctrl+V` pastes text, clipboard images, or copied files; `Ctrl+Click` opens URLs and relative `file:line` paths without interfering with left-click drag selection; dragging files onto a pane inserts shell-escaped paths locally or uploads them to `/tmp/` via background `scp` on `SSH` tabs.
 - **Markdown preview.** Right-click a Markdown path and choose **Open alongside**. In an SSH pane, AkhTerm uses the remote host and the directory reported by tmux or OSC 7. If the directory is unknown, enter the absolute remote path. The document stays open when you switch tabs. Local files reload automatically. Use **Refresh** to reread a remote file. Both accept UTF-8 text up to 2 MiB. SSH reads use key-based or other noninteractive authentication and require a known host key.
@@ -73,7 +73,7 @@ AkhTerm is a native Linux terminal built with **Rust**, **GTK 3**, and **VTE 2.9
 | `Ctrl+Shift+U` | Jump to the next pane waiting for approval or holding unread output |
 | `Ctrl+Shift+G` | Open **Git** dirty status, branch review (`merge-base..HEAD`), diff, and worktree cleanup |
 | `Ctrl+Shift+B` | Open interactive **Diff Review** panel (local & `SSH` diffs, inline comments for agent, local hunk stage/revert) |
-| `Ctrl+Shift+P` / `Ctrl+K` | Open **Command Palette** (`Up`/`Down` selects, `Enter` runs, `Escape` closes) |
+| `Ctrl+Shift+P` | Open **Command Palette** (`Up`/`Down` selects, `Enter` runs, `Escape` closes) |
 | `Ctrl+Shift+F` | Search terminal output and scrollback (`Enter` / `Shift+Enter`, `Aa`, `.*`, `Escape`) |
 
 ### Clipboard, Appearance & Mouse
