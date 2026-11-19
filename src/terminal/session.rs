@@ -206,14 +206,17 @@ impl TermSession {
     }
 
     pub fn live_turn_secs(&self, now: Instant) -> Option<u64> {
-        if self.category == SessionCategory::Daemon
-            || self.state != WorkState::Working
-            || self.active_pid() <= 0
-        {
+        if self.category == SessionCategory::Daemon || self.state != WorkState::Working {
             return None;
         }
-        let started = self.work_started_at.unwrap_or(self.work_started);
-        Some(now.saturating_duration_since(started).as_secs())
+        if !self.pane_registry.is_empty() {
+            return self.pane_registry.live_turn_secs(now);
+        }
+        if self.active_pid() <= 0 {
+            return None;
+        }
+        self.work_started_at
+            .map(|started| now.saturating_duration_since(started).as_secs())
     }
 
     pub fn settled_turn_secs(&self) -> Option<u64> {
