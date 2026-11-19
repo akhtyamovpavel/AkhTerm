@@ -103,6 +103,7 @@ fn make_ports_scroll(vbox: *mut GtkWidget) -> *mut GtkWidget {
         gtk_scrolled_window_set_policy(scroll, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
         gtk_scrolled_window_set_min_content_width(scroll, 360);
         gtk_scrolled_window_set_max_content_height(scroll, 340);
+        gtk_scrolled_window_set_propagate_natural_height(scroll, 1);
         let holder = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
         gtk_container_add(scroll, holder);
         gtk_box_pack_start(vbox, scroll, 1, 1, 0);
@@ -497,6 +498,7 @@ fn collect_radar_updates(
     let mut remote_targets = Vec::new();
     let mut local_updates = Vec::new();
     let mut active_remote_vte = None;
+    let ephemeral = port_radar::read_ephemeral_port_range();
     for s in sessions {
         if let Some(host) = session_remote_host(s) {
             remote_targets.push(RemotePortTarget { host, ssh_pid: s.proc_info.ssh_pid });
@@ -505,7 +507,8 @@ fn collect_radar_updates(
             }
         } else {
             let pids = collect_session_local_pids(s);
-            local_updates.push((s.id, port_radar::detect_ports_for_pids_with_table(&pids, sockets)));
+            let detected = port_radar::detect_ports_for_pids_with_table(&pids, sockets);
+            local_updates.push((s.id, port_radar::filter_radar_ports(detected, ephemeral)));
         }
     }
     (remote_targets, local_updates, active_remote_vte)
@@ -1033,6 +1036,26 @@ mod tests {
             let res = app.ssh_tunnels.ensure_tunnel(req).unwrap();
             (res.info.id, res.info.pid, app.ports_menu.clone())
         }).unwrap()
+    }
+
+    #[test]
+    fn ports_popover_propagates_natural_height_for_populated_rows() {
+        with_headless_gtk(|| {
+            let (win, _) = crate::tests::install_test_window();
+            let menu = app_state::with_app(|app| app.ports_menu.clone()).unwrap();
+            let snap = PortsSnapshot {
+                local_ports: vec![sample_port(3000, "vite"), sample_port(8000, "uvicorn")],
+                ..PortsSnapshot::default()
+            };
+            menu.populate(&snap, UiLocale::Ru);
+            menu.popup();
+            pump_gtk_events();
+            let (mut min_h, mut nat_h) = (0, 0);
+            unsafe { gtk_widget_get_preferred_height(menu.popover_widget(), &mut min_h, &mut nat_h) };
+            assert!(nat_h >= 120, "expected expanded Ports popover natural height >= 120px, got {nat_h}px");
+            menu.popdown();
+            crate::tests::cleanup_test_window(win, &[]);
+        });
     }
 
     #[test]

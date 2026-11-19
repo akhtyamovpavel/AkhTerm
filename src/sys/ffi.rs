@@ -240,6 +240,12 @@ extern "C" {
     pub fn gtk_scrolled_window_set_min_content_height(sw: *mut GtkWidget, height: c_int);
     pub fn gtk_scrolled_window_set_max_content_height(sw: *mut GtkWidget, height: c_int);
     pub fn gtk_scrolled_window_set_propagate_natural_height(sw: *mut GtkWidget, propagate: c_int);
+    #[cfg(test)]
+    pub fn gtk_widget_get_preferred_height(
+        widget: *mut GtkWidget,
+        minimum_height: *mut c_int,
+        natural_height: *mut c_int,
+    );
     pub fn gtk_viewport_new(hadj: *mut GtkAdjustment, vadj: *mut GtkAdjustment) -> *mut GtkWidget;
     pub fn gtk_scrollable_set_hscroll_policy(scrollable: *mut GtkWidget, policy: c_int);
 
