@@ -13,6 +13,8 @@ use crate::proc_radar::read_proc_cmdline;
 use crate::telemetry::ssh_connection::SshRoute;
 
 pub const REMOTE_PORT_TTL: Duration = Duration::from_secs(8);
+pub const DEFAULT_EPHEMERAL_RANGE: (u16, u16) = (32_768, 60_999);
+const IANA_DYNAMIC_PORT_START: u16 = 49_152;
 const MAX_TREE_PIDS: usize = 256;
 const REMOTE_PROBE_SCRIPT: &str = concat!(
     "if command -v ss >/dev/null 2>&1; then ",
@@ -134,6 +136,28 @@ pub fn read_local_listening_sockets() -> Vec<ListeningSocket> {
 
 pub fn is_local_port_listening(port: u16) -> bool {
     read_local_listening_sockets().iter().any(|s| s.port == port)
+}
+
+pub fn parse_ephemeral_port_range(raw: &str) -> Option<(u16, u16)> {
+    let mut parts = raw.split_ascii_whitespace();
+    let lo = parts.next()?.parse::<u16>().ok()?;
+    let hi = parts.next()?.parse::<u16>().ok()?;
+    (lo > 0 && lo <= hi).then_some((lo, hi))
+}
+
+pub fn read_ephemeral_port_range() -> (u16, u16) {
+    fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+        .ok()
+        .and_then(|raw| parse_ephemeral_port_range(&raw))
+        .unwrap_or(DEFAULT_EPHEMERAL_RANGE)
+}
+
+pub fn is_ephemeral_port(port: u16, range: (u16, u16)) -> bool {
+    (port >= range.0 && port <= range.1) || port >= IANA_DYNAMIC_PORT_START
+}
+
+pub fn filter_radar_ports(ports: Vec<DetectedPort>, range: (u16, u16)) -> Vec<DetectedPort> {
+    ports.into_iter().filter(|p| !is_ephemeral_port(p.port, range)).collect()
 }
 
 fn push_children(pid: i32, queue: &mut Vec<i32>) {
@@ -307,7 +331,7 @@ fn parse_ss_line(line: &str) -> Option<DetectedPort> {
     let scope = classify_ss_host(host_part)?;
     let port = port_part.parse::<u16>().ok().filter(|&p| p > 0)?;
     let process = extract_ss_process(line);
-    if is_remote_system_ssh(port, &process) {
+    if is_remote_system_ssh(port, &process) || is_ephemeral_port(port, DEFAULT_EPHEMERAL_RANGE) {
         return None;
     }
     Some(DetectedPort::http(port, process, scope))
@@ -324,7 +348,7 @@ pub fn parse_ss_tln(output: &str) -> Vec<DetectedPort> {
 fn sockets_to_remote_ports(sockets: Vec<ListeningSocket>) -> Vec<DetectedPort> {
     let mut map = HashMap::new();
     for sock in sockets {
-        if sock.port == 22 {
+        if sock.port == 22 || is_ephemeral_port(sock.port, DEFAULT_EPHEMERAL_RANGE) {
             continue;
         }
         upsert_detected_port(&mut map, DetectedPort::http(sock.port, String::new(), sock.scope));
@@ -642,6 +666,28 @@ mod tests {
         assert_eq!(process_label_from_argv(&s(&["/usr/bin/python3", "-m", "uvicorn", "app:app"])), "uvicorn");
         assert_eq!(process_label_from_argv(&s(&["node", "/proj/node_modules/.bin/vite", "--port", "5173"])), "vite");
         assert_eq!(process_label_from_argv(&s(&["/usr/local/bin/caddy", "run"])), "caddy");
+    }
+
+    #[test]
+    fn filters_linux_and_iana_ephemeral_ports_while_keeping_dev_ports() {
+        let range = parse_ephemeral_port_range("32768\t60999\n").unwrap();
+        assert_eq!(range, DEFAULT_EPHEMERAL_RANGE);
+        let sample = vec![
+            DetectedPort::http(3000, "vite".into(), BindScope::Loopback),
+            DetectedPort::http(8000, "uvicorn".into(), BindScope::Wildcard),
+            DetectedPort::http(11434, "ollama".into(), BindScope::Loopback),
+            DetectedPort::http(33849, "agy".into(), BindScope::Loopback),
+            DetectedPort::http(45141, "language_server".into(), BindScope::Loopback),
+            DetectedPort::http(61500, "client".into(), BindScope::Loopback),
+        ];
+        let kept: Vec<u16> = filter_radar_ports(sample, range).into_iter().map(|p| p.port).collect();
+        assert_eq!(kept, vec![3000, 8000, 11434]);
+        let ss_out = concat!(
+            "State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process\n",
+            "LISTEN 0      128    127.0.0.1:33849     0.0.0.0:*         users:((\"agy\",pid=7,fd=9))\n",
+            "LISTEN 0      128    127.0.0.1:8000      0.0.0.0:*         users:((\"uvicorn\",pid=8,fd=4))\n",
+        );
+        assert_eq!(parse_remote_probe_output(ss_out).into_iter().map(|p| p.port).collect::<Vec<_>>(), vec![8000]);
     }
 
     #[test]
