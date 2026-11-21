@@ -284,6 +284,8 @@ fn execute_palette_tool_action(action: palette::PaletteAction) {
             pane_actions::open_git_file_action(&repo_root, &path, untracked);
         }
         palette::PaletteAction::RemoveCleanWorktree => pane_actions::start_remove_clean_worktree(),
+        palette::PaletteAction::NewGitWorktree => crate::worktree_ui::open_new_worktree_dialog_for_active(),
+        palette::PaletteAction::PruneMergedWorktrees => crate::worktree_ui::prune_merged_for_active(),
         palette::PaletteAction::OpenTaskDispatch => crate::task_dispatch::open_for_app(),
         palette::PaletteAction::ToggleSwarmDashboard => topbar::toggle_swarm_view(),
         palette::PaletteAction::OpenSettings | palette::PaletteAction::InstallAgentHooks => {

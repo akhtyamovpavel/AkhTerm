@@ -103,6 +103,8 @@ pub enum PaletteAction {
     UndoLastCheckpoint,
     GitFile { repo_root: String, path: String, untracked: bool },
     RemoveCleanWorktree,
+    NewGitWorktree,
+    PruneMergedWorktrees,
     OpenTaskDispatch,
     ToggleSwarmDashboard,
     OpenSettings,
@@ -501,6 +503,8 @@ fn push_v1_command_items(out: &mut Vec<PaletteItem>, locale: UiLocale) {
     out.push(make_diff_review_item(locale));
     out.push(make_save_checkpoint_item(locale));
     out.push(make_undo_checkpoint_item(locale));
+    out.push(new_ui_item(PaletteKind::Git, text::WT_PALETTE_NEW_TITLE, text::WT_PALETTE_NEW_DETAIL, "git worktree new create branch создать ветку", PaletteAction::NewGitWorktree, locale));
+    out.push(new_ui_item(PaletteKind::Git, text::WT_PALETTE_PRUNE_TITLE, text::WT_PALETTE_PRUNE_DETAIL, "git worktree prune clean merged очистить слитые удалить", PaletteAction::PruneMergedWorktrees, locale));
     out.push(make_dispatch_item(locale));
     out.push(make_swarm_item(locale));
     out.push(make_ports_item(locale));

@@ -21,7 +21,7 @@ pub(crate) use app::{app_state, ctl_wire, hook_installer, session_ops, shortcuts
 pub(crate) use app::app_tests as tests;
 pub(crate) use swarm::{
     agent_handoff, git_checkpoints, git_review, git_status, git_wt, handoff, swarm_view,
-    task_dispatch,
+    task_dispatch, worktree_mgr, worktree_ui,
 };
 pub(crate) use sys::{
     config, ctl_cli, ctl_protocol, ctl_socket, ffi, paths, platform, ssh_config, ssh_tunnel,
