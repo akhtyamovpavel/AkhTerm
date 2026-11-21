@@ -1,5 +1,5 @@
 pub mod about;
-pub mod context_menu;
+pub mod context_menu; pub(crate) mod hooks_section;
 pub mod i18n; pub mod ui_font;
 pub mod palette;
 pub mod search_bar;
