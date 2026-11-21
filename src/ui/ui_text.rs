@@ -117,6 +117,80 @@ pub const CP_MSG_NONE: UiText = UiText::new(
 );
 pub const CP_MSG_SAVED: UiText = UiText::new(c"Сохранён чекпойнт", c"Saved checkpoint");
 pub const CP_MSG_RESTORED: UiText = UiText::new(c"Откат выполнен к чекпойнту", c"Restored checkpoint");
+pub const WT_SECTION_HDR: UiText = UiText::new(c"WORKTREES", c"WORKTREES");
+pub const WT_OPEN_BTN: UiText = UiText::new(c"Открыть", c"Open");
+pub const WT_REMOVE_TIP: UiText = UiText::new(c"Удалить чистый worktree", c"Remove clean worktree");
+pub const WT_NEW_BTN: UiText = UiText::new(c"+ Новый worktree", c"+ New Worktree");
+pub const WT_PRUNE_BTN: UiText = UiText::new(c"Убрать слитые", c"Prune Merged");
+pub const WT_PRIMARY_TAG: UiText = UiText::new(c"основной", c"primary");
+pub const WT_MERGED_TAG: UiText = UiText::new(c"слита", c"merged");
+pub const WT_DIRTY_TAG: UiText = UiText::new(c"изменён", c"dirty");
+pub const WT_DETACHED_TAG: UiText = UiText::new(c"detached", c"detached");
+pub const WT_DLG_TITLE: UiText = UiText::new(c"Создать Git Worktree", c"New Git Worktree");
+pub const WT_DLG_BRANCH_LBL: UiText = UiText::new(c"Ветка / slug", c"Branch / slug");
+pub const WT_DLG_BRANCH_PH: UiText = UiText::new(c"например, feat-105", c"e.g. feat-105");
+pub const WT_DLG_BASE_LBL: UiText = UiText::new(c"Базовая ветка / ref", c"Base ref");
+pub const WT_DLG_AGENT_LBL: UiText = UiText::new(c"Запустить во вкладке", c"Launch in tab");
+pub const WT_DLG_CREATE: UiText = UiText::new(c"Создать", c"Create");
+pub const WT_DLG_CANCEL: UiText = UiText::new(c"Отмена", c"Cancel");
+pub const WT_PALETTE_NEW_TITLE: UiText = UiText::new(c"Создать Git Worktree", c"New Git Worktree");
+pub const WT_PALETTE_NEW_DETAIL: UiText = UiText::new(
+    c"Создать новую ветку в соседнем worktree и открыть вкладку",
+    c"Create a new branch in a sibling worktree and open a tab",
+);
+pub const WT_PALETTE_PRUNE_TITLE: UiText = UiText::new(c"Очистить слитые Worktree", c"Prune Merged Worktrees");
+pub const WT_PALETTE_PRUNE_DETAIL: UiText = UiText::new(
+    c"Удалить только чистые слитые worktree и выполнить git worktree prune",
+    c"Remove only clean merged worktrees and run git worktree prune",
+);
+pub const WT_ERR_NOT_REPO: UiText = UiText::new(
+    c"Текущий каталог не является Git-репозиторием",
+    c"Current directory is not a Git repository",
+);
+pub const WT_ERR_EMPTY_SLUG: UiText = UiText::new(
+    c"Введите имя ветки (slug)",
+    c"Enter a branch slug",
+);
+pub const WT_ERR_BAD_SLUG: UiText = UiText::new(
+    c"Недопустимое имя ветки: используйте латиницу, цифры, '.', '_' и '-' без '/', '..' и пробелов",
+    c"Invalid branch slug: use ASCII letters, digits, '.', '_', '-' without '/', '..' or spaces",
+);
+pub const WT_ERR_BAD_BASE: UiText = UiText::new(
+    c"Недопустимая базовая ссылка (base ref)",
+    c"Invalid base ref",
+);
+pub const WT_ERR_PRIMARY_REMOVE: UiText = UiText::new(
+    c"Нельзя удалить основной worktree",
+    c"Cannot remove the primary worktree",
+);
+pub const WT_ERR_DIRTY_REMOVE: UiText = UiText::new(
+    c"Нельзя удалить worktree с несохранёнными изменениями",
+    c"Cannot remove a worktree with uncommitted changes",
+);
+pub const WT_ERR_NOT_FOUND: UiText = UiText::new(
+    c"Указанный worktree не найден",
+    c"Worktree not found",
+);
+pub const WT_ERR_PATH_EXISTS: UiText = UiText::new(
+    c"Целевой каталог worktree уже существует",
+    c"Target worktree directory already exists",
+);
+pub const WT_MSG_FOCUSED: UiText = UiText::new(c"Переключено на вкладку worktree:", c"Focused worktree tab:");
+pub const WT_MSG_OPENED: UiText = UiText::new(c"Открыта вкладка worktree:", c"Opened worktree tab:");
+pub const WT_MSG_CREATED: UiText = UiText::new(c"Создан worktree:", c"Created worktree:");
+pub const WT_MSG_REMOVED: UiText = UiText::new(c"Удалён worktree:", c"Removed worktree:");
+pub const WT_MSG_PRUNED_NONE: UiText = UiText::new(
+    c"Нет чистых слитых worktree для удаления",
+    c"No clean merged worktrees to prune",
+);
+pub const WT_MSG_PRUNED_DONE: UiText = UiText::new(
+    c"Очищено слитых worktree:",
+    c"Pruned merged worktrees:",
+);
+pub const WT_LOCAL_ONLY: UiText = UiText::new(
+    c"Управление Git worktree доступно только для локального репозитория",
+    c"Git worktree management is available only for local repositories",
+);
 pub const APP_NAME: &CStr = c"AkhTerm";
 pub const PROFILES: &CStr = c"Профили / SSH ▾";
 pub const SERVERS: &CStr = c"Серверы ▾";
@@ -915,6 +989,25 @@ mod tests {
         }
     }
 
+    fn verify_worktree_pairs() {
+        for entry in [
+            WT_SECTION_HDR, WT_OPEN_BTN, WT_REMOVE_TIP, WT_NEW_BTN, WT_PRUNE_BTN, WT_PRIMARY_TAG,
+            WT_MERGED_TAG, WT_DIRTY_TAG, WT_DETACHED_TAG, WT_DLG_TITLE, WT_DLG_BRANCH_LBL,
+            WT_DLG_BRANCH_PH, WT_DLG_BASE_LBL, WT_DLG_AGENT_LBL, WT_DLG_CREATE, WT_DLG_CANCEL,
+            WT_PALETTE_NEW_TITLE, WT_PALETTE_NEW_DETAIL, WT_PALETTE_PRUNE_TITLE,
+            WT_PALETTE_PRUNE_DETAIL, WT_ERR_NOT_REPO, WT_ERR_EMPTY_SLUG, WT_ERR_BAD_SLUG,
+            WT_ERR_BAD_BASE, WT_ERR_PRIMARY_REMOVE, WT_ERR_DIRTY_REMOVE, WT_ERR_NOT_FOUND,
+            WT_ERR_PATH_EXISTS, WT_MSG_FOCUSED, WT_MSG_OPENED, WT_MSG_CREATED, WT_MSG_REMOVED,
+            WT_MSG_PRUNED_NONE, WT_MSG_PRUNED_DONE, WT_LOCAL_ONLY,
+        ] {
+            assert_pair_valid(entry);
+            for loc in [UiLocale::Ru, UiLocale::En] {
+                let s = entry.for_locale(loc).to_str().unwrap();
+                assert!(!s.contains("->") && !s.contains('→') && !s.contains("=>"), "arrow in {s}");
+            }
+        }
+    }
+
     #[test]
     fn every_ui_text_entry_has_valid_non_empty_ru_and_en_strings() {
         verify_core_and_palette_pairs();
@@ -925,6 +1018,7 @@ mod tests {
         verify_cmd_mark_pairs();
         verify_context_handoff_pairs();
         verify_hooks_pairs();
+        verify_worktree_pairs();
     }
 
     #[test]

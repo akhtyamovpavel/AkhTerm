@@ -751,6 +751,7 @@ fn pack_repo_sections(
     let entries = pack_repo_files(vbox, root, status, on_file);
     crate::git_checkpoints::pack_popover_section(vbox, popover, root);
     crate::git_review::pack_branch_review(vbox, &review);
+    crate::worktree_ui::pack_worktree_section(vbox, popover, root);
     entries
 }
 

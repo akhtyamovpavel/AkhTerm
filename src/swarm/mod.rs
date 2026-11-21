@@ -6,3 +6,5 @@ pub mod git_wt;
 pub mod handoff;
 pub mod swarm_view;
 pub mod task_dispatch;
+pub mod worktree_mgr;
+pub mod worktree_ui;
