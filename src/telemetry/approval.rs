@@ -11,10 +11,22 @@ use crate::session::{SessionCategory, TermSession, WorkState};
 use crate::ui_text as text;
 
 pub const RECENT_PROMPT_LINES: usize = 6;
+const TUI_MENU_PROMPT_LINES: usize = 12;
 pub const QUIET_SETTLE_DELAY: Duration = Duration::from_millis(2200);
 pub const LONG_WORK_NOTIFY_MIN: Duration = Duration::from_secs(12);
 pub const NOTIFY_COOLDOWN: Duration = Duration::from_secs(10);
 pub const KEYCODE_U: u16 = 30;
+
+const TUI_APPROVAL_OPTIONS: &[&str] = &[
+    "yes and save",
+    "yes, and save",
+    "yes, allow",
+    "yes, always",
+    "yes and always",
+    "yes, and don't ask",
+    "yes, for this session",
+    "always allow",
+];
 
 const LOWER_PROMPTS: &[&str] = &[
     "[y/n]",
@@ -27,9 +39,21 @@ const LOWER_PROMPTS: &[&str] = &[
     "do you want to allow",
     "would you like to proceed",
     "yes, allow",
+    "yes and save",
+    "yes, and save",
+    "yes, always",
+    "yes and always",
+    "yes, and don't ask",
+    "yes, for this session",
+    "always allow",
+    "allow this command",
+    "approve once",
+    "approve always",
     "run command?",
     "run this command?",
     "waiting for approval",
+    "requires approval",
+    "needs approval",
     "ждёт апрува",
     "разрешить выполнение",
 ];
@@ -93,10 +117,73 @@ fn line_needs_approval(line: &str) -> bool {
     LOWER_PROMPTS.iter().any(|pat| lower.contains(pat))
 }
 
+fn strip_one_choice_marker(s: &str) -> Option<&str> {
+    let trimmed = s.trim_start();
+    for prefix in ["❯", ">", "▸", "▶", "●", "○", "•", "[x]", "[ ]", "1.", "2.", "3.", "4.", "[1]", "[2]", "[3]", "[4]"] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            return Some(rest.trim_start());
+        }
+    }
+    None
+}
+
+fn has_choice_marker(line: &str) -> bool {
+    strip_one_choice_marker(&line.to_lowercase()).is_some()
+}
+
+fn strip_choice_markers(low: &str) -> &str {
+    let once = strip_one_choice_marker(low).unwrap_or(low);
+    strip_one_choice_marker(once).unwrap_or(once)
+}
+
+fn is_tui_option_text(low: &str) -> bool {
+    TUI_APPROVAL_OPTIONS.iter().any(|pat| low.contains(pat))
+}
+
+fn is_yes_choice(low: &str) -> bool {
+    let core = strip_choice_markers(low);
+    core == "yes" || core.starts_with("yes (") || core.starts_with("yes,") || core.starts_with("yes and ")
+}
+
+fn is_no_choice(low: &str) -> bool {
+    let core = strip_choice_markers(low);
+    core == "no" || core.starts_with("no (") || core.starts_with("no,")
+}
+
 fn is_approval_option_line(line: &str) -> bool {
     let low = line.to_lowercase();
-    let numbered = low.starts_with("1.") || low.starts_with("2.") || low.starts_with("❯");
-    numbered && low.contains("yes, allow")
+    is_tui_option_text(&low) || (has_choice_marker(line) && (is_yes_choice(&low) || is_no_choice(&low)))
+}
+
+fn has_tui_yes_no_menu(lines: &[&str]) -> bool {
+    let mut has_yes = false;
+    let mut has_no = false;
+    let mut has_marked = false;
+    for &line in lines {
+        let low = line.to_lowercase();
+        if is_tui_option_text(&low) {
+            return true;
+        }
+        let marked = has_choice_marker(line);
+        if is_yes_choice(&low) {
+            has_yes = true;
+            has_marked |= marked;
+        } else if is_no_choice(&low) {
+            has_no = true;
+            has_marked |= marked;
+        }
+    }
+    has_yes && has_no && has_marked
+}
+
+fn find_tui_menu_snippet<'a>(recent_wide: &[&'a str]) -> Option<&'a str> {
+    recent_wide
+        .iter()
+        .copied()
+        .find(|line| line_needs_approval(line) && !is_approval_option_line(line))
+        .or_else(|| recent_wide.iter().copied().find(|line| line.ends_with('?') && !is_approval_option_line(line)))
+        .or_else(|| recent_wide.iter().copied().find(|line| is_tui_option_text(&line.to_lowercase())))
+        .or_else(|| recent_wide.iter().copied().find(|line| is_yes_choice(&line.to_lowercase())))
 }
 
 fn truncate_snippet(line: &str, max_chars: usize) -> String {
@@ -108,18 +195,20 @@ fn truncate_snippet(line: &str, max_chars: usize) -> String {
 }
 
 pub fn extract_approval_snippet(text: &str) -> Option<String> {
-    let recent: Vec<&str> = text
+    let recent_wide: Vec<&str> = text
         .lines()
         .rev()
         .map(clean_terminal_line)
         .filter(|line| !line.is_empty())
-        .take(RECENT_PROMPT_LINES)
+        .take(TUI_MENU_PROMPT_LINES)
         .collect();
+    let recent = &recent_wide[..recent_wide.len().min(RECENT_PROMPT_LINES)];
     let best = recent
         .iter()
         .copied()
         .find(|line| line_needs_approval(line) && !is_approval_option_line(line))
-        .or_else(|| recent.into_iter().find(|line| line_needs_approval(line)));
+        .or_else(|| has_tui_yes_no_menu(&recent_wide).then(|| find_tui_menu_snippet(&recent_wide)).flatten())
+        .or_else(|| recent.iter().copied().find(|line| line_needs_approval(line)));
     best.map(|line| truncate_snippet(line, 140))
 }
 
@@ -473,6 +562,40 @@ mod tests {
                 "expected NeedsApproval for: {sample}"
             );
         }
+    }
+
+    #[test]
+    fn classifies_agy_yes_and_save_menus_with_tui_footers() {
+        let agy_vertical_with_footer = concat!(
+            "╭──────────────────────────────────────────╮\n",
+            "│ Run git push origin main?                │\n",
+            "│ ❯ Yes                                    │\n",
+            "│   Yes and save                           │\n",
+            "│   No                                     │\n",
+            "╰──────────────────────────────────────────╯\n",
+            "↑/↓ navigate · Enter confirm · Esc cancel\n",
+            "Ctrl+K approve · Ctrl+C abort\n",
+            "~/Productivity · main · gemini-4\n",
+        );
+        assert_eq!(
+            classify_terminal_text_with_snippet(agy_vertical_with_footer),
+            (WorkState::NeedsApproval, Some("Run git push origin main?".to_owned()))
+        );
+
+        let agy_horizontal = "Confirm shell command\n[Yes]  [Yes and save]  [No]\n~/Productivity · main";
+        assert_eq!(classify_terminal_text(agy_horizontal), WorkState::NeedsApproval);
+
+        let agy_numbered = "1. Yes\n2. Yes and save\n3. No\nEnter to select\n~/akhterm-rs · main";
+        assert_eq!(classify_terminal_text(agy_numbered), WorkState::NeedsApproval);
+
+        let agy_binary_marked = "Execute tool?\n❯ Yes\n  No\nEnter confirm\n~/proj · main";
+        assert_eq!(
+            classify_terminal_text_with_snippet(agy_binary_marked),
+            (WorkState::NeedsApproval, Some("Execute tool?".to_owned()))
+        );
+
+        let prose_yes_no = "Yes, the build passed.\nNo errors found.\nuser@host:~/proj$";
+        assert_eq!(classify_terminal_text(prose_yes_no), WorkState::Ready);
     }
 
     #[test]
