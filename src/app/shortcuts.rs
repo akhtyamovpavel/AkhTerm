@@ -276,6 +276,8 @@ fn execute_palette_tool_action(action: palette::PaletteAction) {
         palette::PaletteAction::OpenSearch => open_search_bar(),
         palette::PaletteAction::OpenGitMenu => pane_actions::populate_git_popover(true, true),
         palette::PaletteAction::OpenDiffReview => crate::diff_review::open_for_active(),
+        palette::PaletteAction::SaveCheckpoint => crate::git_checkpoints::trigger_save_for_active(),
+        palette::PaletteAction::UndoLastCheckpoint => crate::git_checkpoints::trigger_undo_last_for_active(),
         palette::PaletteAction::GitFile { repo_root, path, untracked } => {
             pane_actions::open_git_file_action(&repo_root, &path, untracked);
         }

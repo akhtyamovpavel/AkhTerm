@@ -68,6 +68,55 @@ pub const DIFF_PALETTE_DETAIL: UiText = UiText::new(
     c"Локальный и SSH diff с инлайн-комментариями агенту и ханками",
     c"Local and SSH diff review with inline comments for agent and hunk actions",
 );
+pub const CP_SECTION_HEADER: UiText = UiText::new(c"ЧЕКПОЙНТЫ ХОДОВ", c"TURN CHECKPOINTS");
+pub const CP_SAVE_BTN: UiText = UiText::new(c"Сохранить чекпойнт", c"Save Checkpoint");
+pub const CP_SAVE_TIP: UiText = UiText::new(
+    c"Сохранить снимок рабочего дерева и индекса без изменения HEAD",
+    c"Snapshot working tree and staging index without mutating HEAD",
+);
+pub const CP_UNDO_BTN: UiText = UiText::new(c"Откатить", c"Undo");
+pub const CP_UNDO_TIP: UiText = UiText::new(
+    c"Откатить рабочее дерево к этому чекпойнту с резервным снимком",
+    c"Restore working tree to this checkpoint with a pre-undo safety snapshot",
+);
+pub const CP_EMPTY: UiText = UiText::new(
+    c"Нет чекпойнтов для этой панели",
+    c"No checkpoints for this pane yet",
+);
+pub const CP_PALETTE_SAVE_TITLE: UiText = UiText::new(
+    c"Git · Сохранить чекпойнт хода",
+    c"Git · Save Turn Checkpoint",
+);
+pub const CP_PALETTE_SAVE_DETAIL: UiText = UiText::new(
+    c"Сохранить снимок правок активной панели в refs/akhterm/checkpoints",
+    c"Save working tree snapshot for active pane in refs/akhterm/checkpoints",
+);
+pub const CP_PALETTE_UNDO_TITLE: UiText = UiText::new(
+    c"Git · Откатить последний ход агента",
+    c"Git · Undo Last Agent Turn",
+);
+pub const CP_PALETTE_UNDO_DETAIL: UiText = UiText::new(
+    c"Вернуть файлы активной панели к последнему сохранённому чекпойнту",
+    c"Restore active pane files to the most recent saved checkpoint",
+);
+pub const CP_MSG_LOCAL_ONLY: UiText = UiText::new(
+    c"Чекпойнты доступны только для локального Git-репозитория",
+    c"Checkpoints are available for local Git repositories only",
+);
+pub const CP_MSG_CLEAN: UiText = UiText::new(
+    c"Нет изменений для сохранения чекпойнта",
+    c"No changes to save as a checkpoint",
+);
+pub const CP_MSG_DUPLICATE: UiText = UiText::new(
+    c"Последний чекпойнт уже совпадает с текущими правками",
+    c"Latest checkpoint already matches current changes",
+);
+pub const CP_MSG_NONE: UiText = UiText::new(
+    c"Нет сохранённых чекпойнтов для отката",
+    c"No saved checkpoints to restore",
+);
+pub const CP_MSG_SAVED: UiText = UiText::new(c"Сохранён чекпойнт", c"Saved checkpoint");
+pub const CP_MSG_RESTORED: UiText = UiText::new(c"Откат выполнен к чекпойнту", c"Restored checkpoint");
 pub const APP_NAME: &CStr = c"AkhTerm";
 pub const PROFILES: &CStr = c"Профили / SSH ▾";
 pub const SERVERS: &CStr = c"Серверы ▾";
@@ -691,12 +740,28 @@ mod tests {
         }
     }
 
+    fn verify_checkpoint_pairs() {
+        for entry in [
+            CP_SECTION_HEADER, CP_SAVE_BTN, CP_SAVE_TIP, CP_UNDO_BTN, CP_UNDO_TIP, CP_EMPTY,
+            CP_PALETTE_SAVE_TITLE, CP_PALETTE_SAVE_DETAIL, CP_PALETTE_UNDO_TITLE,
+            CP_PALETTE_UNDO_DETAIL, CP_MSG_LOCAL_ONLY, CP_MSG_CLEAN, CP_MSG_DUPLICATE,
+            CP_MSG_NONE, CP_MSG_SAVED, CP_MSG_RESTORED,
+        ] {
+            assert_pair_valid(entry);
+            for loc in [UiLocale::Ru, UiLocale::En] {
+                let s = entry.for_locale(loc).to_str().unwrap();
+                assert!(!s.contains("->") && !s.contains('→') && !s.contains("=>"), "arrow in {s}");
+            }
+        }
+    }
+
     #[test]
     fn every_ui_text_entry_has_valid_non_empty_ru_and_en_strings() {
         verify_core_and_palette_pairs();
         verify_tools_context_and_dialog_pairs();
         verify_ports_pairs();
         verify_sys_monitor_pairs();
+        verify_checkpoint_pairs();
     }
 
     #[test]

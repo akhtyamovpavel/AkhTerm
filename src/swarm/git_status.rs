@@ -749,6 +749,7 @@ fn pack_repo_sections(
     pack_repo_header(vbox, root, head, status, &review);
     crate::diff_review::pack_git_popover_button(vbox, popover);
     let entries = pack_repo_files(vbox, root, status, on_file);
+    crate::git_checkpoints::pack_popover_section(vbox, popover, root);
     crate::git_review::pack_branch_review(vbox, &review);
     entries
 }

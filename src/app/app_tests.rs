@@ -462,7 +462,7 @@ fn check_module_mi_gates(name: &str, score: f64, failures: &mut Vec<String>) {
     ];
     let wave0_and_1: &[(&str, f64)] = &[
         ("about.rs", 60.0), ("app_state.rs", 60.0), ("app_tests.rs", 60.0),
-        ("git_review.rs", 60.0), ("git_wt.rs", 60.0), ("i18n.rs", 60.0),
+        ("git_checkpoints.rs", 60.0), ("git_review.rs", 60.0), ("git_wt.rs", 60.0), ("i18n.rs", 60.0),
         ("osc_parser.rs", 60.0), ("palette.rs", 58.85), ("pane_actions.rs", 60.0),
         ("pane_header.rs", 60.0), ("pane_radar.rs", 60.0), ("pane_registry.rs", 60.0),
         ("pty_tap.rs", 60.0), ("session_ops.rs", 60.0), ("settings_dialog.rs", 60.0),
