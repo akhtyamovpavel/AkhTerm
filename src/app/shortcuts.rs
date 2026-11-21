@@ -286,7 +286,9 @@ fn execute_palette_tool_action(action: palette::PaletteAction) {
         palette::PaletteAction::RemoveCleanWorktree => pane_actions::start_remove_clean_worktree(),
         palette::PaletteAction::OpenTaskDispatch => crate::task_dispatch::open_for_app(),
         palette::PaletteAction::ToggleSwarmDashboard => topbar::toggle_swarm_view(),
-        palette::PaletteAction::OpenSettings => topbar::open_settings_for_app(),
+        palette::PaletteAction::OpenSettings | palette::PaletteAction::InstallAgentHooks => {
+            topbar::open_settings_for_app();
+        }
         palette::PaletteAction::OpenAbout => topbar::open_about_for_app(),
         palette::PaletteAction::SwitchLocale => topbar::toggle_locale_for_app(),
         palette::PaletteAction::CheckUpdates => crate::about::trigger_check_updates(),

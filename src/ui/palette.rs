@@ -115,6 +115,7 @@ pub enum PaletteAction {
     CopyCommandOutput,
     SendFailedToAgent,
     HandOffAgent(usize),
+    InstallAgentHooks,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -491,6 +492,11 @@ fn make_undo_checkpoint_item(locale: UiLocale) -> PaletteItem {
     new_ui_item(PaletteKind::Git, text::CP_PALETTE_UNDO_TITLE, text::CP_PALETTE_UNDO_DETAIL, kw, PaletteAction::UndoLastCheckpoint, locale)
 }
 
+fn make_install_hooks_item(locale: UiLocale) -> PaletteItem {
+    let kw = "hooks agent install claude codex agy хуки агенты установить";
+    new_ui_item(PaletteKind::Agent, text::PALETTE_HOOKS_TITLE, text::PALETTE_HOOKS_DETAIL, kw, PaletteAction::InstallAgentHooks, locale)
+}
+
 fn push_v1_command_items(out: &mut Vec<PaletteItem>, locale: UiLocale) {
     out.push(make_diff_review_item(locale));
     out.push(make_save_checkpoint_item(locale));
@@ -498,6 +504,7 @@ fn push_v1_command_items(out: &mut Vec<PaletteItem>, locale: UiLocale) {
     out.push(make_dispatch_item(locale));
     out.push(make_swarm_item(locale));
     out.push(make_ports_item(locale));
+    out.push(make_install_hooks_item(locale));
     out.push(make_settings_item(locale));
     out.push(make_about_item(locale));
     out.push(make_locale_item(locale));

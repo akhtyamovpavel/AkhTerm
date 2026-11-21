@@ -16,7 +16,7 @@ mod terminal;
 mod ui;
 mod workspace;
 
-pub(crate) use app::{app_state, ctl_wire, session_ops, shortcuts, updater_wire};
+pub(crate) use app::{app_state, ctl_wire, hook_installer, session_ops, shortcuts, updater_wire};
 #[cfg(test)]
 pub(crate) use app::app_tests as tests;
 pub(crate) use swarm::{

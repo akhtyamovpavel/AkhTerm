@@ -456,6 +456,32 @@ pub mod i18n_text {
     pub fn settings_about_btn() -> &'static CStr { SETTINGS_ABOUT_BTN.cstr() }
     pub const SETTINGS_CLOSE_BTN: UiText = UiText::new(c"Закрыть", c"Close");
     pub fn settings_close_btn() -> &'static CStr { SETTINGS_CLOSE_BTN.cstr() }
+    pub const SETTINGS_HOOKS_TITLE: UiText = UiText::new(c"Хуки агентов", c"Agent Hooks");
+    pub fn settings_hooks_title() -> &'static CStr { SETTINGS_HOOKS_TITLE.cstr() }
+    pub const SETTINGS_HOOKS_SUBTITLE: UiText = UiText::new(
+        c"Живые статусы и уведомления для Claude Code, Codex CLI и AGY",
+        c"Live status and notifications for Claude Code, Codex CLI, and AGY",
+    );
+    pub fn settings_hooks_subtitle() -> &'static CStr { SETTINGS_HOOKS_SUBTITLE.cstr() }
+    pub const SETTINGS_HOOKS_INSTALL: UiText = UiText::new(c"Установить", c"Install");
+    pub fn settings_hooks_install() -> &'static CStr { SETTINGS_HOOKS_INSTALL.cstr() }
+    pub const SETTINGS_HOOKS_UPDATE: UiText = UiText::new(c"Обновить", c"Update");
+    pub fn settings_hooks_update() -> &'static CStr { SETTINGS_HOOKS_UPDATE.cstr() }
+    pub const SETTINGS_HOOKS_REMOVE: UiText = UiText::new(c"Удалить", c"Remove");
+    pub fn settings_hooks_remove() -> &'static CStr { SETTINGS_HOOKS_REMOVE.cstr() }
+    pub const SETTINGS_HOOKS_INSTALL_ALL: UiText = UiText::new(c"Установить все", c"Install All");
+    pub fn settings_hooks_install_all() -> &'static CStr { SETTINGS_HOOKS_INSTALL_ALL.cstr() }
+    pub const SETTINGS_HOOKS_INSTALLED: UiText = UiText::new(c"Установлено", c"Installed");
+    pub fn settings_hooks_installed() -> &'static CStr { SETTINGS_HOOKS_INSTALLED.cstr() }
+    pub const SETTINGS_HOOKS_NOT_INSTALLED: UiText = UiText::new(c"Не установлено", c"Not installed");
+    pub fn settings_hooks_not_installed() -> &'static CStr { SETTINGS_HOOKS_NOT_INSTALLED.cstr() }
+    pub const SETTINGS_HOOKS_OUTDATED: UiText = UiText::new(c"Устарело", c"Outdated");
+    pub fn settings_hooks_outdated() -> &'static CStr { SETTINGS_HOOKS_OUTDATED.cstr() }
+    pub const PALETTE_HOOKS_TITLE: UiText = UiText::new(c"Установить хуки агентов", c"Install Agent Hooks");
+    pub const PALETTE_HOOKS_DETAIL: UiText = UiText::new(
+        c"Официальные хуки Claude Code, Codex CLI и AGY в один клик",
+        c"One-click official hooks for Claude Code, Codex CLI, and AGY",
+    );
 
     pub const ABOUT_TITLE: UiText = UiText::new(c"О программе — AkhTerm", c"About AkhTerm");
     pub fn about_title() -> &'static CStr { ABOUT_TITLE.cstr() }
@@ -872,6 +898,23 @@ mod tests {
         }
     }
 
+    fn verify_hooks_pairs() {
+        for entry in [
+            i18n_text::SETTINGS_HOOKS_TITLE, i18n_text::SETTINGS_HOOKS_SUBTITLE,
+            i18n_text::SETTINGS_HOOKS_INSTALL, i18n_text::SETTINGS_HOOKS_UPDATE,
+            i18n_text::SETTINGS_HOOKS_REMOVE, i18n_text::SETTINGS_HOOKS_INSTALL_ALL,
+            i18n_text::SETTINGS_HOOKS_INSTALLED, i18n_text::SETTINGS_HOOKS_NOT_INSTALLED,
+            i18n_text::SETTINGS_HOOKS_OUTDATED, i18n_text::PALETTE_HOOKS_TITLE,
+            i18n_text::PALETTE_HOOKS_DETAIL,
+        ] {
+            assert_pair_valid(entry);
+            for loc in [UiLocale::Ru, UiLocale::En] {
+                let s = entry.for_locale(loc).to_str().unwrap();
+                assert!(!s.contains("->") && !s.contains('→') && !s.contains("=>"), "arrow in {s}");
+            }
+        }
+    }
+
     #[test]
     fn every_ui_text_entry_has_valid_non_empty_ru_and_en_strings() {
         verify_core_and_palette_pairs();
@@ -881,6 +924,7 @@ mod tests {
         verify_checkpoint_pairs();
         verify_cmd_mark_pairs();
         verify_context_handoff_pairs();
+        verify_hooks_pairs();
     }
 
     #[test]

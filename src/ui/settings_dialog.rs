@@ -126,6 +126,7 @@ struct SettingsWidgets {
     notify_hint: *mut GtkWidget,
     about_btn: *mut GtkWidget,
     close_btn: *mut GtkWidget,
+    hooks_section: crate::ui::hooks_section::HooksSection,
 }
 
 pub(crate) struct SettingsState {
@@ -229,7 +230,7 @@ fn set_parent_modal(win: *mut GtkWidget, parent: *mut GtkWidget) {
 fn configure_settings_window(win: *mut GtkWidget, parent: *mut GtkWidget) {
     unsafe {
         gtk_window_set_title(win, ui_text::settings_title().as_ptr());
-        gtk_window_set_default_size(win, 540, 420);
+        gtk_window_set_default_size(win, 560, 560);
         gtk_container_set_border_width(win, 18);
     }
     add_class(win, "settings-dialog");
@@ -244,11 +245,13 @@ fn build_settings_layout(
     let vbox = unsafe { gtk_box_new(GTK_ORIENTATION_VERTICAL, 12) };
     let (header, title_lbl, subtitle_lbl) = build_settings_header();
     let grid = create_form_grid();
+    let hooks_section = crate::ui::hooks_section::build_hooks_section(PathBuf::from(crate::paths::home_dir()));
     let (about_btn, close_btn, footer) = build_settings_footer();
-    let widgets = fill_settings_grid(grid, win, title_lbl, subtitle_lbl, about_btn, close_btn, prefs);
+    let widgets = fill_settings_grid(grid, win, title_lbl, subtitle_lbl, about_btn, close_btn, hooks_section, prefs);
     unsafe {
         gtk_box_pack_start(vbox, header, 0, 0, 2);
         gtk_box_pack_start(vbox, grid, 1, 1, 4);
+        gtk_box_pack_start(vbox, widgets.hooks_section.widget(), 0, 0, 2);
         gtk_box_pack_start(vbox, footer, 0, 0, 4);
     }
     (vbox, widgets)
@@ -261,6 +264,7 @@ fn fill_settings_grid(
     subtitle_lbl: *mut GtkWidget,
     about_btn: *mut GtkWidget,
     close_btn: *mut GtkWidget,
+    hooks_section: crate::ui::hooks_section::HooksSection,
     prefs: &UserPrefs,
 ) -> SettingsWidgets {
     let (theme_lbl, theme_combo) = add_combo_row(grid, 0, ui_text::settings_theme());
@@ -272,7 +276,7 @@ fn fill_settings_grid(
     SettingsWidgets {
         window, title_lbl, subtitle_lbl, theme_lbl, theme_combo, locale_lbl, locale_combo,
         font_lbl, font_entry, scrollback_lbl, scrollback_spin, osc52_lbl, osc52_switch,
-        osc52_hint, notify_lbl, notify_spin, notify_hint, about_btn, close_btn,
+        osc52_hint, notify_lbl, notify_spin, notify_hint, about_btn, close_btn, hooks_section,
     }
 }
 
@@ -569,6 +573,7 @@ fn refresh_hint_and_action_labels(w: &SettingsWidgets) {
         gtk_button_set_label(w.about_btn, ui_text::settings_about_btn().as_ptr());
         gtk_button_set_label(w.close_btn, ui_text::settings_close_btn().as_ptr());
     }
+    w.hooks_section.refresh_labels();
 }
 
 fn apply_live_change(state: &SettingsState) {
