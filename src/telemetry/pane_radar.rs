@@ -794,7 +794,8 @@ mod tests {
         menu.apply(&view);
         let markup = view.markup.as_deref().unwrap_or("");
         assert!(markup.contains("Work · #1") && markup.contains("Work · #2"));
-        assert!(markup.contains("Итого по окну (2): <b>input 4k · cache 30k · output 500</b>  ·  Σ ctx 34k"));
+        let prefix = crate::ui_text::tokens_summary_prefix();
+        assert!(markup.contains(&format!("{prefix} (2): <b>input 4k · cache 30k · output 500</b>  ·  Σ ctx 34k")));
     }
 
     fn verify_headless_jump_focus(win: *mut GtkWidget, session: &TermSession, reg: &PaneRegistry, v1: *mut GtkWidget, v2: *mut GtkWidget) {

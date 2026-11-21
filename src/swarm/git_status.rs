@@ -706,6 +706,7 @@ fn wrap_files_scroll(list: *mut GtkWidget, count: usize) -> *mut GtkWidget {
         gtk_scrolled_window_set_min_content_width(scroll, 420);
         gtk_scrolled_window_set_min_content_height(scroll, 280);
         gtk_scrolled_window_set_max_content_height(scroll, 360);
+        gtk_scrolled_window_set_propagate_natural_height(scroll, 1);
         gtk_container_add(scroll, list);
         scroll
     }

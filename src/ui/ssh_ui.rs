@@ -50,6 +50,7 @@ fn make_popover_scroll(width: i32, min_h: i32, max_h: i32) -> *mut GtkWidget {
         gtk_scrolled_window_set_min_content_width(scroll, width);
         gtk_scrolled_window_set_min_content_height(scroll, min_h);
         gtk_scrolled_window_set_max_content_height(scroll, max_h);
+        gtk_scrolled_window_set_propagate_natural_height(scroll, 1);
         gtk_widget_set_size_request(scroll, width, min_h);
         scroll
     }

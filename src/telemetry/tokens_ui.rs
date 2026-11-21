@@ -54,7 +54,8 @@ pub fn format_working_badge(secs: u64) -> String {
 }
 
 pub fn format_working_sidebar_status(secs: u64) -> String {
-    format!("В работе · {}", format_turn_duration(secs))
+    let working = text::sidebar_status_working().to_string_lossy();
+    format!("{working} · {}", format_turn_duration(secs))
 }
 
 pub struct TabTokenRow {
@@ -123,13 +124,14 @@ fn format_ctx_span(snap: &TokenSnapshot, colors: TokensMarkupColors) -> String {
 fn format_timer_part(row: &TabTokenRow, colors: TokensMarkupColors) -> String {
     if let Some(secs) = row.working_secs {
         return format!(
-            "<span foreground='{}'>⏱ {} (в работе)</span>",
+            "<span foreground='{}'>⏱ {} ({})</span>",
             colors.timer,
             format_turn_duration(secs),
+            text::tokens_working(),
         );
     }
     if let Some(secs) = row.last_turn_secs {
-        return format!("⏱ {} (посл. ход)", format_turn_duration(secs));
+        return format!("⏱ {} ({})", format_turn_duration(secs), text::tokens_last_turn());
     }
     "⏱ —".to_owned()
 }
@@ -138,7 +140,7 @@ fn format_io_breakdown(snap: &TokenSnapshot) -> String {
     let detail = snap.requests.detail(snap);
     let cost_s = snap.cost_usd.map_or(String::new(), |c| format!(" · ${c:.2}"));
     if snap.source == TelemetrySource::VteFallback && snap.total_tokens() == 0 {
-        return format!("статус TUI{cost_s}");
+        return format!("{}{cost_s}", text::tokens_tui_status());
     }
     format!(
         "input {} · cache {} · output {}{cost_s}{detail}",
@@ -212,7 +214,7 @@ impl WindowTotals {
 
     fn button_label(&self) -> Option<String> {
         if let Some(badge) = &self.active_badge {
-            return Some(format!("Токены · {} ▾", badge.trim_start_matches("ctx ")));
+            return Some(format!("{} · {} ▾", text::tokens_word(), badge.trim_start_matches("ctx ")));
         }
         None
     }
@@ -220,8 +222,9 @@ impl WindowTotals {
     fn summary_markup(&self, row_count: usize, colors: TokensMarkupColors) -> String {
         let cost_s = if self.has_cost { format!("  ·  ${:.2}", self.tot_cost) } else { String::new() };
         format!(
-            "<span foreground='{}'>Итого по окну ({row_count}): <b>input {} · cache {} · output {}</b>  ·  Σ ctx {}{cost_s}</span>",
+            "<span foreground='{}'>{} ({row_count}): <b>input {} · cache {} · output {}</b>  ·  Σ ctx {}{cost_s}</span>",
             colors.summary,
+            text::tokens_summary_prefix(),
             format_compact_tokens(self.tot_in),
             format_compact_tokens(self.tot_cache),
             format_compact_tokens(self.tot_out),
@@ -287,6 +290,7 @@ pub fn build_tokens_view(rows: &[TabTokenRow]) -> TokensViewData {
 pub struct TokensMenu {
     button: *mut GtkWidget,
     popover: *mut GtkWidget,
+    header_label: *mut GtkWidget,
     pub(super) body_label: *mut GtkWidget,
     handoff: agent_handoff::HandoffControls,
 }
@@ -294,13 +298,13 @@ pub struct TokensMenu {
 impl TokensMenu {
     pub fn new(topbar: *mut GtkWidget, on_open: ClickHandler) -> Self {
         unsafe {
-            let button = gtk_button_new_with_label(text::TOKENS.as_ptr());
-            gtk_widget_set_tooltip_text(button, text::TOKENS_TIP.as_ptr());
+            let button = gtk_button_new_with_label(text::tokens_btn().as_ptr());
+            gtk_widget_set_tooltip_text(button, text::tokens_tip().as_ptr());
             gtk_box_pack_end(topbar, button, 0, 0, 0);
             let popover = gtk_popover_new(button);
-            let (body_label, handoff) = populate_tokens_popover(popover);
+            let (header_label, body_label, handoff) = populate_tokens_popover(popover);
             connect_click(button, on_open, popover);
-            Self { button, popover, body_label, handoff }
+            Self { button, popover, header_label, body_label, handoff }
         }
     }
 
@@ -308,6 +312,7 @@ impl TokensMenu {
         self.popover
     }
 
+    #[cfg(test)]
     pub fn button_widget(&self) -> *mut GtkWidget {
         self.button
     }
@@ -317,10 +322,28 @@ impl TokensMenu {
         self.handoff.banner
     }
 
+    #[cfg(test)]
+    pub fn header_widget(&self) -> *mut GtkWidget {
+        self.header_label
+    }
+
+    pub fn refresh_locale(&self) {
+        if self.button.is_null() {
+            return;
+        }
+        unsafe {
+            gtk_widget_set_tooltip_text(self.button, text::tokens_tip().as_ptr());
+            if !self.header_label.is_null() {
+                gtk_label_set_text(self.header_label, text::tokens_header().as_ptr());
+            }
+        }
+    }
+
     pub fn apply(&self, view: &TokensViewData) {
         if self.button.is_null() || self.body_label.is_null() {
             return;
         }
+        self.refresh_locale();
         set_class(self.button, "btn-mi-b", view.alert == ContextAlert::Warn);
         set_class(self.button, "btn-mi-c", view.alert == ContextAlert::High);
         self.handoff.apply(self.button, view.health);
@@ -329,11 +352,13 @@ impl TokensMenu {
     }
 }
 
-fn populate_tokens_popover(popover: *mut GtkWidget) -> (*mut GtkWidget, agent_handoff::HandoffControls) {
+fn populate_tokens_popover(
+    popover: *mut GtkWidget,
+) -> (*mut GtkWidget, *mut GtkWidget, agent_handoff::HandoffControls) {
     unsafe {
         let vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
         add_class(vbox, "popover-box");
-        let hdr = gtk_label_new(text::TOKENS_HEADER.as_ptr());
+        let hdr = gtk_label_new(text::tokens_header().as_ptr());
         gtk_label_set_xalign(hdr, 0.0);
         add_class(hdr, "section-header");
         gtk_box_pack_start(vbox, hdr, 0, 0, 0);
@@ -342,7 +367,7 @@ fn populate_tokens_popover(popover: *mut GtkWidget) -> (*mut GtkWidget, agent_ha
         gtk_box_pack_start(vbox, create_tokens_scroll(body_label), 1, 1, 0);
         gtk_container_add(popover, vbox);
         gtk_widget_show_all(vbox);
-        (body_label, handoff)
+        (hdr, body_label, handoff)
     }
 }
 
@@ -359,7 +384,7 @@ fn create_tokens_scroll(body_label: *mut GtkWidget) -> *mut GtkWidget {
 }
 
 unsafe fn create_tokens_body_label() -> *mut GtkWidget {
-    let body_label = gtk_label_new(text::TOKENS_EMPTY.as_ptr());
+    let body_label = gtk_label_new(text::tokens_empty().as_ptr());
     gtk_label_set_xalign(body_label, 0.0);
     gtk_widget_set_valign(body_label, GTK_ALIGN_START);
     gtk_label_set_line_wrap(body_label, 1);
@@ -372,7 +397,7 @@ fn apply_button_label(button: *mut GtkWidget, label: Option<&str>) {
     if let Some(c) = label.and_then(|s| CString::new(s).ok()) {
         unsafe { gtk_button_set_label(button, c.as_ptr()) };
     } else {
-        unsafe { gtk_button_set_label(button, text::TOKENS.as_ptr()) };
+        unsafe { gtk_button_set_label(button, text::tokens_btn().as_ptr()) };
     }
 }
 
@@ -380,6 +405,6 @@ fn apply_body_markup(label: *mut GtkWidget, markup: Option<&str>) {
     if let Some(c) = markup.and_then(|s| CString::new(s).ok()) {
         unsafe { gtk_label_set_markup(label, c.as_ptr()) };
     } else {
-        unsafe { gtk_label_set_text(label, text::TOKENS_EMPTY.as_ptr()) };
+        unsafe { gtk_label_set_text(label, text::tokens_empty().as_ptr()) };
     }
 }

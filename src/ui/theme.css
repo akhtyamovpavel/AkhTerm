@@ -1459,3 +1459,47 @@ button.ctx-handoff-btn:hover {
     color: @ctx_crit_fg;
     font-weight: 600;
 }
+
+button.ports-btn-disconnected {
+    border-color: @approval_border;
+    color: @approval_fg;
+}
+
+.ports-row-disconnected {
+    background-color: @approval_bg;
+    border-color: @approval_border;
+}
+
+.ports-badge-disconnected {
+    background-color: @approval_bg;
+    border: 1px solid @approval_border;
+    border-radius: 4px;
+    color: @approval_fg;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 6px;
+}
+
+button.ports-reconnect-btn {
+    border-color: @approval_border;
+    color: @approval_fg;
+    font-size: 11px;
+    min-height: 24px;
+    padding: 2px 8px;
+}
+
+button.ports-pin-btn-active {
+    border-color: @badge_ssh_border;
+    color: @badge_ssh_fg;
+    font-size: 11px;
+    min-height: 24px;
+    padding: 2px 8px;
+}
+
+button.ports-restore-btn {
+    border-color: @unread_border;
+    color: @unread_fg;
+    font-size: 11px;
+    min-height: 24px;
+    padding: 2px 8px;
+}

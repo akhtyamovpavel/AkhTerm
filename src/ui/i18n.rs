@@ -113,12 +113,16 @@ pub fn detect_system_locale_from_env() -> UiLocale {
     detect_locale_from_vars(lc_all.as_deref(), lc_messages.as_deref(), lang.as_deref())
 }
 
-pub fn set_locale(locale: UiLocale) {
-    CONFIGURED_LOCALE.store(encode_locale(locale), Ordering::Release);
-    let resolved = match locale {
+pub fn resolve_locale(locale: UiLocale) -> UiLocale {
+    match locale {
         UiLocale::Auto => detect_system_locale_from_env(),
         other => other,
-    };
+    }
+}
+
+pub fn set_locale(locale: UiLocale) {
+    CONFIGURED_LOCALE.store(encode_locale(locale), Ordering::Release);
+    let resolved = resolve_locale(locale);
     RESOLVED_LOCALE.store(encode_locale(resolved), Ordering::Release);
 }
 

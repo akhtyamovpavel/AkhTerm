@@ -111,7 +111,7 @@ pub fn is_swarm_shortcut(keyval: u32, state: u32, hardware_keycode: u16) -> bool
 }
 
 pub fn format_swarm_badge(total: usize, approvals: usize, locale: UiLocale) -> String {
-    let prefix = if locale == UiLocale::En { "Swarm" } else { "Рой" };
+    let prefix = if locale == UiLocale::Ru { "Рой" } else { "Swarm" };
     if total == 0 {
         return format!("{prefix} ▾");
     }

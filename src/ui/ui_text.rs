@@ -368,6 +368,68 @@ pub mod i18n_text {
     pub fn handoff_tip() -> &'static CStr { HANDOFF_TIP.cstr() }
     pub const TOKENS_TIP: UiText = UiText::new(super::TOKENS_TIP, c"Token usage, context window, and agent turn timer per tab");
     pub fn tokens_tip() -> &'static CStr { TOKENS_TIP.cstr() }
+    pub const TOKENS_BTN: UiText = UiText::new(super::TOKENS, c"Tokens ▾");
+    pub fn tokens_btn() -> &'static CStr { TOKENS_BTN.cstr() }
+    pub const TOKENS_WORD: UiText = UiText::new(c"Токены", c"Tokens");
+    pub fn tokens_word() -> &'static str { TOKENS_WORD.as_str() }
+    pub const TOKENS_HEADER_TEXT: UiText = UiText::new(super::TOKENS_HEADER, c"TOKENS · CONTEXT & TURN DURATION");
+    pub fn tokens_header() -> &'static CStr { TOKENS_HEADER_TEXT.cstr() }
+    pub const TOKENS_EMPTY_TEXT: UiText = UiText::new(
+        super::TOKENS_EMPTY,
+        c"No token telemetry for open tabs.\nStart an agent (AGY, Claude Code, Codex CLI) or a session with context usage.",
+    );
+    pub fn tokens_empty() -> &'static CStr { TOKENS_EMPTY_TEXT.cstr() }
+    pub const TOKENS_SUMMARY_PREFIX: UiText = UiText::new(c"Итого по окну", c"Window total");
+    pub fn tokens_summary_prefix() -> &'static str { TOKENS_SUMMARY_PREFIX.as_str() }
+    pub const TOKENS_WORKING: UiText = UiText::new(c"в работе", c"working");
+    pub fn tokens_working() -> &'static str { TOKENS_WORKING.as_str() }
+    pub const TOKENS_LAST_TURN: UiText = UiText::new(c"посл. ход", c"last turn");
+    pub fn tokens_last_turn() -> &'static str { TOKENS_LAST_TURN.as_str() }
+    pub const TOKENS_TUI_STATUS: UiText = UiText::new(c"статус TUI", c"TUI status");
+    pub fn tokens_tui_status() -> &'static str { TOKENS_TUI_STATUS.as_str() }
+
+    pub const TOGGLE_SIDEBAR_TIP_TEXT: UiText = UiText::new(super::TOGGLE_SIDEBAR_TIP, c"Show or hide sidebar");
+    pub fn toggle_sidebar_tip() -> &'static CStr { TOGGLE_SIDEBAR_TIP_TEXT.cstr() }
+    pub const SPLIT_VERT_TIP_TEXT: UiText = UiText::new(super::SPLIT_VERT_TIP, c"Split tab vertically (Ctrl+Shift+D)");
+    pub fn split_vert_tip() -> &'static CStr { SPLIT_VERT_TIP_TEXT.cstr() }
+    pub const SPLIT_HORIZ_TIP_TEXT: UiText = UiText::new(super::SPLIT_HORIZ_TIP, c"Split tab horizontally (Ctrl+Shift+E)");
+    pub fn split_horiz_tip() -> &'static CStr { SPLIT_HORIZ_TIP_TEXT.cstr() }
+    pub const INTERRUPT_TIP_TEXT: UiText = UiText::new(super::INTERRUPT_TIP, c"Interrupt active process (SIGINT)");
+    pub fn interrupt_tip() -> &'static CStr { INTERRUPT_TIP_TEXT.cstr() }
+    pub const PASTE_IMAGE_TEXT: UiText = UiText::new(super::PASTE_IMAGE, c"Screenshot");
+    pub fn paste_image() -> &'static CStr { PASTE_IMAGE_TEXT.cstr() }
+    pub const PASTE_IMAGE_TIP_TEXT: UiText = UiText::new(super::PASTE_IMAGE_TIP, c"Save clipboard image into active session and paste path");
+    pub fn paste_image_tip() -> &'static CStr { PASTE_IMAGE_TIP_TEXT.cstr() }
+    pub const ZOOM_IN_TIP_TEXT: UiText = UiText::new(super::ZOOM_IN_TIP, c"Increase terminal font size (Ctrl++)");
+    pub fn zoom_in_tip() -> &'static CStr { ZOOM_IN_TIP_TEXT.cstr() }
+    pub const ZOOM_RESET_TIP_TEXT: UiText = UiText::new(super::ZOOM_RESET_TIP, c"Reset terminal zoom (Ctrl+0)");
+    pub fn zoom_reset_tip() -> &'static CStr { ZOOM_RESET_TIP_TEXT.cstr() }
+    pub const ZOOM_OUT_TIP_TEXT: UiText = UiText::new(super::ZOOM_OUT_TIP, c"Decrease terminal font size (Ctrl+-)");
+    pub fn zoom_out_tip() -> &'static CStr { ZOOM_OUT_TIP_TEXT.cstr() }
+    pub const NEW_TAB_TIP_TEXT: UiText = UiText::new(super::NEW_TAB_TIP, c"New tab (Ctrl+Shift+T)");
+    pub fn new_tab_tip() -> &'static CStr { NEW_TAB_TIP_TEXT.cstr() }
+    pub const CLOSE_TAB_TIP_TEXT: UiText = UiText::new(super::CLOSE_TAB_TIP, c"Close tab");
+    pub fn close_tab_tip() -> &'static CStr { CLOSE_TAB_TIP_TEXT.cstr() }
+    pub const STATUS_APPROVAL_TEXT: UiText = UiText::new(super::STATUS_APPROVAL, c"Needs approval");
+    pub fn status_approval() -> &'static CStr { STATUS_APPROVAL_TEXT.cstr() }
+    pub const APPROVAL_TAB_TIP_TEXT: UiText = UiText::new(super::APPROVAL_TAB_TIP, c"Needs approval (Ctrl+Shift+U to jump)");
+    pub fn approval_tab_tip() -> &'static CStr { APPROVAL_TAB_TIP_TEXT.cstr() }
+    pub const MI_REFACTOR_TEXT: UiText = UiText::new(super::MI_REFACTOR, c"Ask agent to refactor");
+    pub fn mi_refactor() -> &'static CStr { MI_REFACTOR_TEXT.cstr() }
+    pub const MI_REFACTOR_TIP_TEXT: UiText = UiText::new(super::MI_REFACTOR_TIP, c"Send a prompt to the active terminal to refactor low-MI files");
+    pub fn mi_refactor_tip() -> &'static CStr { MI_REFACTOR_TIP_TEXT.cstr() }
+    pub const AGENTS_WORKTREE_HEADER_TEXT: UiText = UiText::new(super::AGENTS_WORKTREE_HEADER, c"NEW GIT WORKTREE · SEPARATE TAB");
+    pub fn agents_worktree_header() -> &'static CStr { AGENTS_WORKTREE_HEADER_TEXT.cstr() }
+    pub const AGENT_WORKTREE_TIP_TEXT: UiText = UiText::new(super::AGENT_WORKTREE_TIP, c"Create an isolated Git worktree and launch agent in a new tab");
+    pub fn agent_worktree_tip() -> &'static CStr { AGENT_WORKTREE_TIP_TEXT.cstr() }
+    pub const AGENTS_DISPATCH_BTN: UiText = UiText::new(c"Диспетчер задач (Ctrl+Shift+N)…", c"Task Dispatch (Ctrl+Shift+N)…");
+    pub fn agents_dispatch_btn() -> &'static CStr { AGENTS_DISPATCH_BTN.cstr() }
+    pub const SWARM_BTN: UiText = UiText::new(c"Рой ▾", c"Swarm ▾");
+    pub fn swarm_btn() -> &'static CStr { SWARM_BTN.cstr() }
+    pub const SWARM_TIP: UiText = UiText::new(c"Панель роя (Ctrl+Shift+S)", c"Swarm dashboard (Ctrl+Shift+S)");
+    pub fn swarm_tip() -> &'static CStr { SWARM_TIP.cstr() }
+    pub const BOOT_FOOTER: UiText = UiText::new(c"Запуск ядра VTE-2.91...", c"Starting VTE-2.91 core...");
+    pub fn boot_footer() -> &'static CStr { BOOT_FOOTER.cstr() }
 
     #[cfg(test)]
     pub mod catalog {
@@ -643,6 +705,18 @@ pub mod i18n_text {
     pub fn sidebar_tmux_prefix() -> &'static str { SIDEBAR_TMUX_PREFIX.as_str() }
     pub const SIDEBAR_FOLDER_NEW_TAB_TIP: UiText = UiText::new(c"Новая локальная вкладка в этой папке", c"New local tab in this folder");
     pub fn sidebar_folder_new_tab_tip() -> &'static CStr { SIDEBAR_FOLDER_NEW_TAB_TIP.cstr() }
+    pub const SIDEBAR_TMUX_INITIAL: UiText = UiText::new(c"Сессии tmux", c"tmux sessions");
+    pub fn sidebar_tmux_initial() -> &'static CStr { SIDEBAR_TMUX_INITIAL.cstr() }
+    pub const SIDEBAR_STATUS_OFFLINE: UiText = UiText::new(c"Нет связи", c"Disconnected");
+    pub fn sidebar_status_offline() -> &'static CStr { SIDEBAR_STATUS_OFFLINE.cstr() }
+    pub const SIDEBAR_STATUS_ENDED: UiText = UiText::new(c"Завершена", c"Ended");
+    pub fn sidebar_status_ended() -> &'static CStr { SIDEBAR_STATUS_ENDED.cstr() }
+    pub const SIDEBAR_STATUS_READY: UiText = UiText::new(c"Готово", c"Ready");
+    pub fn sidebar_status_ready() -> &'static CStr { SIDEBAR_STATUS_READY.cstr() }
+    pub const SIDEBAR_STATUS_ONLINE: UiText = UiText::new(c"Онлайн", c"Online");
+    pub fn sidebar_status_online() -> &'static CStr { SIDEBAR_STATUS_ONLINE.cstr() }
+    pub const SIDEBAR_STATUS_WORKING: UiText = UiText::new(c"В работе", c"Working");
+    pub fn sidebar_status_working() -> &'static CStr { SIDEBAR_STATUS_WORKING.cstr() }
 
     pub const PORTS_BTN: UiText = UiText::new(c"Порты ▾", c"Ports ▾");
     pub fn ports_btn() -> &'static CStr { PORTS_BTN.cstr() }
@@ -665,6 +739,20 @@ pub mod i18n_text {
     pub const PORTS_TUNNEL_READY: UiText = UiText::new(c"SSH-туннель:", c"SSH tunnel:");
     pub const PORTS_TUNNEL_STOPPED: UiText = UiText::new(c"SSH-туннель остановлен:", c"SSH tunnel stopped:");
     pub const PORTS_TUNNEL_FAILED: UiText = UiText::new(c"Не удалось открыть SSH-туннель:", c"Failed to open SSH tunnel:");
+    pub const PORTS_TUNNEL_DISCONNECTED: UiText = UiText::new(c"Разорван", c"Disconnected");
+    pub const PORTS_RECONNECT: UiText = UiText::new(c"Переподключить", c"Reconnect");
+    pub const PORTS_PIN: UiText = UiText::new(c"Закрепить", c"Pin");
+    pub const PORTS_UNPIN: UiText = UiText::new(c"Открепить", c"Unpin");
+    pub const PORTS_PIN_TIP: UiText = UiText::new(c"Закрепить туннель для быстрого восстановления", c"Pin tunnel for quick restore");
+    pub const PORTS_UNPIN_TIP: UiText = UiText::new(c"Убрать туннель из закреплённых", c"Remove tunnel from pinned list");
+    pub const PORTS_RESTORE_PINNED: UiText = UiText::new(c"Восстановить закреплённые", c"Restore Pinned");
+    pub const PORTS_RESTORE_PINNED_TIP: UiText = UiText::new(c"Восстановить все закреплённые туннели этого хоста", c"Restore all pinned tunnels for this host");
+    pub const PORTS_SECTION_PINNED: UiText = UiText::new(c"ЗАКРЕПЛЁННЫЕ ТУННЕЛИ", c"PINNED TUNNELS");
+    pub const PORTS_TUNNEL_RECONNECTED: UiText = UiText::new(c"SSH-туннель переподключён:", c"SSH tunnel reconnected:");
+    pub const PORTS_TUNNEL_PINNED: UiText = UiText::new(c"Туннель закреплён:", c"Tunnel pinned:");
+    pub const PORTS_TUNNEL_UNPINNED: UiText = UiText::new(c"Туннель откреплён:", c"Tunnel unpinned:");
+    pub const PORTS_TUNNELS_RESTORED: UiText = UiText::new(c"Восстановлено туннелей:", c"Restored tunnels:");
+    pub const PORTS_TUNNELS_NONE_TO_RESTORE: UiText = UiText::new(c"Все закреплённые туннели уже активны", c"All pinned tunnels are already active");
 
     pub const SYS_MON_TIP: UiText = UiText::new(c"Системный монитор: CPU, RAM и питание", c"System monitor: CPU, RAM and power");
     pub fn sys_mon_tip() -> &'static CStr { SYS_MON_TIP.cstr() }
