@@ -69,6 +69,15 @@
 @define-color update_shadow rgba(0, 0, 0, 0.48);
 @define-color sys_mon_bg #141418;
 @define-color sys_mon_fg #d4d4d8;
+@define-color ctx_warn_fg #fde68a;
+@define-color ctx_warn_bg rgba(245, 158, 11, 0.16);
+@define-color ctx_warn_border rgba(245, 158, 11, 0.55);
+@define-color ctx_crit_fg #fecdd3;
+@define-color ctx_crit_bg rgba(244, 63, 94, 0.18);
+@define-color ctx_crit_border rgba(244, 63, 94, 0.58);
+@define-color ctx_cache_fg #bae6fd;
+@define-color ctx_cache_bg rgba(56, 189, 248, 0.16);
+@define-color ctx_cache_border rgba(56, 189, 248, 0.55);
 
 .tab-icon,
 .sidebar-icon {
@@ -1370,4 +1379,83 @@ button.ports-stop-btn {
 
 button.ports-stop-btn:hover {
     background-color: @danger_bg;
+}
+
+button.ctx-cache-drop {
+    background-color: @ctx_cache_bg;
+    border: 1px dashed @ctx_cache_border;
+    color: @ctx_cache_fg;
+}
+
+button.ctx-warn {
+    background-color: @ctx_warn_bg;
+    border-color: @ctx_warn_border;
+    color: @ctx_warn_fg;
+}
+
+button.ctx-crit {
+    background-color: @ctx_crit_bg;
+    border-color: @ctx_crit_border;
+    color: @ctx_crit_fg;
+    font-weight: 600;
+}
+
+.ctx-health-banner {
+    border-radius: 6px;
+    border: 1px solid @border;
+    padding: 6px 10px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.ctx-health-banner.ctx-cache-drop {
+    background-color: @ctx_cache_bg;
+    border: 1px dashed @ctx_cache_border;
+    color: @ctx_cache_fg;
+}
+
+.ctx-health-banner.ctx-warn {
+    background-color: @ctx_warn_bg;
+    border-color: @ctx_warn_border;
+    color: @ctx_warn_fg;
+}
+
+.ctx-health-banner.ctx-crit {
+    background-color: @ctx_crit_bg;
+    border-color: @ctx_crit_border;
+    color: @ctx_crit_fg;
+}
+
+.ctx-handoff-row {
+    margin-top: 2px;
+}
+
+button.ctx-handoff-btn {
+    background-image: none;
+    background-color: @input_bg;
+    border: 1px solid @border;
+    border-radius: 6px;
+    color: @text_secondary;
+    font-size: 12px;
+    min-height: 26px;
+    padding: 3px 10px;
+}
+
+button.ctx-handoff-btn:hover {
+    background-color: @hover;
+    border-color: @border_strong;
+    color: @text_strong;
+}
+
+.sidebar-metric.ctx-cache-drop {
+    color: @ctx_cache_fg;
+}
+
+.sidebar-metric.ctx-warn {
+    color: @ctx_warn_fg;
+}
+
+.sidebar-metric.ctx-crit {
+    color: @ctx_crit_fg;
+    font-weight: 600;
 }

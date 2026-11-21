@@ -42,6 +42,13 @@ impl RequestHistory {
         self.record(read, input, None);
     }
 
+    pub fn recent_cache_pcts(&self) -> Vec<u8> {
+        self.samples
+            .iter()
+            .filter_map(|s| s.map(|(read, input)| percentage(read, input) as u8))
+            .collect()
+    }
+
     pub fn badge(&self, ctx: Option<String>) -> Option<String> {
         let Some(Some((read, input))) = self.samples.back() else {
             return ctx;

@@ -937,14 +937,14 @@ impl SidebarRow {
         let eff_cat = session.effective_category();
         let (status, style, live_status, tip_status) = compute_row_status(session);
         let detail = tab_detail(session, git_dirty);
-        let (metric, metric_tip, alert) = compute_row_metrics(session, eff_cat, mi);
+        let (metric, metric_tip, alert, health) = compute_row_metrics(session, eff_cat, mi);
         let tip = format_row_tooltip(&session.title, &tip_status, &detail, &metric_tip, index);
         RowUpdate {
             widget: self.widget, icon: self.icon, title_lbl: self.title,
             detail_lbl: self.detail, status_lbl: self.status, metric_lbl: self.metric,
             new_icon: self.take_icon_change(eff_cat), agent: session.effective_agent(),
             active, status, live_status, style, title: session.title.clone(),
-            detail, metric, alert, tip,
+            detail, metric, alert, health, tip,
         }
     }
 
@@ -1024,14 +1024,16 @@ fn compute_row_metrics(
     session: &TermSession,
     eff_cat: SessionCategory,
     mi: Option<(f64, &str)>,
-) -> (String, String, ContextAlert) {
+) -> (String, String, ContextAlert, crate::agent_handoff::ContextHealth) {
     let snap = session.telemetry.snapshot();
+    let health = crate::agent_handoff::ContextHealth::from_snapshot(snap);
     let ctx_badge = snap.compact_context_badge();
     let mi_str = format_mi_badge(eff_cat, mi);
     let agents = crate::pane_radar::format_agents_badge(session.pane_registry.active_agent_count());
     let metric = combine_metric_parts(ctx_badge.as_deref(), &combine_metric_parts(agents.as_deref(), &mi_str));
     let mi_tip = format_metric_tooltip(&mi_str, local_project_root(session).as_deref());
-    (metric, combine_metric_parts(ctx_badge.as_deref(), &mi_tip), snap.alert_level())
+    let tip = combine_metric_parts(health.tooltip_note(crate::i18n::current_locale()).as_deref(), &combine_metric_parts(ctx_badge.as_deref(), &mi_tip));
+    (metric, tip, snap.alert_level(), health)
 }
 
 fn format_row_tooltip(title: &str, status: &str, detail: &str, metric: &str, index: usize) -> String {
@@ -1086,6 +1088,7 @@ pub struct RowUpdate {
     detail: String,
     metric: String,
     alert: ContextAlert,
+    health: crate::agent_handoff::ContextHealth,
     tip: String,
 }
 
@@ -1101,6 +1104,7 @@ impl RowUpdate {
     fn apply_metrics(&self) {
         set_class(self.metric_lbl, "sidebar-metric-warn", self.alert == ContextAlert::Warn);
         set_class(self.metric_lbl, "sidebar-metric-high", self.alert == ContextAlert::High);
+        self.health.apply_css_classes(self.metric_lbl);
         set_label_text(self.metric_lbl, &self.metric);
     }
 

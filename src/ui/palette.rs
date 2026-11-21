@@ -114,6 +114,7 @@ pub enum PaletteAction {
     NextCommand,
     CopyCommandOutput,
     SendFailedToAgent,
+    HandOffAgent(usize),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -502,6 +503,7 @@ fn push_v1_command_items(out: &mut Vec<PaletteItem>, locale: UiLocale) {
     out.push(make_locale_item(locale));
     out.push(make_check_updates_item(locale));
     crate::cmd_marks::push_palette_items(out, locale);
+    out.extend(crate::agent_handoff::build_palette_handoff_items(locale));
 }
 
 pub fn collect_items_for_locale(src: &PaletteSource<'_>, locale: UiLocale) -> Vec<PaletteItem> {
