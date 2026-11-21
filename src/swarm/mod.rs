@@ -1,3 +1,4 @@
+pub mod git_checkpoints;
 pub mod git_review;
 pub mod git_status;
 pub mod git_wt;

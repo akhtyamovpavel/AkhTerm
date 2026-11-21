@@ -142,6 +142,16 @@ fn default_notify_summary(state: HookState) -> String {
     }
 }
 
+fn maybe_capture_hook_checkpoint(s: &TermSession, pid: PaneId, state: HookState, message: Option<&str>) {
+    let Some(pane) = s.pane_registry.get(pid) else { return };
+    let is_local = s.remote().is_none() && pane.proc_info.ssh_host.is_empty() && !s.is_dynamic_ssh();
+    let cwd = if pane.cwd.is_empty() { s.cwd.as_str() } else { pane.cwd.as_str() };
+    if crate::git_checkpoints::should_trigger_hook_checkpoint(state, message, is_local, cwd) {
+        let label = message.filter(|m| !m.trim().is_empty()).unwrap_or("pre-tool").to_owned();
+        crate::git_checkpoints::schedule_hook_checkpoint(pid.raw(), cwd.to_owned(), label);
+    }
+}
+
 fn apply_notify_to_app(
     app: &mut AppState,
     raw_id: u64,
@@ -156,6 +166,7 @@ fn apply_notify_to_app(
         let Some(vte) = s.pane_registry.get(pid).map(|p| p.vte) else { continue };
         let is_focused = win_active && s.id == active_id && s.active_vte() == vte;
         if pane_radar::apply_pane_hook_notification(s, pid, state, title.clone(), message.clone(), is_focused, now) {
+            maybe_capture_hook_checkpoint(s, pid, state, message.as_deref());
             return Some((s.title.clone(), win, win_active));
         }
     }

@@ -395,7 +395,7 @@ fn is_git_popover_open() -> Option<*mut GtkWidget> {
     Some(pop)
 }
 
-fn refresh_open_git_popover() {
+pub(crate) fn refresh_open_git_popover() {
     if is_git_popover_open().is_some() {
         populate_git_popover(false, false);
     }

@@ -99,6 +99,8 @@ pub enum PaletteAction {
     OpenSearch,
     OpenGitMenu,
     OpenDiffReview,
+    SaveCheckpoint,
+    UndoLastCheckpoint,
     GitFile { repo_root: String, path: String, untracked: bool },
     RemoveCleanWorktree,
     OpenTaskDispatch,
@@ -474,8 +476,20 @@ fn make_diff_review_item(locale: UiLocale) -> PaletteItem {
     new_ui_item(PaletteKind::Git, text::DIFF_PALETTE_TITLE, text::DIFF_PALETTE_DETAIL, kw, PaletteAction::OpenDiffReview, locale)
 }
 
+fn make_save_checkpoint_item(locale: UiLocale) -> PaletteItem {
+    let kw = "git checkpoint snapshot save turn agent чекпойнт снимок сохранить ход";
+    new_ui_item(PaletteKind::Git, text::CP_PALETTE_SAVE_TITLE, text::CP_PALETTE_SAVE_DETAIL, kw, PaletteAction::SaveCheckpoint, locale)
+}
+
+fn make_undo_checkpoint_item(locale: UiLocale) -> PaletteItem {
+    let kw = "git checkpoint undo restore revert last agent turn откат чекпойнт вернуть ход";
+    new_ui_item(PaletteKind::Git, text::CP_PALETTE_UNDO_TITLE, text::CP_PALETTE_UNDO_DETAIL, kw, PaletteAction::UndoLastCheckpoint, locale)
+}
+
 fn push_v1_command_items(out: &mut Vec<PaletteItem>, locale: UiLocale) {
     out.push(make_diff_review_item(locale));
+    out.push(make_save_checkpoint_item(locale));
+    out.push(make_undo_checkpoint_item(locale));
     out.push(make_dispatch_item(locale));
     out.push(make_swarm_item(locale));
     out.push(make_ports_item(locale));
