@@ -539,28 +539,35 @@ struct RelayState {
 }
 
 impl RelayState {
-    fn handle_osc_events(&mut self, events: &[OscEvent]) {
+    fn handle_osc_events(&mut self, events: &[(OscEvent, u64)]) {
         let now = Instant::now();
-        for ev in events {
+        for (ev, lf) in events {
             match ev {
                 OscEvent::Osc52Write(text) => schedule_osc52_write(text.clone(), &self.sink),
                 OscEvent::Osc52BlockedQuery => {}
-                OscEvent::CommandStart => self.timer.on_start(now),
+                OscEvent::PromptStart | OscEvent::CommandStart => {
+                    crate::cmd_marks::enqueue_osc133_event(self.vte_addr, ev, *lf);
+                }
+                OscEvent::CommandExecuted => {
+                    self.timer.on_start(now);
+                    crate::cmd_marks::enqueue_osc133_event(self.vte_addr, ev, *lf);
+                }
                 OscEvent::CommandFinish { exit_code } => {
                     let (code, secs) = self.timer.on_finish(*exit_code, now);
+                    crate::cmd_marks::enqueue_osc133_event(self.vte_addr, ev, *lf);
                     schedule_osc133_done(self.vte_addr, code, secs, &self.sink);
                 }
             }
         }
     }
 
-    fn drain_child_output(&mut self, scratch: &mut [u8], events: &mut Vec<OscEvent>) {
+    fn drain_child_output(&mut self, scratch: &mut [u8], events: &mut Vec<(OscEvent, u64)>) {
         loop {
             match read_nonblock(self.child_fd, scratch) {
                 Some(0) => break,
                 Some(n) => {
                     events.clear();
-                    self.parser.feed(&scratch[..n], &mut self.to_vte.data, events);
+                    self.parser.feed_with_lf(&scratch[..n], &mut self.to_vte.data, events);
                     self.handle_osc_events(events);
                 }
                 None => {
@@ -599,7 +606,7 @@ impl RelayState {
         ]
     }
 
-    fn step_io(&mut self, fds: &[PollFd; 2], scratch: &mut [u8], events: &mut Vec<OscEvent>) {
+    fn step_io(&mut self, fds: &[PollFd; 2], scratch: &mut [u8], events: &mut Vec<(OscEvent, u64)>) {
         if (fds[0].revents & (POLLIN | POLLHUP | POLLERR)) != 0 {
             self.drain_child_output(scratch, events);
         }

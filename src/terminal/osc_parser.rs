@@ -10,7 +10,9 @@ const MAX_OSC133_BUF_LEN: usize = 64;
 pub enum OscEvent {
     Osc52Write(String),
     Osc52BlockedQuery,
+    PromptStart,
     CommandStart,
+    CommandExecuted,
     CommandFinish { exit_code: Option<i32> },
 }
 
@@ -194,6 +196,7 @@ pub struct OscStreamParser {
     b64: Base64Stream,
     saw_query: bool,
     saw_body_non_ws: bool,
+    lf_count: u64,
 }
 
 impl Default for OscStreamParser {
@@ -212,9 +215,11 @@ impl OscStreamParser {
             b64: Base64Stream::new(),
             saw_query: false,
             saw_body_non_ws: false,
+            lf_count: 0,
         }
     }
 
+    #[cfg(test)]
     pub fn feed(&mut self, chunk: &[u8], out: &mut Vec<u8>, events: &mut Vec<OscEvent>) {
         let mut idx = 0usize;
         while idx < chunk.len() {
@@ -227,17 +232,39 @@ impl OscStreamParser {
         }
     }
 
+    pub fn feed_with_lf(
+        &mut self,
+        chunk: &[u8],
+        out: &mut Vec<u8>,
+        out_events: &mut Vec<(OscEvent, u64)>,
+    ) {
+        let mut scratch = Vec::new();
+        let mut idx = 0usize;
+        while idx < chunk.len() {
+            if self.state == OscState::Ground {
+                idx += self.consume_ground_slice(&chunk[idx..], out);
+            } else {
+                self.step_byte(chunk[idx], out, &mut scratch);
+                idx += 1;
+                for ev in scratch.drain(..) {
+                    out_events.push((ev, self.lf_count));
+                }
+            }
+        }
+    }
+
     fn consume_ground_slice(&mut self, slice: &[u8], out: &mut Vec<u8>) -> usize {
-        match slice.iter().position(|&b| b == 0x1b) {
-            Some(pos) => {
-                out.extend_from_slice(&slice[..pos]);
-                self.state = OscState::Esc;
-                pos + 1
-            }
-            None => {
-                out.extend_from_slice(slice);
-                slice.len()
-            }
+        let (plain, next_esc) = match slice.iter().position(|&b| b == 0x1b) {
+            Some(pos) => (&slice[..pos], true),
+            None => (slice, false),
+        };
+        self.lf_count += plain.iter().filter(|&&b| b == b'\n').count() as u64;
+        out.extend_from_slice(plain);
+        if next_esc {
+            self.state = OscState::Esc;
+            plain.len() + 1
+        } else {
+            plain.len()
         }
     }
 
@@ -464,7 +491,9 @@ fn parse_osc133_body(raw: &[u8]) -> Option<OscEvent> {
     let text = std::str::from_utf8(raw).ok()?.trim();
     let mut parts = text.split(';');
     match parts.next()? {
-        "C" => Some(OscEvent::CommandStart),
+        "A" => Some(OscEvent::PromptStart),
+        "B" => Some(OscEvent::CommandStart),
+        "C" => Some(OscEvent::CommandExecuted),
         "D" => {
             let exit_code = parts
                 .next()
@@ -569,7 +598,7 @@ mod tests {
         let mut p = OscStreamParser::new();
         let mut out = Vec::new();
         let mut events = Vec::new();
-        let stream = b"\x1b]7;file://box/srv/app\x07\x1b]133;C\x07hi\x1b]133;D;130\x1b\\\x1b]133;D\x07";
+        let stream = b"\x1b]7;file://box/srv/app\x07\x1b]133;A\x07$ \x1b]133;B\x07hi\n\x1b]133;C\x07out\n\x1b]133;D;130\x1b\\\x1b]133;D\x07";
         for chunk in stream.chunks(3) {
             p.feed(chunk, &mut out, &mut events);
         }
@@ -577,7 +606,9 @@ mod tests {
         assert_eq!(
             events,
             vec![
+                OscEvent::PromptStart,
                 OscEvent::CommandStart,
+                OscEvent::CommandExecuted,
                 OscEvent::CommandFinish { exit_code: Some(130) },
                 OscEvent::CommandFinish { exit_code: None },
             ]

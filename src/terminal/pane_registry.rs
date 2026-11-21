@@ -106,6 +106,7 @@ pub struct PaneRecord {
     pub telemetry: SessionTelemetry,
     pub last_exit_code: Option<i32>,
     pub hook_state: Option<PaneHookState>,
+    pub cmd_marks: crate::cmd_marks::CmdMarkHistory,
 }
 
 impl PaneRecord {
@@ -145,6 +146,7 @@ impl PaneRecord {
             telemetry: SessionTelemetry::default(),
             last_exit_code: None,
             hook_state: None,
+            cmd_marks: crate::cmd_marks::CmdMarkHistory::default(),
         }
     }
 
@@ -162,6 +164,7 @@ impl PaneRecord {
             self.ssh_directory = self.ssh_directory.take().filter(|(pid, _)| *pid == next.ssh_pid);
             self.telemetry.reset_transport(self.vte);
             self.osc_title.clear();
+            self.cmd_marks.clear();
         }
     }
 

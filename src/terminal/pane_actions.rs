@@ -897,6 +897,7 @@ fn clear_vte_buffer(vte: *mut GtkWidget) {
     if !app_state::has_live_vte(vte) {
         return;
     }
+    crate::cmd_marks::clear_for_vte(vte);
     unsafe {
         vte_terminal_reset(vte, 0, 1);
         gtk_widget_grab_focus(vte);
@@ -948,7 +949,7 @@ fn execute_vte_split_action(action: ContextAction) -> Result<(), ContextAction> 
         }
         ContextAction::ClosePane { sid, vte } => close_pane_in_session(sid, vte),
         ContextAction::ClearBuffer(vte) => clear_vte_buffer(vte),
-        other => return Err(other),
+        other => return crate::cmd_marks::try_execute_context_action(other),
     }
     Ok(())
 }
@@ -982,9 +983,11 @@ fn build_vte_menu_spec(
         app.sessions[idx].focus_pane(vte);
         let sid = app.sessions[idx].id;
         let is_local = true;
+        let (has_cmd_marks, has_failed_cmd) = crate::cmd_marks::menu_flags_for_session(&app.sessions[idx], vte);
         let targets = collect_forward_targets(app, sid);
         Some(context_menu::VteMenuSpec {
             sid, vte, has_selection, selected_text, link_target, is_local, targets,
+            has_cmd_marks, has_failed_cmd,
         })
     })
     .flatten()
