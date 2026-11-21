@@ -7,6 +7,18 @@ use std::process::{Child, Command, Stdio};
 
 use crate::telemetry::ssh_connection::SshRoute;
 
+#[allow(unused_imports)]
+pub use crate::sys::pinned_tunnels::{
+    list_pinned_for_host, list_pinned_tunnels, pin_tunnel, pinned_tunnels_path, unpin_tunnel,
+    PinnedTunnel,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TunnelStatus {
+    Active,
+    Disconnected,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TunnelRequest {
     pub host: String,
@@ -27,6 +39,7 @@ pub struct TunnelInfo {
     pub process: String,
     pub session_ids: Vec<usize>,
     pub pid: u32,
+    pub status: TunnelStatus,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,7 +50,8 @@ pub struct TunnelEnsureResult {
 
 struct ManagedTunnel {
     info: TunnelInfo,
-    child: Child,
+    ssh_pid: i32,
+    child: Option<Child>,
 }
 
 pub struct SshTunnelManager {
@@ -97,13 +111,15 @@ fn resolve_tunnel_route(host: &str, ssh_pid: i32) -> io::Result<SshRoute> {
     route.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid SSH host"))
 }
 
-fn terminate_child(child: &mut Child) {
-    let _ = child.kill();
-    let _ = child.wait();
+fn terminate_child(child: &mut Option<Child>) {
+    if let Some(mut proc_child) = child.take() {
+        let _ = proc_child.kill();
+        let _ = proc_child.wait();
+    }
 }
 
-fn child_is_alive(child: &mut Child) -> bool {
-    matches!(child.try_wait(), Ok(None))
+fn child_is_alive(child: &mut Option<Child>) -> bool {
+    matches!(child.as_mut().and_then(|c| c.try_wait().ok()), Some(None))
 }
 
 fn spawn_ssh_child(program: &str, argv: &[String], cwd: &Path) -> io::Result<Child> {
@@ -126,6 +142,22 @@ fn normalize_scheme(raw: &str) -> String {
     if raw.eq_ignore_ascii_case("https") { "https".to_owned() } else { "http".to_owned() }
 }
 
+fn apply_reconnected_child(entry: &mut ManagedTunnel, ssh_pid: i32, local_port: u16, child: Child) -> TunnelInfo {
+    entry.ssh_pid = ssh_pid;
+    entry.info.local_port = local_port;
+    entry.info.pid = child.id();
+    entry.info.status = TunnelStatus::Active;
+    entry.child = Some(child);
+    entry.info.clone()
+}
+
+fn pinned_to_request(item: PinnedTunnel, ssh_pid: i32, session_id: usize) -> TunnelRequest {
+    TunnelRequest {
+        host: item.host, ssh_pid, remote_port: item.remote_port,
+        scheme: item.scheme, process: item.process, session_id,
+    }
+}
+
 impl SshTunnelManager {
     pub fn new() -> Self {
         Self {
@@ -145,24 +177,51 @@ impl SshTunnelManager {
         }
     }
 
-    pub fn prune_exited(&mut self) -> usize {
-        let before = self.tunnels.len();
-        self.tunnels.retain_mut(|t| child_is_alive(&mut t.child));
-        before.saturating_sub(self.tunnels.len())
+    #[cfg(test)]
+    pub fn set_test_command(&mut self, program: &str, args: &[&str]) {
+        self.test_spawn = Some((program.to_owned(), args.iter().map(|s| (*s).to_owned()).collect()));
     }
 
-    fn reserved_local_ports(&self) -> Vec<u16> {
-        self.tunnels.iter().map(|t| t.info.local_port).collect()
+    pub fn prune_exited(&mut self) -> usize {
+        let mut disconnected = 0usize;
+        for entry in &mut self.tunnels {
+            if entry.info.status == TunnelStatus::Active && !child_is_alive(&mut entry.child) {
+                entry.child = None;
+                entry.info.status = TunnelStatus::Disconnected;
+                entry.info.pid = 0;
+                disconnected += 1;
+            }
+        }
+        disconnected
+    }
+
+    fn reserved_local_ports(&self, skip_id: Option<u64>) -> Vec<u16> {
+        self.tunnels
+            .iter()
+            .filter(|t| t.info.status == TunnelStatus::Active && Some(t.info.id) != skip_id)
+            .map(|t| t.info.local_port)
+            .collect()
     }
 
     fn find_live_match(&mut self, host: &str, remote_port: u16, sid: usize) -> Option<TunnelInfo> {
         for entry in &mut self.tunnels {
-            if entry.info.host == host && entry.info.remote_port == remote_port && child_is_alive(&mut entry.child) {
+            if entry.info.host == host
+                && entry.info.remote_port == remote_port
+                && entry.info.status == TunnelStatus::Active
+                && child_is_alive(&mut entry.child)
+            {
                 attach_session_id(&mut entry.info.session_ids, sid);
                 return Some(entry.info.clone());
             }
         }
         None
+    }
+
+    fn find_disconnected_id(&self, host: &str, remote_port: u16) -> Option<u64> {
+        self.tunnels
+            .iter()
+            .find(|t| t.info.host == host && t.info.remote_port == remote_port && t.info.status == TunnelStatus::Disconnected)
+            .map(|t| t.info.id)
     }
 
     fn spawn_for_route(&self, route: &SshRoute, local_port: u16, remote_port: u16) -> io::Result<Child> {
@@ -175,16 +234,82 @@ impl SshTunnelManager {
         spawn_ssh_child("ssh", &argv, route.working_dir())
     }
 
+    #[allow(dead_code)]
+    pub fn reconnect_tunnel(&mut self, id: u64) -> io::Result<TunnelInfo> {
+        self.reconnect_tunnel_with_ssh_pid(id, 0)
+    }
+
+    fn respawn_tunnel_at(&mut self, pos: usize, ssh_pid: i32) -> io::Result<TunnelInfo> {
+        let (id, host, rport, pref) = {
+            let i = &self.tunnels[pos].info;
+            (i.id, i.host.clone(), i.remote_port, i.local_port)
+        };
+        let eff_pid = if ssh_pid > 0 { ssh_pid } else { self.tunnels[pos].ssh_pid };
+        let route = resolve_tunnel_route(&host, eff_pid)?;
+        let local_port = pick_local_port_avoiding(pref, &self.reserved_local_ports(Some(id)))?;
+        let child = self.spawn_for_route(&route, local_port, rport)?;
+        Ok(apply_reconnected_child(&mut self.tunnels[pos], eff_pid, local_port, child))
+    }
+
+    pub fn reconnect_tunnel_with_ssh_pid(&mut self, id: u64, ssh_pid: i32) -> io::Result<TunnelInfo> {
+        self.prune_exited();
+        let pos = self.tunnels.iter().position(|t| t.info.id == id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "tunnel not found"))?;
+        if self.tunnels[pos].info.status == TunnelStatus::Active && child_is_alive(&mut self.tunnels[pos].child) {
+            return Ok(self.tunnels[pos].info.clone());
+        }
+        self.respawn_tunnel_at(pos, ssh_pid)
+    }
+
     pub fn ensure_tunnel(&mut self, req: TunnelRequest) -> io::Result<TunnelEnsureResult> {
+        let preferred = req.remote_port;
+        self.ensure_tunnel_with_local_port(req, preferred)
+    }
+
+    fn try_reconnect_disconnected(&mut self, req: &TunnelRequest) -> Option<io::Result<TunnelEnsureResult>> {
+        let id = self.find_disconnected_id(&req.host, req.remote_port)?;
+        if let Some(entry) = self.tunnels.iter_mut().find(|t| t.info.id == id) {
+            attach_session_id(&mut entry.info.session_ids, req.session_id);
+        }
+        Some(self.reconnect_tunnel_with_ssh_pid(id, req.ssh_pid).map(|info| TunnelEnsureResult { info, reused: false }))
+    }
+
+    pub fn ensure_tunnel_with_local_port(
+        &mut self,
+        req: TunnelRequest,
+        preferred_local: u16,
+    ) -> io::Result<TunnelEnsureResult> {
         self.prune_exited();
         if let Some(existing) = self.find_live_match(&req.host, req.remote_port, req.session_id) {
             return Ok(TunnelEnsureResult { info: existing, reused: true });
         }
+        if let Some(res) = self.try_reconnect_disconnected(&req) {
+            return res;
+        }
         let route = resolve_tunnel_route(&req.host, req.ssh_pid)?;
-        let local_port = pick_local_port_avoiding(req.remote_port, &self.reserved_local_ports())?;
+        let local_port = pick_local_port_avoiding(preferred_local, &self.reserved_local_ports(None))?;
         let child = self.spawn_for_route(&route, local_port, req.remote_port)?;
-        let info = self.record_tunnel(req, local_port, child);
-        Ok(TunnelEnsureResult { info, reused: false })
+        Ok(TunnelEnsureResult { info: self.record_tunnel(req, local_port, child), reused: false })
+    }
+
+    pub fn restore_pinned_for_host(
+        &mut self,
+        host: &str,
+        ssh_pid: i32,
+        session_id: usize,
+    ) -> (Vec<TunnelInfo>, Vec<(u16, String)>) {
+        let (mut restored, mut errors) = (Vec::new(), Vec::new());
+        for item in list_pinned_for_host(host) {
+            let rport = item.remote_port;
+            let pref = item.local_port;
+            let req = pinned_to_request(item, ssh_pid, session_id);
+            match self.ensure_tunnel_with_local_port(req, pref) {
+                Ok(res) if !res.reused => restored.push(res.info),
+                Ok(_) => {}
+                Err(err) => errors.push((rport, err.to_string())),
+            }
+        }
+        (restored, errors)
     }
 
     fn record_tunnel(&mut self, req: TunnelRequest, local_port: u16, child: Child) -> TunnelInfo {
@@ -192,6 +317,7 @@ impl SshTunnelManager {
         self.next_id += 1;
         let mut session_ids = Vec::new();
         attach_session_id(&mut session_ids, req.session_id);
+        let ssh_pid = req.ssh_pid;
         let info = TunnelInfo {
             id,
             host: req.host,
@@ -201,8 +327,9 @@ impl SshTunnelManager {
             process: req.process,
             session_ids,
             pid: child.id(),
+            status: TunnelStatus::Active,
         };
-        self.tunnels.push(ManagedTunnel { info: info.clone(), child });
+        self.tunnels.push(ManagedTunnel { info: info.clone(), ssh_pid, child: Some(child) });
         info
     }
 
@@ -212,7 +339,9 @@ impl SshTunnelManager {
 
     pub fn is_tunnel_alive(&mut self, id: u64) -> bool {
         self.prune_exited();
-        self.tunnels.iter_mut().any(|t| t.info.id == id && child_is_alive(&mut t.child))
+        self.tunnels
+            .iter_mut()
+            .any(|t| t.info.id == id && t.info.status == TunnelStatus::Active && child_is_alive(&mut t.child))
     }
 
     pub fn stop_tunnel(&mut self, id: u64) -> bool {
@@ -348,15 +477,33 @@ mod tests {
     }
 
     #[test]
-    fn prunes_exited_tunnel_children_via_try_wait() {
+    fn unexpected_exit_marks_disconnected_and_reconnect_respawns_tunnel() {
         let mut mgr = SshTunnelManager::with_test_command("true", &[]);
         let res = mgr.ensure_tunnel(sample_req("dev-box", 9000, 1)).unwrap();
+        assert_eq!(res.info.status, TunnelStatus::Active);
         for _ in 0..40 {
             if !mgr.is_tunnel_alive(res.info.id) {
                 break;
             }
             thread::sleep(Duration::from_millis(15));
         }
+        let snap = mgr.list_tunnels_snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].status, TunnelStatus::Disconnected);
+        assert_eq!(snap[0].pid, 0);
+
+        mgr.set_test_command("sleep", &["60"]);
+        let blocker = TcpListener::bind(("127.0.0.1", snap[0].local_port)).ok();
+        let reconnected = mgr.reconnect_tunnel(res.info.id).unwrap();
+        assert_eq!(reconnected.id, res.info.id);
+        assert_eq!(reconnected.status, TunnelStatus::Active);
+        assert!(pid_alive(reconnected.pid));
+        if blocker.is_some() {
+            assert_ne!(reconnected.local_port, snap[0].local_port);
+        }
+        drop(blocker);
+
+        assert!(mgr.stop_tunnel(res.info.id));
         assert!(mgr.list_tunnels_snapshot().is_empty());
     }
 }

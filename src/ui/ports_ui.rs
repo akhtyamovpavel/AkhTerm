@@ -11,7 +11,7 @@ use crate::ffi::*;
 use crate::i18n::UiLocale;
 use crate::port_radar::{self, DetectedPort, LocalUrlTarget, RemotePortTarget};
 use crate::session::{SessionCategory, TermSession};
-use crate::ssh_tunnel::{TunnelEnsureResult, TunnelInfo, TunnelRequest};
+use crate::ssh_tunnel::{PinnedTunnel, TunnelEnsureResult, TunnelInfo, TunnelRequest, TunnelStatus};
 use crate::{context_menu, handoff, i18n, proc_radar, topbar, ui_text as text};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -22,6 +22,7 @@ pub struct PortsSnapshot {
     pub local_ports: Vec<DetectedPort>,
     pub remote_ports: Vec<DetectedPort>,
     pub tunnels: Vec<TunnelInfo>,
+    pub pinned_tunnels: Vec<PinnedTunnel>,
 }
 
 #[derive(Clone)]
@@ -101,7 +102,7 @@ fn make_ports_scroll(vbox: *mut GtkWidget) -> *mut GtkWidget {
     unsafe {
         let scroll = gtk_scrolled_window_new(ptr::null_mut(), ptr::null_mut());
         gtk_scrolled_window_set_policy(scroll, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-        gtk_scrolled_window_set_min_content_width(scroll, 360);
+        gtk_scrolled_window_set_min_content_width(scroll, 430);
         gtk_scrolled_window_set_max_content_height(scroll, 340);
         gtk_scrolled_window_set_propagate_natural_height(scroll, 1);
         let holder = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
@@ -199,10 +200,12 @@ impl PortsMenu {
         if let Ok(c_lbl) = CString::new(label) {
             unsafe { gtk_button_set_label(self.button, c_lbl.as_ptr()) };
         }
-        let has_tunnels = !snap.tunnels.is_empty();
+        let has_active = snap.tunnels.iter().any(|t| t.status == TunnelStatus::Active);
+        let has_disc = snap.tunnels.iter().any(|t| t.status == TunnelStatus::Disconnected);
         let has_ports = !snap.local_ports.is_empty() || !snap.remote_ports.is_empty();
-        set_class(self.button, "ports-btn-tunnel", has_tunnels);
-        set_class(self.button, "ports-btn-active", !has_tunnels && has_ports);
+        set_class(self.button, "ports-btn-tunnel", has_active);
+        set_class(self.button, "ports-btn-disconnected", has_disc && !has_active);
+        set_class(self.button, "ports-btn-active", !has_active && !has_disc && has_ports);
     }
 
     pub fn populate(&self, snap: &PortsSnapshot, locale: UiLocale) {
@@ -270,6 +273,22 @@ enum PortRowAction {
         id: u64,
         label: String,
     },
+    ReconnectTunnel {
+        id: u64,
+        ssh_pid: i32,
+        host: String,
+        remote_port: u16,
+    },
+    PinTunnel(PinnedTunnel),
+    UnpinTunnel {
+        host: String,
+        remote_port: u16,
+    },
+    RestorePinned {
+        host: String,
+        ssh_pid: i32,
+        sid: usize,
+    },
 }
 
 extern "C" fn drop_row_action(data: *mut c_void, _closure: *mut c_void) {
@@ -330,24 +349,79 @@ fn make_row_label(text_str: &str) -> *mut GtkWidget {
     }
 }
 
-fn pack_tunnel_row(parent: *mut GtkWidget, t: &TunnelInfo, locale: UiLocale) {
-    let label_str = format_tunnel_label(t, locale);
+fn tunnel_to_pinned(t: &TunnelInfo) -> PinnedTunnel {
+    PinnedTunnel {
+        host: t.host.clone(), remote_port: t.remote_port, local_port: t.local_port,
+        scheme: t.scheme.clone(), process: t.process.clone(),
+    }
+}
+
+fn make_pin_toggle_btn(t: &TunnelInfo, is_pinned: bool, locale: UiLocale) -> *mut GtkWidget {
+    let (lbl, tip, css, act) = if is_pinned {
+        (
+            text::PORTS_UNPIN.for_locale(locale).to_string_lossy(),
+            text::PORTS_UNPIN_TIP.for_locale(locale),
+            "ports-pin-btn-active",
+            PortRowAction::UnpinTunnel { host: t.host.clone(), remote_port: t.remote_port },
+        )
+    } else {
+        (
+            text::PORTS_PIN.for_locale(locale).to_string_lossy(),
+            text::PORTS_PIN_TIP.for_locale(locale),
+            "ports-action-btn",
+            PortRowAction::PinTunnel(tunnel_to_pinned(t)),
+        )
+    };
+    let btn = make_action_button(&lbl, css, act);
+    unsafe { gtk_widget_set_tooltip_text(btn, tip.as_ptr()) };
+    btn
+}
+
+fn pack_disconnected_tunnel_controls(row: *mut GtkWidget, t: &TunnelInfo, ssh_pid: i32, locale: UiLocale) {
+    add_class(row, "ports-row-disconnected");
+    let badge_c = text::PORTS_TUNNEL_DISCONNECTED.for_locale(locale);
+    let rec_txt = text::PORTS_RECONNECT.for_locale(locale).to_string_lossy();
+    let rec_act = PortRowAction::ReconnectTunnel { id: t.id, ssh_pid, host: t.host.clone(), remote_port: t.remote_port };
+    let b_rec = make_action_button(&rec_txt, "ports-reconnect-btn", rec_act);
+    unsafe {
+        let badge = gtk_label_new(badge_c.as_ptr());
+        add_class(badge, "ports-badge-disconnected");
+        gtk_box_pack_start(row, badge, 0, 0, 2);
+        gtk_box_pack_end(row, b_rec, 0, 0, 0);
+    }
+}
+
+fn pack_active_tunnel_controls(row: *mut GtkWidget, t: &TunnelInfo, locale: UiLocale) {
     let url = local_url_for(&t.scheme, t.local_port);
     let open_txt = text::PORTS_OPEN.for_locale(locale).to_string_lossy();
     let copy_txt = text::PORTS_COPY.for_locale(locale).to_string_lossy();
-    let row = make_row_box();
-    let lbl = make_row_label(&label_str);
     let b_open = make_action_button(&open_txt, "ports-action-btn", PortRowAction::OpenUrl(url.clone()));
     let b_copy = make_action_button(&copy_txt, "ports-action-btn", PortRowAction::CopyUrl(url));
+    unsafe {
+        gtk_box_pack_end(row, b_copy, 0, 0, 0);
+        gtk_box_pack_end(row, b_open, 0, 0, 0);
+    }
+}
+
+fn pack_tunnel_row(parent: *mut GtkWidget, t: &TunnelInfo, snap: &PortsSnapshot, locale: UiLocale) {
+    let label_str = format_tunnel_label(t, locale);
+    let is_pinned = snap.pinned_tunnels.iter().any(|p| p.host == t.host && p.remote_port == t.remote_port);
+    let row = make_row_box();
+    let lbl = make_row_label(&label_str);
+    let b_pin = make_pin_toggle_btn(t, is_pinned, locale);
     let b_stop = make_action_button("×", "ports-stop-btn", PortRowAction::StopTunnel { id: t.id, label: label_str });
     unsafe {
         gtk_widget_set_tooltip_text(b_stop, text::PORTS_STOP_TIP.for_locale(locale).as_ptr());
         gtk_box_pack_start(row, lbl, 1, 1, 2);
         gtk_box_pack_end(row, b_stop, 0, 0, 0);
-        gtk_box_pack_end(row, b_copy, 0, 0, 0);
-        gtk_box_pack_end(row, b_open, 0, 0, 0);
-        gtk_box_pack_start(parent, row, 0, 1, 0);
+        gtk_box_pack_end(row, b_pin, 0, 0, 0);
     }
+    if t.status == TunnelStatus::Disconnected {
+        pack_disconnected_tunnel_controls(row, t, snap.ssh_pid, locale);
+    } else {
+        pack_active_tunnel_controls(row, t, locale);
+    }
+    unsafe { gtk_box_pack_start(parent, row, 0, 1, 0) };
 }
 
 fn pack_local_port_row(parent: *mut GtkWidget, p: &DetectedPort, locale: UiLocale) {
@@ -390,7 +464,10 @@ fn build_remote_row_action(
 }
 
 fn pack_remote_port_row(parent: *mut GtkWidget, snap: &PortsSnapshot, p: &DetectedPort, host: &str, locale: UiLocale) {
-    let existing = snap.tunnels.iter().find(|t| t.host == host && t.remote_port == p.port);
+    let existing = snap
+        .tunnels
+        .iter()
+        .find(|t| t.host == host && t.remote_port == p.port && t.status == TunnelStatus::Active);
     let copy_url = existing.map_or_else(|| local_url_for(&p.scheme, p.port), |t| local_url_for(&t.scheme, t.local_port));
     let copy_txt = text::PORTS_COPY.for_locale(locale).to_string_lossy();
     let (act_lbl, act) = build_remote_row_action(snap, p, host, existing, locale);
@@ -421,13 +498,63 @@ fn pack_empty_hint(parent: *mut GtkWidget, is_remote: bool, locale: UiLocale) {
     }
 }
 
-fn populate_tunnels_section(parent: *mut GtkWidget, tunnels: &[TunnelInfo], locale: UiLocale) {
-    if tunnels.is_empty() {
+fn populate_tunnels_section(parent: *mut GtkWidget, snap: &PortsSnapshot, locale: UiLocale) {
+    if snap.tunnels.is_empty() {
         return;
     }
     pack_section_header(parent, &text::PORTS_SECTION_TUNNELS.for_locale(locale).to_string_lossy());
-    for t in tunnels {
-        pack_tunnel_row(parent, t, locale);
+    for t in &snap.tunnels {
+        pack_tunnel_row(parent, t, snap, locale);
+    }
+}
+
+fn pack_pinned_header_with_restore(parent: *mut GtkWidget, snap: &PortsSnapshot, host: &str, locale: UiLocale) {
+    let title = format!("{} · {host}", text::PORTS_SECTION_PINNED.for_locale(locale).to_string_lossy());
+    let restore_lbl = text::PORTS_RESTORE_PINNED.for_locale(locale).to_string_lossy();
+    let restore_act = PortRowAction::RestorePinned { host: host.to_owned(), ssh_pid: snap.ssh_pid, sid: snap.session_id };
+    let b_restore = make_action_button(&restore_lbl, "ports-restore-btn", restore_act);
+    let Ok(c_title) = CString::new(title) else { return };
+    unsafe {
+        gtk_widget_set_tooltip_text(b_restore, text::PORTS_RESTORE_PINNED_TIP.for_locale(locale).as_ptr());
+        let row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        let lbl = gtk_label_new(c_title.as_ptr());
+        gtk_label_set_xalign(lbl, 0.0);
+        add_class(lbl, "section-header");
+        gtk_box_pack_start(row, lbl, 1, 1, 0);
+        gtk_box_pack_end(row, b_restore, 0, 0, 0);
+        gtk_box_pack_start(parent, row, 0, 1, 2);
+    }
+}
+
+fn format_pinned_desc(p: &PinnedTunnel, to_word: &str) -> String {
+    let base = format!("{} :{} {to_word} :{}", p.host, p.remote_port, p.local_port);
+    if p.process.is_empty() { base } else { format!("{base} · {}", p.process) }
+}
+
+fn pack_pinned_row(parent: *mut GtkWidget, p: &PinnedTunnel, to_word: &str, unpin_lbl: &str) {
+    let row = make_row_box();
+    let lbl = make_row_label(&format_pinned_desc(p, to_word));
+    let act = PortRowAction::UnpinTunnel { host: p.host.clone(), remote_port: p.remote_port };
+    let b_unpin = make_action_button(unpin_lbl, "ports-pin-btn-active", act);
+    unsafe {
+        gtk_box_pack_start(row, lbl, 1, 1, 2);
+        gtk_box_pack_end(row, b_unpin, 0, 0, 0);
+        gtk_box_pack_start(parent, row, 0, 1, 0);
+    }
+}
+
+fn populate_pinned_section(parent: *mut GtkWidget, snap: &PortsSnapshot, host: &str, locale: UiLocale) {
+    let host_pinned: Vec<&PinnedTunnel> = snap.pinned_tunnels.iter().filter(|p| p.host == host).collect();
+    if host_pinned.is_empty() {
+        return;
+    }
+    pack_pinned_header_with_restore(parent, snap, host, locale);
+    let to_word = text::PORTS_TO_WORD.for_locale(locale).to_string_lossy();
+    let unpin_lbl = text::PORTS_UNPIN.for_locale(locale).to_string_lossy();
+    for p in host_pinned {
+        if !snap.tunnels.iter().any(|t| t.host == p.host && t.remote_port == p.remote_port) {
+            pack_pinned_row(parent, p, &to_word, &unpin_lbl);
+        }
     }
 }
 
@@ -437,7 +564,8 @@ fn populate_remote_section(parent: *mut GtkWidget, snap: &PortsSnapshot, host: &
     for p in &snap.remote_ports {
         pack_remote_port_row(parent, snap, p, host, locale);
     }
-    if snap.remote_ports.is_empty() && snap.tunnels.is_empty() {
+    let has_pinned = snap.pinned_tunnels.iter().any(|p| p.host == host);
+    if snap.remote_ports.is_empty() && snap.tunnels.is_empty() && !has_pinned {
         pack_empty_hint(parent, true, locale);
     }
 }
@@ -453,8 +581,9 @@ fn populate_local_section(parent: *mut GtkWidget, snap: &PortsSnapshot, locale: 
 }
 
 fn populate_sections(parent: *mut GtkWidget, snap: &PortsSnapshot, locale: UiLocale) {
-    populate_tunnels_section(parent, &snap.tunnels, locale);
+    populate_tunnels_section(parent, snap, locale);
     if let Some(host) = snap.remote_host.as_deref() {
+        populate_pinned_section(parent, snap, host, locale);
         populate_remote_section(parent, snap, host, locale);
     } else {
         populate_local_section(parent, snap, locale);
@@ -535,8 +664,9 @@ pub(crate) fn refresh_radar_ports(app: &mut AppState) {
 
 pub(crate) fn collect_active_snapshot(app: &AppState) -> PortsSnapshot {
     let tunnels = app.ssh_tunnels.list_tunnels_snapshot();
+    let pinned_tunnels = crate::ssh_tunnel::list_pinned_tunnels();
     let Some(s) = app.sessions.iter().find(|s| s.id == app.active_id) else {
-        return PortsSnapshot { tunnels, ..PortsSnapshot::default() };
+        return PortsSnapshot { tunnels, pinned_tunnels, ..PortsSnapshot::default() };
     };
     let remote_host = session_remote_host(s);
     let remote_ports = remote_host.as_deref().map_or_else(Vec::new, |host| {
@@ -552,6 +682,7 @@ pub(crate) fn collect_active_snapshot(app: &AppState) -> PortsSnapshot {
         local_ports,
         remote_ports,
         tunnels,
+        pinned_tunnels,
     }
 }
 
@@ -738,6 +869,57 @@ fn stop_tunnel_row_action(id: u64, label: &str) {
     topbar::refresh_ui();
 }
 
+fn reconnect_tunnel_row_action(id: u64, ssh_pid: i32, host: &str, remote_port: u16) {
+    let res = app_state::with_app_mut(|app| app.ssh_tunnels.reconnect_tunnel_with_ssh_pid(id, ssh_pid));
+    match res {
+        Some(Ok(info)) => report_tunnel_footer(text::PORTS_TUNNEL_RECONNECTED, &info),
+        Some(Err(err)) => report_tunnel_error(host, remote_port, &err.to_string()),
+        None => {}
+    }
+    refresh_and_repopulate_popover(false);
+    topbar::refresh_ui();
+}
+
+fn pin_tunnel_row_action(entry: PinnedTunnel) {
+    let target = format!("{}:{}", entry.host, entry.remote_port);
+    if crate::ssh_tunnel::pin_tunnel(entry).is_ok() {
+        let prefix = text::PORTS_TUNNEL_PINNED.for_locale(i18n::current_locale()).to_string_lossy();
+        app_state::set_footer_message(&format!("{prefix} {target}"));
+    }
+    refresh_and_repopulate_popover(false);
+}
+
+fn unpin_tunnel_row_action(host: &str, remote_port: u16) {
+    if crate::ssh_tunnel::unpin_tunnel(host, remote_port).unwrap_or(false) {
+        let prefix = text::PORTS_TUNNEL_UNPINNED.for_locale(i18n::current_locale()).to_string_lossy();
+        app_state::set_footer_message(&format!("{prefix} {host}:{remote_port}"));
+    }
+    refresh_and_repopulate_popover(false);
+}
+
+fn report_restore_outcome(host: &str, restored: usize, errors: &[(u16, String)]) {
+    let loc = i18n::current_locale();
+    if restored > 0 {
+        let prefix = text::PORTS_TUNNELS_RESTORED.for_locale(loc).to_string_lossy();
+        app_state::set_footer_message(&format!("{prefix} {restored} ({host})"));
+    } else if let Some((port, err)) = errors.first() {
+        report_tunnel_error(host, *port, err);
+    } else {
+        app_state::set_footer_message(&text::PORTS_TUNNELS_NONE_TO_RESTORE.for_locale(loc).to_string_lossy());
+    }
+}
+
+fn restore_pinned_row_action(host: &str, ssh_pid: i32, sid: usize) {
+    let Some((restored, errors)) =
+        app_state::with_app_mut(|app| app.ssh_tunnels.restore_pinned_for_host(host, ssh_pid, sid))
+    else {
+        return;
+    };
+    report_restore_outcome(host, restored.len(), &errors);
+    refresh_and_repopulate_popover(false);
+    topbar::refresh_ui();
+}
+
 fn handle_row_action(action: PortRowAction) {
     match action {
         PortRowAction::OpenUrl(url) => {
@@ -751,6 +933,12 @@ fn handle_row_action(action: PortRowAction) {
             let _ = ensure_and_open_tunnel(req, None);
         }
         PortRowAction::StopTunnel { id, label } => stop_tunnel_row_action(id, &label),
+        PortRowAction::ReconnectTunnel { id, ssh_pid, host, remote_port } => {
+            reconnect_tunnel_row_action(id, ssh_pid, &host, remote_port);
+        }
+        PortRowAction::PinTunnel(entry) => pin_tunnel_row_action(entry),
+        PortRowAction::UnpinTunnel { host, remote_port } => unpin_tunnel_row_action(&host, remote_port),
+        PortRowAction::RestorePinned { host, ssh_pid, sid } => restore_pinned_row_action(&host, ssh_pid, sid),
     }
 }
 
@@ -812,268 +1000,5 @@ pub(crate) fn remote_ports_ready_cb() -> extern "C" fn(*mut c_void) -> c_int {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::port_radar::BindScope;
-    use crate::proc_radar::tests::{pump_gtk_events, with_headless_gtk};
-    use std::ffi::CStr;
-
-    fn sample_tunnel(host: &str, remote_port: u16, local_port: u16) -> TunnelInfo {
-        TunnelInfo {
-            id: 1,
-            host: host.to_owned(),
-            remote_port,
-            local_port,
-            scheme: "http".to_owned(),
-            process: "uvicorn".to_owned(),
-            session_ids: vec![1],
-            pid: 9999,
-        }
-    }
-
-    fn sample_port(port: u16, process: &str) -> DetectedPort {
-        DetectedPort {
-            port,
-            process: process.to_owned(),
-            scheme: "http".to_owned(),
-            scope: BindScope::Loopback,
-        }
-    }
-
-    #[test]
-    fn formats_bilingual_button_and_tunnel_labels_without_text_arrows() {
-        let idle = PortsSnapshot::default();
-        assert_eq!(format_ports_button_label(&idle, UiLocale::Ru), "Порты ▾");
-        assert_eq!(format_ports_button_label(&idle, UiLocale::En), "Ports ▾");
-
-        let single = PortsSnapshot { local_ports: vec![sample_port(8000, "uvicorn")], ..idle.clone() };
-        assert_eq!(format_ports_button_label(&single, UiLocale::Ru), "Порты :8000 ▾");
-        assert_eq!(format_ports_button_label(&single, UiLocale::En), "Ports :8000 ▾");
-
-        let multi = PortsSnapshot {
-            remote_host: Some("gpu01".into()),
-            remote_ports: vec![sample_port(8000, "uvicorn"), sample_port(5173, "vite")],
-            tunnels: vec![sample_tunnel("gpu01", 8000, 18000)],
-            ..idle
-        };
-        assert_eq!(format_ports_button_label(&multi, UiLocale::Ru), "Порты :18000 +1 ▾");
-        assert_eq!(format_ports_button_label(&multi, UiLocale::En), "Ports :18000 +1 ▾");
-    }
-
-    #[test]
-    fn formats_tunnel_labels_in_ru_and_en_without_text_arrows() {
-        let t = sample_tunnel("gpu01", 8000, 18000);
-        let t_ru = format_tunnel_label(&t, UiLocale::Ru);
-        let t_en = format_tunnel_label(&t, UiLocale::En);
-        assert_eq!(t_ru, "gpu01 :8000 на :18000 · uvicorn");
-        assert_eq!(t_en, "gpu01 :8000 to :18000 · uvicorn");
-        for s in [&t_ru, &t_en] {
-            assert!(!s.contains("->") && !s.contains('→') && !s.contains("=>"));
-        }
-    }
-
-    fn btn_label_text(btn: *mut GtkWidget) -> String {
-        unsafe { CStr::from_ptr(gtk_button_get_label(btn)).to_string_lossy().into_owned() }
-    }
-
-    fn remote_demo_snap() -> PortsSnapshot {
-        PortsSnapshot {
-            session_id: 2,
-            remote_host: Some("gpu-box".into()),
-            remote_ports: vec![sample_port(8000, "uvicorn"), sample_port(8888, "jupyter")],
-            tunnels: vec![sample_tunnel("gpu-box", 8000, 18000)],
-            ..PortsSnapshot::default()
-        }
-    }
-
-    fn mount_test_ports_bar() -> (*mut GtkWidget, PortsMenu) {
-        unsafe {
-            let win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-            let bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
-            gtk_container_add(win, bar);
-            let menu = PortsMenu::new(bar);
-            gtk_widget_show_all(win);
-            (win, menu)
-        }
-    }
-
-    #[test]
-    fn headless_broadway_ports_popover_renders_local_ports() {
-        with_headless_gtk(|| unsafe {
-            let (win, menu) = mount_test_ports_bar();
-            let local = PortsSnapshot {
-                session_id: 1,
-                local_ports: vec![sample_port(8000, "uvicorn"), sample_port(5173, "node")],
-                ..PortsSnapshot::default()
-            };
-            menu.sync_button(&local, UiLocale::En);
-            menu.populate(&local, UiLocale::En);
-            menu.popup();
-            pump_gtk_events();
-            assert!(!menu.popover_widget().is_null());
-            assert_eq!(btn_label_text(menu.button_widget()), "Ports :8000 +1 ▾");
-            menu.popdown();
-            gtk_widget_destroy(win);
-            pump_gtk_events();
-        });
-    }
-
-    #[test]
-    fn headless_broadway_ports_popover_renders_remote_and_tunnels() {
-        with_headless_gtk(|| unsafe {
-            let (win, menu) = mount_test_ports_bar();
-            let remote = remote_demo_snap();
-            menu.sync_button(&remote, UiLocale::Ru);
-            menu.populate(&remote, UiLocale::Ru);
-            menu.popup();
-            pump_gtk_events();
-            assert_eq!(btn_label_text(menu.button_widget()), "Порты :18000 +1 ▾");
-            menu.popdown();
-            gtk_widget_destroy(win);
-            pump_gtk_events();
-        });
-    }
-
-    fn take_test_urls() -> Vec<String> {
-        TEST_OPENED_URLS.with(|slot| slot.borrow_mut().take().unwrap_or_default())
-    }
-
-    fn setup_ctrl_click_tabs() -> (*mut GtkWidget, usize, usize, *mut GtkWidget, *mut GtkWidget) {
-        let (win, _) = crate::tests::install_test_window();
-        app_state::with_app_mut(|app| {
-            app.ssh_tunnels = crate::ssh_tunnel::SshTunnelManager::with_test_command("sleep", &["60"]);
-        });
-        let local_sid = crate::session_ops::add_tab(
-            "Local", "", "/tmp", SessionCategory::Project, &["sleep", "30"], crate::tabs::Tab::local("shell"),
-        );
-        let remote_sid = crate::session_ops::add_tab(
-            "GPU", "", "/tmp", SessionCategory::Remote, &["sleep", "30"], crate::tabs::Tab::remote("gpu01", None),
-        );
-        let (lv, rv) = app_state::with_app(|app| (app.sessions[0].vte, app.sessions[1].vte)).unwrap();
-        (win, local_sid, remote_sid, lv, rv)
-    }
-
-    #[test]
-    fn ctrl_click_hook_forwards_remote_localhost_and_cleans_up_on_tab_close() {
-        with_headless_gtk(|| {
-            TEST_OPENED_URLS.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
-            let (win, local_sid, remote_sid, local_vte, remote_vte) = setup_ctrl_click_tabs();
-            assert!(!intercept_vte_link_open(local_vte, "http://localhost:8000/docs"));
-            assert!(!intercept_vte_link_open(remote_vte, "https://example.com:8000/docs"));
-            assert!(intercept_vte_link_open(remote_vte, "http://localhost:8000/docs?x=1"));
-            assert!(intercept_vte_link_open(remote_vte, "http://localhost:8000/docs?x=1"));
-            let tunnels = app_state::with_app(|app| app.ssh_tunnels.list_tunnels_snapshot()).unwrap();
-            assert_eq!(tunnels.len(), 1);
-            let expected = format!("http://127.0.0.1:{}/docs?x=1", tunnels[0].local_port);
-            assert!(take_test_urls().contains(&expected));
-            let pid = tunnels[0].pid;
-            crate::session_ops::close_session(remote_sid);
-            assert!(app_state::with_app(|app| app.ssh_tunnels.list_tunnels_snapshot()).unwrap().is_empty());
-            assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
-            crate::tests::cleanup_test_window(win, &[local_sid]);
-        });
-    }
-
-    #[test]
-    fn command_palette_includes_bilingual_ports_entry() {
-        let src = crate::palette::PaletteSource {
-            sessions: &[], tmux_items: &[], profiles: &[], ssh_hosts: &[],
-            briefs_dir: None, extra_handoffs: &[], active_git: None, active_is_worktree: false,
-        };
-        let ru = crate::palette::collect_items_for_locale(&src, UiLocale::Ru);
-        let en = crate::palette::collect_items_for_locale(&src, UiLocale::En);
-        assert!(ru.iter().any(|i| i.action == crate::palette::PaletteAction::OpenPortsMenu && i.title.contains("Порты")));
-        assert!(en.iter().any(|i| i.action == crate::palette::PaletteAction::OpenPortsMenu && i.title.contains("Ports")));
-    }
-
-    #[test]
-    fn dark_and_light_theme_css_load_ports_classes_cleanly() {
-        with_headless_gtk(|| {
-            crate::theme::apply_gtk_theme_mode(crate::theme_mode::ThemeMode::Dark);
-            crate::theme::apply_gtk_theme_mode(crate::theme_mode::ThemeMode::Light);
-            crate::theme::apply_gtk_theme_mode(crate::theme_mode::ThemeMode::Dark);
-        });
-    }
-
-    fn open_remote_popover_for_test() -> (*mut GtkWidget, usize, PortsMenu) {
-        let (win, _) = crate::tests::install_test_window();
-        let sid = crate::session_ops::add_tab(
-            "GPU", "", "/tmp", SessionCategory::Remote, &["sleep", "30"], crate::tabs::Tab::remote("gpu01", None),
-        );
-        unsafe { gtk_widget_show_all(win) };
-        open_ports_popover_for_app();
-        pump_gtk_events();
-        let menu = app_state::with_app(|app| app.ports_menu.clone()).unwrap();
-        (win, sid, menu)
-    }
-
-    #[test]
-    fn remote_ports_ready_repopulates_open_popover_and_skips_closed() {
-        with_headless_gtk(|| {
-            let (win, sid, menu) = open_remote_popover_for_test();
-            assert!(menu.is_visible());
-            let before = menu.populate_count();
-            app_state::with_app(|app| app.remote_ports.seed_cache_for_test("gpu01", vec![sample_port(8000, "uvicorn")]));
-            (remote_ports_ready_cb())(ptr::null_mut());
-            pump_gtk_events();
-            assert_eq!(menu.populate_count(), before + 1);
-            assert!(btn_label_text(menu.button_widget()).contains(":8000"));
-            menu.popdown();
-            pump_gtk_events();
-            (remote_ports_ready_cb())(ptr::null_mut());
-            assert_eq!(menu.populate_count(), before + 1);
-            crate::tests::cleanup_test_window(win, &[sid]);
-        });
-    }
-
-    fn spawn_test_tunnel_in_app() -> (u64, u32, PortsMenu) {
-        app_state::with_app_mut(|app| {
-            app.ssh_tunnels = crate::ssh_tunnel::SshTunnelManager::with_test_command("sleep", &["60"]);
-            let req = TunnelRequest {
-                host: "gpu01".into(), ssh_pid: 0, remote_port: 8000,
-                scheme: "http".into(), process: "uvicorn".into(), session_id: 1,
-            };
-            let res = app.ssh_tunnels.ensure_tunnel(req).unwrap();
-            (res.info.id, res.info.pid, app.ports_menu.clone())
-        }).unwrap()
-    }
-
-    #[test]
-    fn ports_popover_propagates_natural_height_for_populated_rows() {
-        with_headless_gtk(|| {
-            let (win, _) = crate::tests::install_test_window();
-            let menu = app_state::with_app(|app| app.ports_menu.clone()).unwrap();
-            let snap = PortsSnapshot {
-                local_ports: vec![sample_port(3000, "vite"), sample_port(8000, "uvicorn")],
-                ..PortsSnapshot::default()
-            };
-            menu.populate(&snap, UiLocale::Ru);
-            menu.popup();
-            pump_gtk_events();
-            let (mut min_h, mut nat_h) = (0, 0);
-            unsafe { gtk_widget_get_preferred_height(menu.popover_widget(), &mut min_h, &mut nat_h) };
-            assert!(nat_h >= 120, "expected expanded Ports popover natural height >= 120px, got {nat_h}px");
-            menu.popdown();
-            crate::tests::cleanup_test_window(win, &[]);
-        });
-    }
-
-    #[test]
-    fn stop_tunnel_row_click_safely_destroys_button_and_stops_child() {
-        with_headless_gtk(|| {
-            let (win, _) = crate::tests::install_test_window();
-            let (tid, pid, menu) = spawn_test_tunnel_in_app();
-            open_ports_popover_for_app();
-            let act = PortRowAction::StopTunnel { id: tid, label: "gpu01 :8000 to :8000".into() };
-            let btn = make_action_button("×", "ports-stop-btn", act);
-            unsafe {
-                gtk_box_pack_start(menu.inner_widget(), btn, 0, 0, 0);
-                gtk_button_clicked(btn.cast());
-            }
-            pump_gtk_events();
-            assert!(app_state::with_app(|app| app.ssh_tunnels.list_tunnels_snapshot()).unwrap().is_empty());
-            assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
-            crate::tests::cleanup_test_window(win, &[]);
-        });
-    }
-}
+#[path = "ports_ui_tests.rs"]
+mod tests;

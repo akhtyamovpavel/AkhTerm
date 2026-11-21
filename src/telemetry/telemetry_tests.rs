@@ -178,13 +178,16 @@ fn parses_ansi_and_ratio_vte_status_patterns() {
 
 #[test]
 fn formats_timers_compact_tokens_and_popover_markup() {
-    assert_duration_formatting();
-    assert_compact_token_formatting();
-    let view = build_tokens_view(&[sample_high_row()]);
-    assert_eq!(view.button_label.as_deref(), Some("Токены · 184k ▾"));
-    assert_eq!(view.alert, ContextAlert::High);
-    let markup = view.markup.unwrap();
-    assert!(markup.contains("R&amp;D &lt;main&gt;") && markup.contains("Итого по окну (1):"));
+    crate::i18n::with_locale_lock(|| {
+        crate::i18n::set_locale(crate::i18n::UiLocale::Ru);
+        assert_duration_formatting();
+        assert_compact_token_formatting();
+        let view = build_tokens_view(&[sample_high_row()]);
+        assert_eq!(view.button_label.as_deref(), Some("Токены · 184k ▾"));
+        assert_eq!(view.alert, ContextAlert::High);
+        let markup = view.markup.unwrap();
+        assert!(markup.contains("R&amp;D &lt;main&gt;") && markup.contains("Итого по окну (1):"));
+    });
 }
 
 fn assert_duration_formatting() {

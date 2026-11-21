@@ -30,6 +30,7 @@ pub struct TabStrip {
     #[cfg_attr(not(test), allow(dead_code))]
     scroll: *mut GtkWidget,
     tabs: *mut GtkWidget,
+    new_tab: *mut GtkWidget,
     adjustment: *mut GtkAdjustment,
 }
 
@@ -55,11 +56,17 @@ impl TabStrip {
             let new_tab = gtk_button_new_with_label(text::NEW_TAB.as_ptr());
             add_class(new_tab, "new-tab");
             gtk_widget_set_valign(new_tab, GTK_ALIGN_CENTER);
-            gtk_widget_set_tooltip_text(new_tab, text::NEW_TAB_TIP.as_ptr());
+            gtk_widget_set_tooltip_text(new_tab, text::new_tab_tip().as_ptr());
             connect_click(new_tab, on_new_tab, ptr::null_mut());
             gtk_box_pack_start(row, new_tab, 0, 0, 0);
 
-            Self { scroll, tabs, adjustment }
+            Self { scroll, tabs, new_tab, adjustment }
+        }
+    }
+
+    pub fn refresh_locale(&self) {
+        if !self.new_tab.is_null() {
+            unsafe { gtk_widget_set_tooltip_text(self.new_tab, text::new_tab_tip().as_ptr()) };
         }
     }
 
@@ -310,7 +317,7 @@ fn create_title_label() -> *mut GtkWidget {
 
 fn create_status_badge() -> *mut GtkWidget {
     unsafe {
-        let status = gtk_label_new(text::STATUS_APPROVAL.as_ptr());
+        let status = gtk_label_new(text::status_approval().as_ptr());
         add_class(status, "tab-status");
         gtk_widget_set_no_show_all(status, 1);
         gtk_widget_set_visible(status, 0);
@@ -322,7 +329,7 @@ fn create_close_button(data: *mut c_void, on_close: ClickHandler) -> *mut GtkWid
     unsafe {
         let close = gtk_button_new_with_label(text::CLOSE_TAB.as_ptr());
         add_class(close, "tab-close");
-        gtk_widget_set_tooltip_text(close, text::CLOSE_TAB_TIP.as_ptr());
+        gtk_widget_set_tooltip_text(close, text::close_tab_tip().as_ptr());
         connect_click(close, on_close, data);
         close
     }
@@ -336,7 +343,7 @@ fn sync_status_badge(
     let show = needs_approval || working_secs.is_some();
     set_class(status, "tab-timer", !needs_approval && working_secs.is_some());
     let text_changed = if needs_approval {
-        sync_label_cstr(status, text::STATUS_APPROVAL)
+        sync_label_cstr(status, text::status_approval())
     } else if let Some(secs) = working_secs {
         let badge = format_working_badge(secs);
         CString::new(badge).ok().is_some_and(|c| sync_label_cstr(status, &c))
@@ -379,7 +386,7 @@ fn format_tab_tooltip(
     ctx_badge: Option<&str>,
 ) -> String {
     let mut out = if needs_approval {
-        format!("{title} — {}", text::APPROVAL_TAB_TIP.to_string_lossy())
+        format!("{title} — {}", text::approval_tab_tip().to_string_lossy())
     } else {
         title.to_owned()
     };
@@ -401,15 +408,22 @@ fn sync_tab_title(label: *mut GtkWidget, title: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::{set_locale, with_locale_lock, UiLocale};
 
     #[test]
     fn formats_tab_tooltip_with_turn_timer_and_context() {
-        assert_eq!(format_tab_tooltip("AkhTerm", false, None, None), "AkhTerm");
-        assert_eq!(
-            format_tab_tooltip("AkhTerm · AGY", false, Some(134), Some("ctx 84k")),
-            "AkhTerm · AGY · ⏱ 2m 14s · ctx 84k"
-        );
-        let tip = format_tab_tooltip("AkhTerm", true, Some(42), Some("ctx 142k"));
-        assert!(tip.contains("Ждёт апрува") && tip.ends_with("· ⏱ 42s · ctx 142k"));
+        with_locale_lock(|| {
+            set_locale(UiLocale::Ru);
+            assert_eq!(format_tab_tooltip("AkhTerm", false, None, None), "AkhTerm");
+            assert_eq!(
+                format_tab_tooltip("AkhTerm · AGY", false, Some(134), Some("ctx 84k")),
+                "AkhTerm · AGY · ⏱ 2m 14s · ctx 84k"
+            );
+            let tip_ru = format_tab_tooltip("AkhTerm", true, Some(42), Some("ctx 142k"));
+            assert!(tip_ru.contains("Ждёт апрува") && tip_ru.ends_with("· ⏱ 42s · ctx 142k"));
+            set_locale(UiLocale::En);
+            let tip_en = format_tab_tooltip("AkhTerm", true, Some(42), Some("ctx 142k"));
+            assert!(tip_en.contains("Needs approval") && tip_en.ends_with("· ⏱ 42s · ctx 142k"));
+        });
     }
 }

@@ -170,7 +170,7 @@ fn build_footer_bar(root_vbox: *mut GtkWidget) -> (*mut GtkWidget, sys_monitor_u
     unsafe {
         let footer_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         add_class(footer_box, "footer-bar");
-        let lbl = gtk_label_new(CString::new("Запуск ядра VTE-2.91...").unwrap().as_ptr());
+        let lbl = gtk_label_new(ui_text::boot_footer().as_ptr());
         gtk_label_set_xalign(lbl, 0.0);
         gtk_box_pack_start(footer_box, lbl, 1, 1, 0);
         let sys_mon = sys_monitor_ui::SysMonitorWidget::new(session_ops::sys_mon_open_cb());

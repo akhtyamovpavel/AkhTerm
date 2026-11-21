@@ -1179,10 +1179,12 @@ pub(crate) mod tests {
         assert_single_remote_row(&sessions[1], "ctx 186k", "sidebar-metric-high", "agent-codex");
         let view = build_sessions_tokens_view(sessions, sessions[1].id, ThemeMode::Dark, Instant::now());
         menu.apply(&view);
-        assert_eq!(gtk_button_str(menu.button_widget()), "Токены · 186k · cache 86% ▾");
+        let word = crate::ui_text::tokens_word();
+        let sum = crate::ui_text::tokens_summary_prefix();
+        assert_eq!(gtk_button_str(menu.button_widget()), format!("{word} · 186k · cache 86% ▾"));
         assert!(has_css_class(menu.button_widget(), "btn-mi-c"));
         let markup = view.markup.as_deref().unwrap_or("");
-        assert!(markup.contains("ctx 148k") && markup.contains("ctx 186k (93%)") && markup.contains("Итого по окну (2)"));
+        assert!(markup.contains("ctx 148k") && markup.contains("ctx 186k (93%)") && markup.contains(&format!("{sum} (2)")));
     }
 
     fn populate_gtk_remote_sessions(sidebar: &Sidebar, strip: &TabStrip) -> Vec<TermSession> {

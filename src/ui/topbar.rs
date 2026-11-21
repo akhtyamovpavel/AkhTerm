@@ -110,7 +110,7 @@ fn build_mi_popover_box(mi_pop_label: *mut GtkWidget, mi_refactor_btn: *mut GtkW
         add_class(mi_pop_box, "popover-box");
         gtk_label_set_xalign(mi_pop_label, 0.0);
         gtk_box_pack_start(mi_pop_box, mi_pop_label, 0, 1, 0);
-        gtk_widget_set_tooltip_text(mi_refactor_btn, text::MI_REFACTOR_TIP.as_ptr());
+        gtk_widget_set_tooltip_text(mi_refactor_btn, text::mi_refactor_tip().as_ptr());
         gtk_widget_set_sensitive(mi_refactor_btn, 0);
         app_state::connect_click(mi_refactor_btn, on_mi_refactor_clicked, ptr::null_mut());
         gtk_box_pack_start(mi_pop_box, mi_refactor_btn, 0, 1, 0);
@@ -122,7 +122,7 @@ fn build_mi_popover(mi_btn: *mut GtkWidget) -> (*mut GtkWidget, *mut GtkWidget, 
     unsafe {
         let mi_pop = gtk_popover_new(mi_btn);
         let mi_pop_label = gtk_label_new(text::MI_EMPTY_MESSAGE.as_ptr());
-        let mi_refactor_btn = gtk_button_new_with_label(text::MI_REFACTOR.as_ptr());
+        let mi_refactor_btn = gtk_button_new_with_label(text::mi_refactor().as_ptr());
         let mi_pop_box = build_mi_popover_box(mi_pop_label, mi_refactor_btn);
         gtk_container_add(mi_pop, mi_pop_box);
         gtk_widget_show_all(mi_pop_box);
@@ -135,7 +135,7 @@ fn add_worktree_agent_btn(wt_row: *mut GtkWidget, code: usize, cmd: &str) {
     unsafe {
         let lbl = CString::new(format!("⎇ {}", git_wt::agent_slug_from_cmd(cmd))).unwrap();
         let b = gtk_button_new_with_label(lbl.as_ptr());
-        gtk_widget_set_tooltip_text(b, text::AGENT_WORKTREE_TIP.as_ptr());
+        gtk_widget_set_tooltip_text(b, text::agent_worktree_tip().as_ptr());
         app_state::connect_click(b, pane_actions::agent_worktree_cmd_cb(), code as *mut c_void);
         gtk_box_pack_start(wt_row, b, 1, 1, 0);
     }
@@ -143,7 +143,7 @@ fn add_worktree_agent_btn(wt_row: *mut GtkWidget, code: usize, cmd: &str) {
 
 fn pack_worktree_agent_actions(agents_box: *mut GtkWidget) {
     unsafe {
-        let wt_hdr = gtk_label_new(text::AGENTS_WORKTREE_HEADER.as_ptr());
+        let wt_hdr = gtk_label_new(text::agents_worktree_header().as_ptr());
         gtk_label_set_xalign(wt_hdr, 0.0);
         add_class(wt_hdr, "section-header");
         gtk_box_pack_start(agents_box, wt_hdr, 0, 0, 0);
@@ -180,7 +180,7 @@ fn build_agents_popover(agents_btn: *mut GtkWidget) -> *mut GtkWidget {
         add_class(agents_box, "popover-box");
         pack_agent_buttons(agents_box);
         pack_worktree_agent_actions(agents_box);
-        let dispatch = gtk_button_new_with_label(c"Диспетчер задач (Ctrl+Shift+N)…".as_ptr());
+        let dispatch = gtk_button_new_with_label(text::agents_dispatch_btn().as_ptr());
         add_class(dispatch, "btn-mi-a");
         app_state::connect_click(dispatch, on_dispatch_from_agents, ptr::null_mut());
         gtk_box_pack_start(agents_box, dispatch, 0, 1, 2);
@@ -192,16 +192,16 @@ fn build_agents_popover(agents_btn: *mut GtkWidget) -> *mut GtkWidget {
 }
 
 fn pack_left_controls(topbar: *mut GtkWidget, initial_theme: ThemeMode) -> [*mut GtkWidget; 5] {
-    let _side = add_toolbar_sq_action(topbar, text::TOGGLE_SIDEBAR, text::TOGGLE_SIDEBAR_TIP, on_toggle_sidebar);
+    let _side = add_toolbar_sq_action(topbar, text::TOGGLE_SIDEBAR, text::toggle_sidebar_tip(), on_toggle_sidebar);
     let theme_btn = add_toolbar_sq_action(topbar, initial_theme.toggle_icon(), initial_theme.toggle_tooltip(), on_toggle_theme);
-    let split_horiz_btn = add_toolbar_sq_action(topbar, text::SPLIT_HORIZ, text::SPLIT_HORIZ_TIP, session_ops::split_horiz_cb());
-    let split_vert_btn = add_toolbar_sq_action(topbar, text::SPLIT_VERT, text::SPLIT_VERT_TIP, session_ops::split_vert_cb());
-    let reconnect_btn = add_toolbar_action(topbar, text::RECONNECT, text::RECONNECT_TIP, session_ops::reconnect_active_cb());
-    add_toolbar_action(topbar, text::INTERRUPT, text::INTERRUPT_TIP, session_ops::sigint_clicked_cb());
-    add_toolbar_action(topbar, text::PASTE_IMAGE, text::PASTE_IMAGE_TIP, pane_actions::paste_image_clicked_cb());
-    let _zin = add_toolbar_sq_action(topbar, text::ZOOM_IN, text::ZOOM_IN_TIP, on_zoom_in);
-    let zoom_btn = add_toolbar_action(topbar, text::ZOOM_RESET, text::ZOOM_RESET_TIP, on_zoom_reset);
-    let _zout = add_toolbar_sq_action(topbar, text::ZOOM_OUT, text::ZOOM_OUT_TIP, on_zoom_out);
+    let split_horiz_btn = add_toolbar_sq_action(topbar, text::SPLIT_HORIZ, text::split_horiz_tip(), session_ops::split_horiz_cb());
+    let split_vert_btn = add_toolbar_sq_action(topbar, text::SPLIT_VERT, text::split_vert_tip(), session_ops::split_vert_cb());
+    let reconnect_btn = add_toolbar_action(topbar, text::reconnect(), text::reconnect_tip(), session_ops::reconnect_active_cb());
+    add_toolbar_action(topbar, text::INTERRUPT, text::interrupt_tip(), session_ops::sigint_clicked_cb());
+    add_toolbar_action(topbar, text::paste_image(), text::paste_image_tip(), pane_actions::paste_image_clicked_cb());
+    let _zin = add_toolbar_sq_action(topbar, text::ZOOM_IN, text::zoom_in_tip(), on_zoom_in);
+    let zoom_btn = add_toolbar_action(topbar, text::ZOOM_RESET, text::zoom_reset_tip(), on_zoom_reset);
+    let _zout = add_toolbar_sq_action(topbar, text::ZOOM_OUT, text::zoom_out_tip(), on_zoom_out);
     [theme_btn, split_horiz_btn, split_vert_btn, reconnect_btn, zoom_btn]
 }
 
@@ -211,7 +211,7 @@ fn create_topbar_shell(root_vbox: *mut GtkWidget) -> (*mut GtkWidget, tab_strip:
         add_class(topbar, "topbar");
         gtk_box_pack_start(root_vbox, topbar, 0, 1, 0);
         let tab_strip = tab_strip::TabStrip::new(root_vbox, session_ops::new_tab_cb());
-        let box_btn = gtk_button_new_with_label(text::PROFILES.as_ptr());
+        let box_btn = gtk_button_new_with_label(text::i18n_text::profiles().as_ptr());
         gtk_box_pack_start(topbar, box_btn, 0, 0, 0);
         (topbar, tab_strip, box_btn)
     }
@@ -229,7 +229,7 @@ fn pack_right_menus(
     app_state::connect_click(prefs_btn, on_settings_clicked, ptr::null_mut());
     let handoff_btn = add_end_button(topbar, text::i18n_text::handoff(), Some(text::i18n_text::handoff_tip()));
     let agents_btn = add_end_button(topbar, text::i18n_text::agents(), None);
-    let swarm_btn = add_end_button(topbar, c"Рой ▾", Some(c"Панель роя (Ctrl+Shift+S)"));
+    let swarm_btn = add_end_button(topbar, text::swarm_btn(), Some(text::swarm_tip()));
     app_state::connect_click(swarm_btn, on_swarm_open, ptr::null_mut());
     let git_btn = add_end_button(topbar, text::i18n_text::git_menu(), Some(text::i18n_text::git_menu_tip()));
     let mi_btn = add_end_button(topbar, text::i18n_text::maintainability(), None);
@@ -712,39 +712,34 @@ fn set_btn_text_and_tip(btn: *mut GtkWidget, label: Option<&CStr>, tip: Option<&
     }
 }
 
-fn swarm_btn_texts() -> (&'static CStr, &'static CStr) {
-    if text::locale_is_ru() {
-        (c"Рой ▾", c"Панель роя (Ctrl+Shift+S)")
-    } else {
-        (c"Swarm ▾", c"Swarm dashboard (Ctrl+Shift+S)")
-    }
+fn refresh_localized_subwidgets(app: &AppState) {
+    app.tokens_menu.refresh_locale();
+    app.tab_strip.refresh_locale();
+    app.update_banner.refresh_locale();
+    app.ports_menu.refresh_locale();
+    app.sys_monitor.refresh_locale();
 }
 
 fn sync_localized_chrome() {
     let Some(btns) = app_state::with_app(|app| [
         app.box_btn, app.servers_btn, app.handoff_btn, app.agents_btn, app.prefs_btn,
-        app.swarm_btn, app.reconnect_btn, app.git_menu.button(), app.tokens_menu.button_widget(),
+        app.swarm_btn, app.reconnect_btn, app.git_menu.button(), app.mi_refactor_btn,
     ]) else {
         return;
     };
-    let (swarm_lbl, swarm_tip) = swarm_btn_texts();
     let specs: [(*mut GtkWidget, Option<&CStr>, Option<&CStr>); 9] = [
         (btns[0], Some(text::i18n_text::profiles()), None),
         (btns[1], Some(text::i18n_text::servers()), None),
         (btns[2], Some(text::i18n_text::handoff()), Some(text::i18n_text::handoff_tip())),
         (btns[3], Some(text::i18n_text::agents()), None),
         (btns[4], Some(text::i18n_text::settings_btn()), Some(text::i18n_text::settings_tip())),
-        (btns[5], Some(swarm_lbl), Some(swarm_tip)),
+        (btns[5], Some(text::swarm_btn()), Some(text::swarm_tip())),
         (btns[6], Some(text::i18n_text::reconnect()), Some(text::i18n_text::reconnect_tip())),
         (btns[7], None, Some(text::i18n_text::git_menu_tip())),
-        (btns[8], None, Some(text::i18n_text::tokens_tip())),
+        (btns[8], Some(text::mi_refactor()), Some(text::mi_refactor_tip())),
     ];
     specs.into_iter().for_each(|(b, l, t)| set_btn_text_and_tip(b, l, t));
-    app_state::with_app(|app| {
-        app.update_banner.refresh_locale();
-        app.ports_menu.refresh_locale();
-        app.sys_monitor.refresh_locale();
-    });
+    app_state::with_app(refresh_localized_subwidgets);
 }
 
 fn collect_app_vtes(app: &AppState) -> Vec<*mut GtkWidget> {

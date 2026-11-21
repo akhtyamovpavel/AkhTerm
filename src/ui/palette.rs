@@ -661,6 +661,7 @@ fn build_scroll_area() -> (*mut GtkWidget, *mut GtkWidget) {
         gtk_scrolled_window_set_min_content_width(scroll, 520);
         gtk_scrolled_window_set_min_content_height(scroll, 220);
         gtk_scrolled_window_set_max_content_height(scroll, 360);
+        gtk_scrolled_window_set_propagate_natural_height(scroll, 1);
         let list_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
         add_class(list_box, "palette-list");
         gtk_container_add(scroll, list_box);

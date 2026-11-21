@@ -615,7 +615,7 @@ fn pack_tmux_widgets(list: *mut GtkWidget, tmux: *mut GtkWidget, heading: *mut G
 fn build_tmux_disclosure(list: *mut GtkWidget) -> (*mut GtkWidget, *mut GtkWidget, *mut GtkWidget) {
     let tmux = unsafe { gtk_expander_new(ptr::null()) };
     add_class(tmux, "sidebar-disclosure");
-    let tmux_heading = label(c"Сессии tmux", "sidebar-tmux-label");
+    let tmux_heading = label(text::sidebar_tmux_initial(), "sidebar-tmux-label");
     let tmux_list = unsafe { gtk_box_new(GTK_ORIENTATION_VERTICAL, 2) };
     pack_tmux_widgets(list, tmux, tmux_heading, tmux_list);
     (tmux, tmux_heading, tmux_list)
@@ -1135,14 +1135,14 @@ fn apply_row_status(
 fn status_for(session: &TermSession) -> (&'static CStr, &'static str) {
     match session.effective_category() {
         SessionCategory::Remote if session.remote().is_some() && session.child_pid == 0 => {
-            (c"Нет связи", "sidebar-ended")
+            (text::sidebar_status_offline(), "sidebar-ended")
         }
-        _ if session.active_pid() == 0 => (c"Завершена", "sidebar-ended"),
+        _ if session.active_pid() == 0 => (text::sidebar_status_ended(), "sidebar-ended"),
         _ if session.pane_registry.has_hook_error() => (text::STATUS_ERROR.cstr(), "sidebar-approval"),
-        _ if session.state == WorkState::NeedsApproval => (text::STATUS_APPROVAL, "sidebar-approval"),
-        _ if session.unread || session.state == WorkState::Ready => (c"Готово", "sidebar-ready"),
-        SessionCategory::Daemon => (c"Онлайн", "sidebar-working"),
-        _ if session.state == WorkState::Working => (c"В работе", "sidebar-working"),
+        _ if session.state == WorkState::NeedsApproval => (text::status_approval(), "sidebar-approval"),
+        _ if session.unread || session.state == WorkState::Ready => (text::sidebar_status_ready(), "sidebar-ready"),
+        SessionCategory::Daemon => (text::sidebar_status_online(), "sidebar-working"),
+        _ if session.state == WorkState::Working => (text::sidebar_status_working(), "sidebar-working"),
         _ => (c"", ""),
     }
 }
