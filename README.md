@@ -96,7 +96,7 @@ Prebuilt `.deb`, `.rpm`, and portable Linux `.tar.gz` archives are attached to [
 Tested on Ubuntu 24.04 and 26.04 (`amd64`):
 
 ```sh
-sudo apt install ./akhterm_1.4.3-1_amd64.deb
+sudo apt install ./akhterm_1.5.0-1_amd64.deb
 ```
 
 Launch **AkhTerm** from your application menu or run `akhterm` (`akhterm --version` prints version and build metadata). Remove with `sudo apt remove akhterm` (your configuration and saved state in `~` are preserved). See [.github/workflows/build-deb.yml](.github/workflows/build-deb.yml) and [.github/workflows/release.yml](.github/workflows/release.yml).
@@ -106,14 +106,14 @@ Launch **AkhTerm** from your application menu or run `akhterm` (`akhterm --versi
 Tested on Fedora 41 and 42 (`x86_64`), including KDE Breeze GTK 3 and icon packages:
 
 ```sh
-sudo dnf install ./akhterm-1.4.3-1.x86_64.rpm
+sudo dnf install ./akhterm-1.5.0-1.x86_64.rpm
 ```
 
 Launch **AkhTerm** from your application menu or run `akhterm`. Remove with `sudo dnf remove akhterm`. See [.github/workflows/build-rpm.yml](.github/workflows/build-rpm.yml).
 
 ### Portable Linux Tarball (`.tar.gz`)
 
-Extract `akhterm_1.4.3_linux_x86_64.tar.gz` to a user-writable directory (such as `~/.local/bin`) to run `akhterm` without root privileges and receive one-click atomic in-app self-updates.
+Extract `akhterm_1.5.0_linux_x86_64.tar.gz` to a user-writable directory (such as `~/.local/bin`) to run `akhterm` without root privileges and receive one-click atomic in-app self-updates.
 
 AkhTerm runs natively under **Wayland** and **X11** on **GNOME** and **KDE Plasma** (`StartupWMClass=AkhTerm` in `org.akhterm.AkhTerm.desktop`).
 
