@@ -109,7 +109,9 @@ fn handle_ctrl_shift_shortcut(keyval: c_uint, state: c_uint, keycode: u16) -> bo
     if (state & GDK_CONTROL_MASK) == 0 || (state & GDK_SHIFT_MASK) == 0 {
         return false;
     }
-    handle_tab_shortcut(keyval, state, keycode) || handle_ctrl_shift_clipboard(keyval, state, keycode)
+    handle_tab_shortcut(keyval, state, keycode)
+        || handle_ctrl_shift_clipboard(keyval, state, keycode)
+        || crate::cmd_marks::handle_nav_shortcut(keyval, state)
 }
 
 pub(crate) fn window_key_press_cb() -> extern "C" fn(*mut GtkWidget, *const GdkEvent, *mut c_void) -> c_int {
@@ -289,7 +291,7 @@ fn execute_palette_tool_action(action: palette::PaletteAction) {
         palette::PaletteAction::SwitchLocale => topbar::toggle_locale_for_app(),
         palette::PaletteAction::CheckUpdates => crate::about::trigger_check_updates(),
         palette::PaletteAction::OpenPortsMenu => crate::ports_ui::open_ports_popover_for_app(),
-        _ => {}
+        other => crate::cmd_marks::execute_palette_action(other),
     }
 }
 

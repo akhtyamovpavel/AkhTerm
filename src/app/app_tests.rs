@@ -471,6 +471,7 @@ fn check_module_mi_gates(name: &str, score: f64, failures: &mut Vec<String>) {
         ("sys_monitor.rs", 60.0), ("sys_monitor_ui.rs", 60.0),
         ("task_dispatch.rs", 60.0), ("topbar.rs", 60.0),
         ("port_radar.rs", 60.0), ("ssh_tunnel.rs", 60.0), ("ports_ui.rs", 60.0),
+        ("cmd_marks.rs", 60.0),
     ];
     let file = Path::new(name).file_name().and_then(|s| s.to_str()).unwrap_or(name);
     if file == "mod.rs" && score < 60.0 {

@@ -606,6 +606,59 @@ pub mod i18n_text {
     pub fn sys_mon_bat_not_charging() -> &'static str { SYS_MON_BAT_NOT_CHARGING.as_str() }
     pub const SYS_MON_BAT_UNKNOWN: UiText = UiText::new(c"Нет данных", c"Unknown");
     pub fn sys_mon_bat_unknown() -> &'static str { SYS_MON_BAT_UNKNOWN.as_str() }
+
+    pub const CTX_PREV_COMMAND: UiText = UiText::new(c"Предыдущая команда", c"Previous Command");
+    pub fn ctx_prev_command() -> &'static CStr { CTX_PREV_COMMAND.cstr() }
+    pub const CTX_NEXT_COMMAND: UiText = UiText::new(c"Следующая команда", c"Next Command");
+    pub fn ctx_next_command() -> &'static CStr { CTX_NEXT_COMMAND.cstr() }
+    pub const CTX_COPY_CMD_OUTPUT: UiText = UiText::new(c"Скопировать вывод команды", c"Copy Command Output");
+    pub fn ctx_copy_cmd_output() -> &'static CStr { CTX_COPY_CMD_OUTPUT.cstr() }
+    pub const CTX_SEND_FAILED_AGENT: UiText = UiText::new(c"Отправить ошибку в агента", c"Send Failed Output to Agent");
+    pub fn ctx_send_failed_agent() -> &'static CStr { CTX_SEND_FAILED_AGENT.cstr() }
+    pub const CMD_PREV_DETAIL: UiText = UiText::new(
+        c"Прокрутить к предыдущей команде OSC 133 (Ctrl+Shift+Up)",
+        c"Scroll to previous OSC 133 command prompt (Ctrl+Shift+Up)",
+    );
+    pub const CMD_NEXT_DETAIL: UiText = UiText::new(
+        c"Прокрутить к следующей команде OSC 133 (Ctrl+Shift+Down)",
+        c"Scroll to next OSC 133 command prompt (Ctrl+Shift+Down)",
+    );
+    pub const CMD_COPY_OUTPUT_DETAIL: UiText = UiText::new(
+        c"Скопировать вывод последней команды OSC 133 в буфер",
+        c"Copy last OSC 133 command output to clipboard",
+    );
+    pub const CMD_SEND_FAILED_DETAIL: UiText = UiText::new(
+        c"Отправить вывод последней команды с ошибкой в агента",
+        c"Send last failed command output (exit != 0) to agent pane",
+    );
+    pub const CMD_NO_MARKS: UiText = UiText::new(
+        c"Нет отметок команд OSC 133 в этой панели",
+        c"No OSC 133 command marks in this pane",
+    );
+    pub const CMD_NO_PREV: UiText = UiText::new(
+        c"Выше нет предыдущей команды",
+        c"No earlier command prompt",
+    );
+    pub const CMD_NO_NEXT: UiText = UiText::new(
+        c"Ниже нет следующей команды",
+        c"No later command prompt",
+    );
+    pub const CMD_NO_FAILED: UiText = UiText::new(
+        c"Нет завершённых команд с ошибкой в этой панели",
+        c"No failed command (exit != 0) recorded in this pane",
+    );
+    pub const CMD_OUTPUT_COPIED: UiText = UiText::new(
+        c"Вывод команды скопирован в буфер",
+        c"Command output copied to clipboard",
+    );
+    pub const CMD_SENT_TO_AGENT: UiText = UiText::new(
+        c"Вывод ошибки отправлен в агента",
+        c"Failed output sent to agent",
+    );
+    pub const CMD_COPIED_NO_AGENT: UiText = UiText::new(
+        c"Агент не найден: Markdown-блок ошибки скопирован в буфер",
+        c"No active agent pane: failed output Markdown copied to clipboard",
+    );
 }
 
 pub use i18n_text::*;
@@ -755,6 +808,24 @@ mod tests {
         }
     }
 
+    fn verify_cmd_mark_pairs() {
+        for entry in [
+            i18n_text::CTX_PREV_COMMAND, i18n_text::CTX_NEXT_COMMAND,
+            i18n_text::CTX_COPY_CMD_OUTPUT, i18n_text::CTX_SEND_FAILED_AGENT,
+            i18n_text::CMD_PREV_DETAIL, i18n_text::CMD_NEXT_DETAIL,
+            i18n_text::CMD_COPY_OUTPUT_DETAIL, i18n_text::CMD_SEND_FAILED_DETAIL,
+            i18n_text::CMD_NO_MARKS, i18n_text::CMD_NO_PREV, i18n_text::CMD_NO_NEXT,
+            i18n_text::CMD_NO_FAILED, i18n_text::CMD_OUTPUT_COPIED,
+            i18n_text::CMD_SENT_TO_AGENT, i18n_text::CMD_COPIED_NO_AGENT,
+        ] {
+            assert_pair_valid(entry);
+            for loc in [UiLocale::Ru, UiLocale::En] {
+                let s = entry.for_locale(loc).to_str().unwrap();
+                assert!(!s.contains("->") && !s.contains('→') && !s.contains("=>"), "arrow in {s}");
+            }
+        }
+    }
+
     #[test]
     fn every_ui_text_entry_has_valid_non_empty_ru_and_en_strings() {
         verify_core_and_palette_pairs();
@@ -762,6 +833,7 @@ mod tests {
         verify_ports_pairs();
         verify_sys_monitor_pairs();
         verify_checkpoint_pairs();
+        verify_cmd_mark_pairs();
     }
 
     #[test]

@@ -110,6 +110,10 @@ pub enum PaletteAction {
     SwitchLocale,
     CheckUpdates,
     OpenPortsMenu,
+    PrevCommand,
+    NextCommand,
+    CopyCommandOutput,
+    SendFailedToAgent,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -497,6 +501,7 @@ fn push_v1_command_items(out: &mut Vec<PaletteItem>, locale: UiLocale) {
     out.push(make_about_item(locale));
     out.push(make_locale_item(locale));
     out.push(make_check_updates_item(locale));
+    crate::cmd_marks::push_palette_items(out, locale);
 }
 
 pub fn collect_items_for_locale(src: &PaletteSource<'_>, locale: UiLocale) -> Vec<PaletteItem> {

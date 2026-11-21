@@ -26,6 +26,10 @@ pub enum ContextAction {
     SplitDown { sid: usize, vte: *mut GtkWidget },
     ClosePane { sid: usize, vte: *mut GtkWidget },
     ClearBuffer(*mut GtkWidget),
+    PrevCommand(*mut GtkWidget),
+    NextCommand(*mut GtkWidget),
+    CopyCommandOutput(*mut GtkWidget),
+    SendFailedToAgent(*mut GtkWidget),
     RenameTab { sid: usize, anchor: *mut GtkWidget },
     DuplicateTab(usize),
     ReconnectTab(usize),
@@ -201,6 +205,8 @@ pub struct VteMenuSpec {
     pub link_target: Option<crate::session::VteLink>,
     pub is_local: bool,
     pub targets: Vec<SessionTarget>,
+    pub has_cmd_marks: bool,
+    pub has_failed_cmd: bool,
 }
 
 pub struct TabMenuSpec {
@@ -380,9 +386,17 @@ fn append_vte_pane_items(menu: *mut GtkWidget, spec: &VteMenuSpec, dispatch: &Di
     items.push(append_bound_item(menu, text::ctx_close_pane().as_ptr(), local, close, dispatch));
 }
 
+fn append_vte_command_items(menu: *mut GtkWidget, spec: &VteMenuSpec, dispatch: &DispatchFn, items: &mut Vec<*mut GtkWidget>) {
+    let has_marks = spec.has_cmd_marks;
+    items.push(append_bound_item(menu, text::ctx_prev_command().as_ptr(), has_marks, ContextAction::PrevCommand(spec.vte), dispatch));
+    items.push(append_bound_item(menu, text::ctx_next_command().as_ptr(), has_marks, ContextAction::NextCommand(spec.vte), dispatch));
+    items.push(append_bound_item(menu, text::ctx_copy_cmd_output().as_ptr(), has_marks, ContextAction::CopyCommandOutput(spec.vte), dispatch));
+    items.push(append_bound_item(menu, text::ctx_send_failed_agent().as_ptr(), spec.has_failed_cmd, ContextAction::SendFailedToAgent(spec.vte), dispatch));
+}
+
 pub fn build_vte_menu(spec: &VteMenuSpec, dispatch: &DispatchFn) -> BuiltMenu {
     let menu = new_styled_menu();
-    let mut items = Vec::with_capacity(10);
+    let mut items = Vec::with_capacity(14);
     let mut submenu_items = Vec::with_capacity(spec.targets.len());
     items.push(append_bound_item(menu, text::ctx_copy().as_ptr(), spec.has_selection, ContextAction::CopySelection(spec.vte), dispatch));
     items.push(append_bound_item(menu, text::ctx_paste().as_ptr(), true, ContextAction::PasteSmart { sid: spec.sid, vte: spec.vte }, dispatch));
@@ -393,6 +407,8 @@ pub fn build_vte_menu(spec: &VteMenuSpec, dispatch: &DispatchFn) -> BuiltMenu {
     append_vte_pane_items(menu, spec, dispatch, &mut items);
     append_separator(menu);
     items.push(append_bound_item(menu, text::ctx_clear_buffer().as_ptr(), true, ContextAction::ClearBuffer(spec.vte), dispatch));
+    append_separator(menu);
+    append_vte_command_items(menu, spec, dispatch, &mut items);
     BuiltMenu { menu, items, submenu_items }
 }
 
@@ -694,9 +710,10 @@ mod tests {
     fn check_remote_vte_menu(vte: *mut GtkWidget, dispatch: &DispatchFn) {
         let spec = VteMenuSpec {
             sid: 4, vte, has_selection: false, selected_text: None, link_target: None, is_local: false, targets: Vec::new(),
+            has_cmd_marks: false, has_failed_cmd: false,
         };
         let built = build_vte_menu(&spec, dispatch);
-        assert_eq!(built.items.len(), 7);
+        assert_eq!(built.items.len(), 11);
         assert_eq!(item_label(built.items[0]), "Копировать");
         assert!(!is_sensitive(built.items[0]));
         assert!(is_sensitive(built.items[1]));
@@ -704,6 +721,9 @@ mod tests {
         assert!(!is_sensitive(built.items[3]));
         assert!(!is_sensitive(built.items[5]));
         assert!(is_sensitive(built.items[6]));
+        assert_eq!(item_label(built.items[7]), "Предыдущая команда");
+        assert!(!is_sensitive(built.items[7]));
+        assert!(!is_sensitive(built.items[10]));
         unsafe { gtk_widget_destroy(built.menu) };
     }
 
@@ -716,11 +736,16 @@ mod tests {
             link_target: Some(crate::session::VteLink { url: "https://example.org".to_owned(), document: None }),
             is_local: true,
             targets: vec![SessionTarget { sid: 7, label: "Агент · Claude".to_owned() }],
+            has_cmd_marks: true,
+            has_failed_cmd: true,
         };
         let built = build_vte_menu(&spec, dispatch);
-        assert_eq!(built.items.len(), 9);
+        assert_eq!(built.items.len(), 13);
         assert_eq!(item_label(built.items[2]), "Открыть ссылку");
         assert_eq!(item_label(built.submenu_items[0]), "Агент · Claude");
+        assert!(is_sensitive(built.items[9]));
+        assert!(is_sensitive(built.items[12]));
+        assert_eq!(item_label(built.items[12]), "Отправить ошибку в агента");
         unsafe {
             gtk_menu_item_activate(built.items[2]);
             gtk_menu_item_activate(built.submenu_items[0]);
@@ -863,6 +888,8 @@ mod tests {
             link_target: Some(crate::session::VteLink { url: link, document: None }),
             is_local: true,
             targets: Vec::new(),
+            has_cmd_marks: true,
+            has_failed_cmd: false,
         }
     }
 
@@ -870,6 +897,8 @@ mod tests {
         crate::i18n::set_locale(crate::i18n::UiLocale::En);
         let en_built = build_vte_menu(spec, dispatch);
         assert_eq!(item_label(en_built.items[4]), "Open Containing Folder");
+        assert_eq!(item_label(en_built.items[10]), "Previous Command");
+        assert_eq!(item_label(en_built.items[13]), "Send Failed Output to Agent");
         unsafe { gtk_widget_destroy(en_built.menu) };
         crate::i18n::set_locale(crate::i18n::UiLocale::Ru);
     }
@@ -881,7 +910,7 @@ mod tests {
         std::fs::write(&file, "fn ok() {}\n").unwrap();
         let spec = build_link_test_spec(vte, format!("{}:12:3", file.display()));
         let built = build_vte_menu(&spec, dispatch);
-        assert_eq!(built.items.len(), 10);
+        assert_eq!(built.items.len(), 14);
         assert_eq!(item_label(built.items[4]), "Открыть папку");
         let before = log.borrow().len();
         unsafe { gtk_menu_item_activate(built.items[4]) };
