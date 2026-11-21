@@ -5,6 +5,7 @@ use std::ffi::{c_void, CString};
 use std::ptr;
 use std::time::Instant;
 
+use crate::agent_handoff::{self, ContextHealth};
 use crate::connect_click;
 use crate::ffi::*;
 use crate::session::TermSession;
@@ -95,6 +96,7 @@ pub fn build_sessions_tokens_view(
 pub struct TokensViewData {
     pub button_label: Option<String>,
     pub alert: ContextAlert,
+    pub health: ContextHealth,
     pub markup: Option<String>,
 }
 
@@ -174,6 +176,7 @@ struct WindowTotals {
     has_cost: bool,
     active_badge: Option<String>,
     active_alert: ContextAlert,
+    active_health: ContextHealth,
     seen_keys: HashSet<String>,
 }
 
@@ -182,6 +185,7 @@ impl WindowTotals {
         if row.is_active {
             self.active_badge = row.snap.usage_badge();
             self.active_alert = row.snap.alert_level();
+            self.active_health = ContextHealth::from_snapshot(&row.snap);
         }
     }
 
@@ -261,12 +265,12 @@ fn finalize_tokens_view(
 ) -> TokensViewData {
     let button_label = totals.button_label();
     if lines.is_empty() {
-        return TokensViewData { button_label, alert: totals.active_alert, markup: None };
+        return TokensViewData { button_label, alert: totals.active_alert, health: totals.active_health, markup: None };
     }
     let summary = totals.summary_markup(lines.len(), colors);
     lines.push(String::new());
     lines.push(summary);
-    TokensViewData { button_label, alert: totals.active_alert, markup: Some(lines.join("\n")) }
+    TokensViewData { button_label, alert: totals.active_alert, health: totals.active_health, markup: Some(lines.join("\n")) }
 }
 
 #[allow(dead_code)]
@@ -284,6 +288,7 @@ pub struct TokensMenu {
     button: *mut GtkWidget,
     popover: *mut GtkWidget,
     pub(super) body_label: *mut GtkWidget,
+    handoff: agent_handoff::HandoffControls,
 }
 
 impl TokensMenu {
@@ -293,9 +298,9 @@ impl TokensMenu {
             gtk_widget_set_tooltip_text(button, text::TOKENS_TIP.as_ptr());
             gtk_box_pack_end(topbar, button, 0, 0, 0);
             let popover = gtk_popover_new(button);
-            let body_label = populate_tokens_popover(popover);
+            let (body_label, handoff) = populate_tokens_popover(popover);
             connect_click(button, on_open, popover);
-            Self { button, popover, body_label }
+            Self { button, popover, body_label, handoff }
         }
     }
 
@@ -307,18 +312,24 @@ impl TokensMenu {
         self.button
     }
 
+    #[cfg(test)]
+    pub fn health_banner_widget(&self) -> *mut GtkWidget {
+        self.handoff.banner
+    }
+
     pub fn apply(&self, view: &TokensViewData) {
         if self.button.is_null() || self.body_label.is_null() {
             return;
         }
         set_class(self.button, "btn-mi-b", view.alert == ContextAlert::Warn);
         set_class(self.button, "btn-mi-c", view.alert == ContextAlert::High);
+        self.handoff.apply(self.button, view.health);
         apply_button_label(self.button, view.button_label.as_deref());
         apply_body_markup(self.body_label, view.markup.as_deref());
     }
 }
 
-fn populate_tokens_popover(popover: *mut GtkWidget) -> *mut GtkWidget {
+fn populate_tokens_popover(popover: *mut GtkWidget) -> (*mut GtkWidget, agent_handoff::HandoffControls) {
     unsafe {
         let vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
         add_class(vbox, "popover-box");
@@ -326,18 +337,24 @@ fn populate_tokens_popover(popover: *mut GtkWidget) -> *mut GtkWidget {
         gtk_label_set_xalign(hdr, 0.0);
         add_class(hdr, "section-header");
         gtk_box_pack_start(vbox, hdr, 0, 0, 0);
+        let handoff = agent_handoff::populate_handoff_controls(vbox);
+        let body_label = create_tokens_body_label();
+        gtk_box_pack_start(vbox, create_tokens_scroll(body_label), 1, 1, 0);
+        gtk_container_add(popover, vbox);
+        gtk_widget_show_all(vbox);
+        (body_label, handoff)
+    }
+}
 
+fn create_tokens_scroll(body_label: *mut GtkWidget) -> *mut GtkWidget {
+    unsafe {
         let scroll = gtk_scrolled_window_new(ptr::null_mut(), ptr::null_mut());
         gtk_scrolled_window_set_policy(scroll, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
         gtk_scrolled_window_set_min_content_width(scroll, 450);
         gtk_scrolled_window_set_max_content_height(scroll, 380);
         gtk_scrolled_window_set_propagate_natural_height(scroll, 1);
-        let body_label = create_tokens_body_label();
         gtk_container_add(scroll, body_label);
-        gtk_box_pack_start(vbox, scroll, 1, 1, 0);
-        gtk_container_add(popover, vbox);
-        gtk_widget_show_all(vbox);
-        body_label
+        scroll
     }
 }
 

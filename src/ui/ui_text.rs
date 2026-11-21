@@ -659,6 +659,35 @@ pub mod i18n_text {
         c"Агент не найден: Markdown-блок ошибки скопирован в буфер",
         c"No active agent pane: failed output Markdown copied to clipboard",
     );
+    pub const CTX_HANDOFF_HEADER: UiText = UiText::new(c"ПЕРЕДАТЬ АГЕНТУ", c"HAND OFF TO AGENT");
+    pub const CTX_HANDOFF_TIP: UiText = UiText::new(
+        c"Собрать Handoff Pack, скопировать в буфер и открыть свежего агента в этом каталоге",
+        c"Build Handoff Pack, copy to clipboard, and open a fresh agent in this folder",
+    );
+    pub const CTX_HEALTH_WARN_PREFIX: UiText = UiText::new(c"Контекст", c"Context");
+    pub const CTX_HEALTH_WARN_HINT: UiText = UiText::new(
+        c"окно заполняется, подготовьте передачу свежему агенту",
+        c"window filling up, consider handing off to a fresh agent",
+    );
+    pub const CTX_HEALTH_CRIT_PREFIX: UiText = UiText::new(c"Критический контекст", c"Critical context");
+    pub const CTX_HEALTH_CRIT_HINT: UiText = UiText::new(
+        c"высокий риск деградации, передайте задачу свежему агенту",
+        c"high context rot risk, hand off to a fresh agent now",
+    );
+    pub const CTX_CACHE_DROP_LABEL: UiText = UiText::new(c"Падение кэша промпта", c"Prompt cache drop");
+    pub const CTX_CACHE_DROP_HINT: UiText = UiText::new(
+        c"кэш префикса сброшен",
+        c"prefix cache invalidated",
+    );
+    pub const CTX_HANDOFF_LOCAL_ONLY: UiText = UiText::new(
+        c"Передача агенту доступна только для локальной вкладки",
+        c"Agent handoff is available for local tabs only",
+    );
+    pub const CTX_HANDOFF_PALETTE_PREFIX: UiText = UiText::new(c"Передать агенту", c"Hand Off to Agent");
+    pub const CTX_HANDOFF_PALETTE_DETAIL: UiText = UiText::new(
+        c"Собрать Handoff Pack (git diff, вывод терминала, бриф) и открыть новую вкладку",
+        c"Build Handoff Pack (git diff, terminal tail, brief) and open a new tab",
+    );
 }
 
 pub use i18n_text::*;
@@ -826,6 +855,23 @@ mod tests {
         }
     }
 
+    fn verify_context_handoff_pairs() {
+        for entry in [
+            i18n_text::CTX_HANDOFF_HEADER, i18n_text::CTX_HANDOFF_TIP,
+            i18n_text::CTX_HEALTH_WARN_PREFIX, i18n_text::CTX_HEALTH_WARN_HINT,
+            i18n_text::CTX_HEALTH_CRIT_PREFIX, i18n_text::CTX_HEALTH_CRIT_HINT,
+            i18n_text::CTX_CACHE_DROP_LABEL, i18n_text::CTX_CACHE_DROP_HINT,
+            i18n_text::CTX_HANDOFF_LOCAL_ONLY, i18n_text::CTX_HANDOFF_PALETTE_PREFIX,
+            i18n_text::CTX_HANDOFF_PALETTE_DETAIL,
+        ] {
+            assert_pair_valid(entry);
+            for loc in [UiLocale::Ru, UiLocale::En] {
+                let s = entry.for_locale(loc).to_str().unwrap();
+                assert!(!s.contains("->") && !s.contains('→') && !s.contains("=>"), "arrow in {s}");
+            }
+        }
+    }
+
     #[test]
     fn every_ui_text_entry_has_valid_non_empty_ru_and_en_strings() {
         verify_core_and_palette_pairs();
@@ -834,6 +880,7 @@ mod tests {
         verify_sys_monitor_pairs();
         verify_checkpoint_pairs();
         verify_cmd_mark_pairs();
+        verify_context_handoff_pairs();
     }
 
     #[test]

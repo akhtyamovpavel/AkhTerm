@@ -83,7 +83,16 @@ pub const LIGHT_ZINC_TOKENS: &str = "\
 @define-color update_link #1d4ed8;\n\
 @define-color update_shadow rgba(9, 9, 11, 0.14);\n\
 @define-color sys_mon_bg #f4f4f5;\n\
-@define-color sys_mon_fg #27272a;\n";
+@define-color sys_mon_fg #27272a;\n\
+@define-color ctx_warn_fg #92400e;\n\
+@define-color ctx_warn_bg rgba(245, 158, 11, 0.15);\n\
+@define-color ctx_warn_border rgba(180, 83, 9, 0.48);\n\
+@define-color ctx_crit_fg #9f1239;\n\
+@define-color ctx_crit_bg rgba(225, 29, 72, 0.12);\n\
+@define-color ctx_crit_border rgba(190, 18, 60, 0.50);\n\
+@define-color ctx_cache_fg #075985;\n\
+@define-color ctx_cache_bg rgba(2, 132, 199, 0.12);\n\
+@define-color ctx_cache_border rgba(3, 105, 161, 0.48);\n";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ThemeMode {

@@ -1,3 +1,4 @@
+pub mod agent_handoff;
 pub mod git_checkpoints;
 pub mod git_review;
 pub mod git_status;
