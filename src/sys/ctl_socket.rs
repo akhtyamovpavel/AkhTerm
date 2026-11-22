@@ -394,6 +394,8 @@ mod tests {
                 CtlResponse::Ok { message: Some(format!("sent {pane_id} {} {enter}", text.len())) }
             }
             CtlRequest::OpenDoc { path, .. } => CtlResponse::Ok { message: Some(format!("opened {path}")) },
+            CtlRequest::Capture { pane_id, .. } => CtlResponse::Capture { pane_id, lines: vec!["ok".into()] },
+            CtlRequest::SendKey { pane_id, key } => CtlResponse::Ok { message: Some(format!("key {key} -> {pane_id}")) },
         }
     }
 

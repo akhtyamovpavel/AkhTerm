@@ -118,6 +118,7 @@ pub enum PaletteAction {
     SendFailedToAgent,
     HandOffAgent(usize),
     InstallAgentHooks,
+    OpenRemoteMenu,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -499,6 +500,11 @@ fn make_install_hooks_item(locale: UiLocale) -> PaletteItem {
     new_ui_item(PaletteKind::Agent, text::PALETTE_HOOKS_TITLE, text::PALETTE_HOOKS_DETAIL, kw, PaletteAction::InstallAgentHooks, locale)
 }
 
+fn make_remote_item(locale: UiLocale) -> PaletteItem {
+    let kw = "remote mobile android pwa qr phone pair мобильный телефон qr пэйринг андроид";
+    new_ui_item(PaletteKind::Settings, text::PALETTE_REMOTE_TITLE, text::PALETTE_REMOTE_DETAIL, kw, PaletteAction::OpenRemoteMenu, locale)
+}
+
 fn push_v1_command_items(out: &mut Vec<PaletteItem>, locale: UiLocale) {
     out.push(make_diff_review_item(locale));
     out.push(make_save_checkpoint_item(locale));
@@ -508,6 +514,7 @@ fn push_v1_command_items(out: &mut Vec<PaletteItem>, locale: UiLocale) {
     out.push(make_dispatch_item(locale));
     out.push(make_swarm_item(locale));
     out.push(make_ports_item(locale));
+    out.push(make_remote_item(locale));
     out.push(make_install_hooks_item(locale));
     out.push(make_settings_item(locale));
     out.push(make_about_item(locale));

@@ -9,6 +9,7 @@ mod markdown;
 pub(crate) mod port_radar;
 #[path = "ui/ports_ui.rs"]
 pub(crate) mod ports_ui;
+pub(crate) mod remote;
 mod swarm;
 mod sys;
 mod telemetry;
@@ -320,7 +321,8 @@ fn build_app_state(
         palette, search_bar: a.search_bar, pin_pop, swarm_pop, swarm_view,
         update_scheduler: updater::UpdateScheduler::new(), update_banner,
         sys_monitor: a.sys_monitor, sys_sampler,
-        ports_menu: a.tb.ports_menu, ssh_tunnels: ssh_tunnel::SshTunnelManager::new(),
+        ports_menu: a.tb.ports_menu, remote_menu: a.tb.remote_menu,
+        ssh_tunnels: ssh_tunnel::SshTunnelManager::new(),
         remote_ports: a.sched.remote_ports, local_ports_by_sid: Default::default(),
         remote_url_ports_by_sid: Default::default(),
     }
@@ -346,11 +348,17 @@ fn assemble_and_install(config: WorkspaceConfig, initial_theme: theme_mode::Them
 
 extern "C" fn on_main_radar_tick(data: *mut c_void) -> c_int {
     app_state::with_app_mut(ssh_ui::refresh_ssh_hosts_if_changed);
-    (session_ops::radar_tick_cb())(data)
+    let res = (session_ops::radar_tick_cb())(data);
+    remote::wire::tick_broadcast();
+    res
 }
 
 fn finish_startup(win: *mut GtkWidget) {
     ctl_wire::start_server();
+    let remote_cfg = remote::settings_io::load_remote_settings();
+    if let Err(err) = remote::wire::apply_settings(&remote_cfg) {
+        eprintln!("AkhTerm: remote server startup failed: {err}");
+    }
     session_ops::restore_tabs();
     updater_wire::trigger_startup_check();
     unsafe {
@@ -358,6 +366,7 @@ fn finish_startup(win: *mut GtkWidget) {
         g_timeout_add(900, on_main_radar_tick, ptr::null_mut());
         gtk_main();
     }
+    remote::wire::stop_server();
     ctl_wire::shutdown_server();
 }
 

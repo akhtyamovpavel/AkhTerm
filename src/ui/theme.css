@@ -898,6 +898,14 @@ button.settings-preset-btn {
     padding: 3px 8px;
 }
 
+button.remote-active-btn {
+    background-image: none;
+    background-color: @gpu_bg;
+    border: 1px solid @badge_agent_border;
+    color: @gpu_fg;
+    font-weight: 600;
+}
+
 button.settings-preset-btn:hover {
     background-color: @hover;
     border-color: @border_strong;

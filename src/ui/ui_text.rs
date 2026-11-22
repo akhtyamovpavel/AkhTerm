@@ -876,6 +876,84 @@ pub mod i18n_text {
         c"Собрать Handoff Pack (git diff, вывод терминала, бриф) и открыть новую вкладку",
         c"Build Handoff Pack (git diff, terminal tail, brief) and open a new tab",
     );
+
+    pub const REMOTE_BTN: UiText = UiText::new(c"Моб. ▾", c"Remote ▾");
+    pub fn remote_btn() -> &'static CStr { REMOTE_BTN.cstr() }
+    pub const REMOTE_BTN_WORD: UiText = UiText::new(c"Моб.", c"Remote");
+    pub fn remote_btn_word() -> &'static CStr { REMOTE_BTN_WORD.cstr() }
+    pub const REMOTE_TIP: UiText = UiText::new(
+        c"Мобильный доступ: QR-код, привязанные устройства и отключение",
+        c"Mobile Remote: QR pairing code, paired devices, and stop server",
+    );
+    pub fn remote_tip() -> &'static CStr { REMOTE_TIP.cstr() }
+    pub const REMOTE_HEADER: UiText = UiText::new(
+        c"МОБИЛЬНЫЙ ДОСТУП · QR-ПЭЙРИНГ",
+        c"MOBILE REMOTE · QR PAIRING",
+    );
+    pub fn remote_header() -> &'static CStr { REMOTE_HEADER.cstr() }
+    pub const REMOTE_LIVE_CLIENTS: UiText = UiText::new(c"онлайн", c"connected");
+    pub fn remote_live_clients() -> &'static CStr { REMOTE_LIVE_CLIENTS.cstr() }
+    pub const REMOTE_ROTATE_QR: UiText = UiText::new(c"Обновить QR", c"New QR");
+    pub fn remote_rotate_qr() -> &'static CStr { REMOTE_ROTATE_QR.cstr() }
+    pub const REMOTE_COPY_URL: UiText = UiText::new(c"Копировать ссылку", c"Copy URL");
+    pub fn remote_copy_url() -> &'static CStr { REMOTE_COPY_URL.cstr() }
+    pub const REMOTE_URL_COPIED: UiText = UiText::new(
+        c"Ссылка пэйринга скопирована в буфер",
+        c"Pairing URL copied to clipboard",
+    );
+    pub fn remote_url_copied() -> &'static CStr { REMOTE_URL_COPIED.cstr() }
+    pub const REMOTE_STOP_BTN: UiText = UiText::new(c"Выключить", c"Stop Remote");
+    pub fn remote_stop_btn() -> &'static CStr { REMOTE_STOP_BTN.cstr() }
+    pub const REMOTE_DEVICES_HEADER: UiText = UiText::new(
+        c"ПРИВЯЗАННЫЕ УСТРОЙСТВА",
+        c"PAIRED DEVICES",
+    );
+    pub fn remote_devices_header() -> &'static CStr { REMOTE_DEVICES_HEADER.cstr() }
+    pub const REMOTE_NO_DEVICES: UiText = UiText::new(
+        c"Устройства ещё не привязаны — отсканируйте QR с телефона",
+        c"No paired devices yet — scan the QR code from your phone",
+    );
+    pub fn remote_no_devices() -> &'static CStr { REMOTE_NO_DEVICES.cstr() }
+    pub const REMOTE_REVOKE_BTN: UiText = UiText::new(c"Отозвать", c"Revoke");
+    pub fn remote_revoke_btn() -> &'static CStr { REMOTE_REVOKE_BTN.cstr() }
+    pub const REMOTE_PAIRED_WORD: UiText = UiText::new(c"устр.", c"paired");
+    pub fn remote_paired_word() -> &'static CStr { REMOTE_PAIRED_WORD.cstr() }
+    pub const SETTINGS_REMOTE_TITLE: UiText = UiText::new(
+        c"Мобильный доступ (Android / PWA)",
+        c"Mobile Remote (Android / PWA)",
+    );
+    pub fn settings_remote_title() -> &'static CStr { SETTINGS_REMOTE_TITLE.cstr() }
+    pub const SETTINGS_REMOTE_SUBTITLE: UiText = UiText::new(
+        c"Локальный HTTP/SSE-мост по Wi-Fi или WireGuard для Android-приложения и браузера",
+        c"Local HTTP/SSE bridge over Wi-Fi or WireGuard for the Android app and mobile PWA",
+    );
+    pub fn settings_remote_subtitle() -> &'static CStr { SETTINGS_REMOTE_SUBTITLE.cstr() }
+    pub const SETTINGS_REMOTE_BIND: UiText = UiText::new(c"Интерфейс", c"Bind IP");
+    pub fn settings_remote_bind() -> &'static CStr { SETTINGS_REMOTE_BIND.cstr() }
+    pub const SETTINGS_REMOTE_PORT: UiText = UiText::new(c"Порт", c"Port");
+    pub fn settings_remote_port() -> &'static CStr { SETTINGS_REMOTE_PORT.cstr() }
+    pub const SETTINGS_REMOTE_MUTE: UiText = UiText::new(
+        c"Не слать пуши на телефон, пока окно AkhTerm в фокусе",
+        c"Mute phone alerts while AkhTerm window is focused",
+    );
+    pub fn settings_remote_mute() -> &'static CStr { SETTINGS_REMOTE_MUTE.cstr() }
+    pub const SETTINGS_REMOTE_QR_BTN: UiText = UiText::new(c"QR и устройства", c"QR & Devices");
+    pub fn settings_remote_qr_btn() -> &'static CStr { SETTINGS_REMOTE_QR_BTN.cstr() }
+    pub const SETTINGS_REMOTE_RUNNING: UiText = UiText::new(c"Активен на", c"Listening on");
+    pub fn settings_remote_running() -> &'static CStr { SETTINGS_REMOTE_RUNNING.cstr() }
+    pub const SETTINGS_REMOTE_STOPPED: UiText = UiText::new(
+        c"Выключен — переключите тумблер выше, чтобы открыть доступ с телефона",
+        c"Stopped — toggle on above to pair your phone",
+    );
+    pub fn settings_remote_stopped() -> &'static CStr { SETTINGS_REMOTE_STOPPED.cstr() }
+    pub const PALETTE_REMOTE_TITLE: UiText = UiText::new(
+        c"Мобильный доступ и QR-код",
+        c"Mobile Remote & QR Pairing",
+    );
+    pub const PALETTE_REMOTE_DETAIL: UiText = UiText::new(
+        c"Показать QR для Android / PWA или настроить локальный сервер",
+        c"Show Android / PWA pairing QR code or configure local remote server",
+    );
 }
 
 pub use i18n_text::*;
@@ -1096,6 +1174,27 @@ mod tests {
         }
     }
 
+    fn verify_remote_pairs() {
+        for entry in [
+            i18n_text::REMOTE_BTN, i18n_text::REMOTE_BTN_WORD, i18n_text::REMOTE_TIP,
+            i18n_text::REMOTE_HEADER, i18n_text::REMOTE_LIVE_CLIENTS, i18n_text::REMOTE_ROTATE_QR,
+            i18n_text::REMOTE_COPY_URL, i18n_text::REMOTE_URL_COPIED, i18n_text::REMOTE_STOP_BTN,
+            i18n_text::REMOTE_DEVICES_HEADER, i18n_text::REMOTE_NO_DEVICES, i18n_text::REMOTE_REVOKE_BTN,
+            i18n_text::REMOTE_PAIRED_WORD, i18n_text::SETTINGS_REMOTE_TITLE,
+            i18n_text::SETTINGS_REMOTE_SUBTITLE, i18n_text::SETTINGS_REMOTE_BIND,
+            i18n_text::SETTINGS_REMOTE_PORT, i18n_text::SETTINGS_REMOTE_MUTE,
+            i18n_text::SETTINGS_REMOTE_QR_BTN, i18n_text::SETTINGS_REMOTE_RUNNING,
+            i18n_text::SETTINGS_REMOTE_STOPPED, i18n_text::PALETTE_REMOTE_TITLE,
+            i18n_text::PALETTE_REMOTE_DETAIL,
+        ] {
+            assert_pair_valid(entry);
+            for loc in [UiLocale::Ru, UiLocale::En] {
+                let s = entry.for_locale(loc).to_str().unwrap();
+                assert!(!s.contains("->") && !s.contains('→') && !s.contains("=>"), "arrow in {s}");
+            }
+        }
+    }
+
     #[test]
     fn every_ui_text_entry_has_valid_non_empty_ru_and_en_strings() {
         verify_core_and_palette_pairs();
@@ -1107,6 +1206,7 @@ mod tests {
         verify_context_handoff_pairs();
         verify_hooks_pairs();
         verify_worktree_pairs();
+        verify_remote_pairs();
     }
 
     #[test]

@@ -100,6 +100,7 @@ fn assemble_test_app_state(
     let update_banner = crate::updater_wire::build_update_banner();
     update_banner.mount_in_overlay(unsafe { gtk_widget_get_parent(stack) });
     let ports_menu = crate::ports_ui::PortsMenu::new(vbox);
+    let remote_menu = crate::remote::ui::RemoteMenu::new(vbox);
     let sys_monitor = crate::sys_monitor_ui::SysMonitorWidget::new(session_ops::sys_mon_open_cb());
     let split_v = unsafe { gtk_button_new() };
     let split_h = unsafe { gtk_button_new() };
@@ -134,6 +135,7 @@ fn assemble_test_app_state(
         sys_monitor,
         sys_sampler: crate::sys_monitor::SysSampler::new(),
         ports_menu,
+        remote_menu,
         ssh_tunnels: crate::ssh_tunnel::SshTunnelManager::new(),
         remote_ports: crate::port_radar::RemotePortScheduler::default(),
         local_ports_by_sid: Default::default(),
