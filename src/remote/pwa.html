@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#09090b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="/manifest.webmanifest">
+<title>AkhTerm Remote</title>
+<style>
+:root{--bg:#09090b;--card:#18181b;--border:#27272a;--fg:#f4f4f5;--muted:#a1a1aa;--amber:#f59e0b;--blue:#3b82f6;--green:#22c55e;--red:#ef4444;--ctl:#27272a}
+@media(prefers-color-scheme:light){:root{--bg:#fafafa;--card:#ffffff;--border:#e4e4e7;--fg:#09090b;--muted:#71717a;--ctl:#f4f4f5}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif}
+header{position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:var(--card);border-bottom:1px solid var(--border)}
+h1{margin:0;font-size:15px;font-weight:600}.pill{font-size:12px;padding:3px 8px;border-radius:99px;background:var(--ctl);color:var(--muted)}.ok{color:var(--green)}.warn{color:var(--amber)}.err{color:var(--red)}
+main{padding:12px;max-width:760px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px}
+.card.waiting{border-color:var(--amber)}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.title{font-weight:600}.meta{font-size:12px;color:var(--muted)}
+pre{margin:8px 0 0;padding:10px;border-radius:8px;background:var(--bg);border:1px solid var(--border);font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-word;max-height:46vh;overflow:auto}
+button{appearance:none;border:1px solid var(--border);background:var(--ctl);color:var(--fg);border-radius:8px;padding:8px 12px;font-size:13px;font-weight:500;cursor:pointer}
+button.primary{background:var(--green);border-color:var(--green);color:#052e16}
+button.amber{background:var(--amber);border-color:var(--amber);color:#271500}
+button.danger{border-color:var(--red);color:var(--red)}
+input,textarea{width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--fg);font:14px inherit}
+.keys{display:flex;gap:6px;overflow-x:auto;padding:6px 0}.keys button{padding:6px 10px;font-family:ui-monospace,monospace;font-size:12px}
+.sec{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:14px 2px 6px}
+.hide{display:none}
+</style>
+</head>
+<body>
+<header>
+  <div class="row"><button id="backBtn" class="hide" onclick="closePane()">&larr;</button><h1 id="hdrTitle">AkhTerm Remote</h1></div>
+  <div class="row"><span id="connPill" class="pill">Offline</span><button id="unpairBtn" class="hide" onclick="unpair()">Exit</button></div>
+</header>
+<main>
+  <section id="pairView" class="card hide">
+    <div class="title" style="margin-bottom:6px">Pair with AkhTerm</div>
+    <div class="meta" style="margin-bottom:10px">Scan the QR code in AkhTerm or paste the 1-time pairing code below.</div>
+    <input id="codeInput" placeholder="Pairing code" autocomplete="off">
+    <div class="row" style="margin-top:10px"><button class="primary" onclick="doPair()">Connect</button><span id="pairMsg" class="meta"></span></div>
+  </section>
+  <section id="inboxView" class="hide"></section>
+  <section id="paneView" class="hide">
+    <div class="card">
+      <div class="row" style="justify-content:space-between"><span id="paneTitle" class="title"></span><span id="paneState" class="pill"></span></div>
+      <div id="paneMeta" class="meta" style="margin-top:4px"></div>
+      <div id="approvalBar" class="row hide" style="margin-top:10px">
+        <button class="primary" onclick="approve('yes')">Yes</button>
+        <button class="amber" onclick="approve('yes_save')">Yes &amp; save</button>
+        <button class="danger" onclick="approve('no')">No</button>
+      </div>
+      <pre id="paneTail"></pre>
+      <div class="keys">
+        <button onclick="sendKey('enter')">Enter</button><button onclick="sendKey('esc')">Esc</button>
+        <button onclick="sendKey('up')">↑</button><button onclick="sendKey('down')">↓</button>
+        <button onclick="sendKey('tab')">Tab</button><button class="danger" onclick="sendKey('ctrl_c')">Ctrl+C</button>
+        <button onclick="sendKey('1')">1</button><button onclick="sendKey('2')">2</button><button onclick="sendKey('3')">3</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <input id="promptInput" placeholder="Send prompt to pane..." onkeydown="if(event.key==='Enter'){sendPrompt()}">
+        <button class="primary" onclick="sendPrompt()">Send</button>
+      </div>
+    </div>
+  </section>
+</main>
+<script>
+let es=null,statusData=null,activePaneId=null;
+const $=id=>document.getElementById(id);
+async function api(path,body){
+  const opt=body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{};
+  const r=await fetch(path,opt);
+  if(r.status===401){showPair();throw new Error('unauthorized');}
+  const j=await r.json();if(!r.ok)throw new Error(j.error||r.status);return j;
+}
+function showPair(msg){
+  if(es){es.close();es=null;}
+  $('pairView').classList.remove('hide');$('inboxView').classList.add('hide');$('paneView').classList.add('hide');
+  $('unpairBtn').classList.add('hide');$('backBtn').classList.add('hide');$('connPill').textContent='Unpaired';
+  if(msg)$('pairMsg').textContent=msg;
+}
+async function doPair(codeOpt){
+  const code=(codeOpt||$('codeInput').value||'').trim();if(!code)return;
+  $('pairMsg').textContent='Pairing...';
+  try{
+    await api('/api/v1/pair',{code,device_name:navigator.platform||'Browser',platform:'web'});
+    history.replaceState({},'', '/');
+    startStream();
+  }catch(e){$('pairMsg').textContent='Pair failed: '+e.message;}
+}
+function startStream(){
+  if(es)es.close();
+  $('pairView').classList.add('hide');$('unpairBtn').classList.remove('hide');
+  if(activePaneId){$('paneView').classList.remove('hide');$('inboxView').classList.add('hide');$('backBtn').classList.remove('hide');}
+  else{$('inboxView').classList.remove('hide');$('paneView').classList.add('hide');$('backBtn').classList.add('hide');}
+  const url=activePaneId?('/api/v1/events?pane_id='+encodeURIComponent(activePaneId)):'/api/v1/events';
+  es=new EventSource(url);
+  es.onopen=()=>{$('connPill').textContent='Live';$('connPill').className='pill ok';};
+  es.onerror=()=>{$('connPill').textContent='Reconnecting...';$('connPill').className='pill warn';};
+  es.addEventListener('snapshot',e=>{statusData=JSON.parse(e.data);renderInbox();renderPaneHeader();});
+  es.addEventListener('pane_tail',e=>{const t=JSON.parse(e.data);if(t.pane_id===activePaneId)renderTail(t);});
+}
+function renderInbox(){
+  if(!statusData)return;
+  $('hdrTitle').textContent=statusData.host_name||'AkhTerm Remote';
+  const order=['waiting','error','working','done','idle'];
+  const labels={waiting:'Needs Approval',error:'Error',working:'Working',done:'Done',idle:'Idle'};
+  let html='';
+  for(const st of order){
+    const list=(statusData.panes||[]).filter(p=>p.state===st);
+    if(!list.length)continue;
+    html+='<div class="sec">'+labels[st]+' ('+list.length+')</div>';
+    for(const p of list){
+      const meta=[p.repo_name,p.branch_badge,p.context_badge].filter(Boolean).join(' · ');
+      const prev=(p.preview_lines||[]).join('\n').replace(/</g,'&lt;');
+      html+='<div class="card '+(st==='waiting'?'waiting':'')+'" onclick="openPane(\''+p.pane_id+'\')">'
+        +'<div class="row" style="justify-content:space-between"><span class="title">'+esc(p.agent||p.tab_title)+'</span>'
+        +'<span class="pill '+(st==='waiting'?'warn':st==='done'?'ok':'')+'">'+esc(st)+'</span></div>'
+        +'<div class="meta">'+esc(meta)+'</div>'
+        +(prev?'<pre style="max-height:84px">'+prev+'</pre>':'')
+        +(st==='waiting'?'<div class="row" style="margin-top:8px" onclick="event.stopPropagation()">'
+          +'<button class="primary" onclick="approveId(\''+p.pane_id+'\',\'yes\')">Yes</button>'
+          +'<button class="danger" onclick="approveId(\''+p.pane_id+'\',\'no\')">No</button></div>':'')
+        +'</div>';
+    }
+  }
+  $('inboxView').innerHTML=html||'<div class="card meta">No active panes</div>';
+}
+function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+async function openPane(id){
+  activePaneId=id;startStream();renderPaneHeader();
+  try{const t=await api('/api/v1/panes/'+encodeURIComponent(id)+'/tail?lines=120');renderTail(t);}catch(_){}
+}
+function closePane(){activePaneId=null;startStream();}
+function renderPaneHeader(){
+  if(!activePaneId||!statusData)return;
+  const p=(statusData.panes||[]).find(x=>x.pane_id===activePaneId);if(!p)return;
+  $('paneTitle').textContent=(p.agent||p.tab_title)+' · #'+p.pane_id;
+  $('paneState').textContent=p.state;
+  $('paneMeta').textContent=[p.repo_name,p.branch_badge,p.context_badge].filter(Boolean).join(' · ');
+  $('approvalBar').classList.toggle('hide',p.state!=='waiting');
+}
+function renderTail(t){
+  const pre=$('paneTail');pre.textContent=(t.lines||[]).join('\n');pre.scrollTop=pre.scrollHeight;
+  $('approvalBar').classList.toggle('hide',t.state!=='waiting');
+}
+async function approve(action){if(activePaneId)await approveId(activePaneId,action);}
+async function approveId(id,action){await api('/api/v1/panes/'+encodeURIComponent(id)+'/approve',{action});}
+async function sendKey(key){if(activePaneId)await api('/api/v1/panes/'+encodeURIComponent(activePaneId)+'/key',{key});}
+async function sendPrompt(){
+  const inp=$('promptInput'),text=inp.value;if(!activePaneId||!text.trim())return;
+  inp.value='';await api('/api/v1/panes/'+encodeURIComponent(activePaneId)+'/send',{text,enter:true});
+}
+async function unpair(){try{await api('/api/v1/unpair',{});}catch(_){}showPair('Disconnected.');}
+(async function boot(){
+  const pair=new URLSearchParams(location.search).get('pair');
+  if(pair){$('pairView').classList.remove('hide');$('codeInput').value=pair;await doPair(pair);return;}
+  try{statusData=await api('/api/v1/status');startStream();renderInbox();}catch(_){showPair();}
+})();
+</script>
+</body>
+</html>

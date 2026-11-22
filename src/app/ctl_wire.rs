@@ -67,6 +67,23 @@ pub(crate) fn drain_and_dispatch() -> usize {
     count
 }
 
+fn handle_capture(pane_id: &str, lines: usize) -> CtlResponse {
+    match crate::remote::wire::capture_pane_tail(pane_id, lines) {
+        Ok(tail) => CtlResponse::Capture { pane_id: tail.pane_id, lines: tail.lines },
+        Err(message) => CtlResponse::Error { message },
+    }
+}
+
+fn handle_send_key(pane_id: &str, key: &str) -> CtlResponse {
+    let Some(rk) = crate::remote::protocol::RemoteKey::parse(key) else {
+        return CtlResponse::Error { message: format!("invalid key '{key}'") };
+    };
+    match crate::remote::wire::send_pane_key(pane_id, rk) {
+        Ok(()) => CtlResponse::Ok { message: Some(format!("sent key {key} to pane {pane_id}")) },
+        Err(message) => CtlResponse::Error { message },
+    }
+}
+
 pub(crate) fn dispatch_request(req: CtlRequest) -> CtlResponse {
     match req {
         CtlRequest::Status => handle_status(),
@@ -76,6 +93,8 @@ pub(crate) fn dispatch_request(req: CtlRequest) -> CtlResponse {
         }
         CtlRequest::Send { pane_id, text, enter } => handle_send(&pane_id, &text, enter),
         CtlRequest::OpenDoc { pane_id, path } => handle_open_doc(pane_id.as_deref(), &path),
+        CtlRequest::Capture { pane_id, lines } => handle_capture(&pane_id, lines),
+        CtlRequest::SendKey { pane_id, key } => handle_send_key(&pane_id, &key),
     }
 }
 

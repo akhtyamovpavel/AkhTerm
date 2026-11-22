@@ -96,6 +96,7 @@ pub(crate) struct AppState {
     pub(crate) sys_monitor: SysMonitorWidget,
     pub(crate) sys_sampler: SysSampler,
     pub(crate) ports_menu: crate::ports_ui::PortsMenu,
+    pub(crate) remote_menu: crate::remote::ui::RemoteMenu,
     pub(crate) ssh_tunnels: crate::ssh_tunnel::SshTunnelManager,
     pub(crate) remote_ports: crate::port_radar::RemotePortScheduler,
     pub(crate) local_ports_by_sid: HashMap<usize, Vec<crate::port_radar::DetectedPort>>,

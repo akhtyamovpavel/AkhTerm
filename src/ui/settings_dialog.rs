@@ -127,6 +127,7 @@ struct SettingsWidgets {
     about_btn: *mut GtkWidget,
     close_btn: *mut GtkWidget,
     hooks_section: crate::ui::hooks_section::HooksSection,
+    remote_section: crate::remote::settings_section::RemoteSection,
 }
 
 pub(crate) struct SettingsState {
@@ -246,17 +247,43 @@ fn build_settings_layout(
     let (header, title_lbl, subtitle_lbl) = build_settings_header();
     let grid = create_form_grid();
     let hooks_section = crate::ui::hooks_section::build_hooks_section(PathBuf::from(crate::paths::home_dir()));
+    let remote_cfg = crate::remote::settings_io::load_remote_settings();
+    let remote_section = crate::remote::settings_section::build_remote_section(&remote_cfg, Rc::new(|_| {}));
     let (about_btn, close_btn, footer) = build_settings_footer();
-    let widgets = fill_settings_grid(grid, win, title_lbl, subtitle_lbl, about_btn, close_btn, hooks_section, prefs);
+    let widgets = fill_settings_grid(
+        grid, win, title_lbl, subtitle_lbl, about_btn, close_btn, hooks_section, remote_section, prefs,
+    );
+    let body = build_settings_scroll(grid, widgets.hooks_section.widget(), widgets.remote_section.widget());
     unsafe {
         gtk_box_pack_start(vbox, header, 0, 0, 2);
-        gtk_box_pack_start(vbox, grid, 1, 1, 4);
-        gtk_box_pack_start(vbox, widgets.hooks_section.widget(), 0, 0, 2);
+        gtk_box_pack_start(vbox, body, 1, 1, 2);
         gtk_box_pack_start(vbox, footer, 0, 0, 4);
     }
     (vbox, widgets)
 }
 
+fn build_settings_scroll(
+    grid: *mut GtkWidget,
+    hooks_widget: *mut GtkWidget,
+    remote_widget: *mut GtkWidget,
+) -> *mut GtkWidget {
+    unsafe {
+        let scroll = crate::ffi::gtk_scrolled_window_new(std::ptr::null_mut(), std::ptr::null_mut());
+        crate::ffi::gtk_scrolled_window_set_policy(
+            scroll,
+            crate::ffi::GTK_POLICY_NEVER,
+            crate::ffi::GTK_POLICY_AUTOMATIC,
+        );
+        let inner = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+        gtk_box_pack_start(inner, grid, 0, 1, 2);
+        gtk_box_pack_start(inner, hooks_widget, 0, 1, 2);
+        gtk_box_pack_start(inner, remote_widget, 0, 1, 2);
+        gtk_container_add(scroll, inner);
+        scroll
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn fill_settings_grid(
     grid: *mut GtkWidget,
     window: *mut GtkWidget,
@@ -265,6 +292,7 @@ fn fill_settings_grid(
     about_btn: *mut GtkWidget,
     close_btn: *mut GtkWidget,
     hooks_section: crate::ui::hooks_section::HooksSection,
+    remote_section: crate::remote::settings_section::RemoteSection,
     prefs: &UserPrefs,
 ) -> SettingsWidgets {
     let (theme_lbl, theme_combo) = add_combo_row(grid, 0, ui_text::settings_theme());
@@ -277,6 +305,7 @@ fn fill_settings_grid(
         window, title_lbl, subtitle_lbl, theme_lbl, theme_combo, locale_lbl, locale_combo,
         font_lbl, font_entry, scrollback_lbl, scrollback_spin, osc52_lbl, osc52_switch,
         osc52_hint, notify_lbl, notify_spin, notify_hint, about_btn, close_btn, hooks_section,
+        remote_section,
     }
 }
 
@@ -574,6 +603,7 @@ fn refresh_hint_and_action_labels(w: &SettingsWidgets) {
         gtk_button_set_label(w.close_btn, ui_text::settings_close_btn().as_ptr());
     }
     w.hooks_section.refresh_labels();
+    w.remote_section.refresh_labels();
 }
 
 fn apply_live_change(state: &SettingsState) {

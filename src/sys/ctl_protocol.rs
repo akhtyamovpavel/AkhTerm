@@ -56,6 +56,14 @@ pub enum CtlRequest {
         pane_id: Option<String>,
         path: String,
     },
+    Capture {
+        pane_id: String,
+        lines: usize,
+    },
+    SendKey {
+        pane_id: String,
+        key: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,6 +95,10 @@ pub enum CtlResponse {
         socket: String,
         active_tab: usize,
         panes: Vec<PaneStatusItem>,
+    },
+    Capture {
+        pane_id: String,
+        lines: Vec<String>,
     },
     Error {
         message: String,
@@ -168,6 +180,14 @@ fn open_doc_to_json(pane_id: &Option<String>, path: &str) -> JsonVal {
     ])
 }
 
+fn capture_to_json(pane_id: &str, lines: usize) -> JsonVal {
+    JsonVal::Object(vec![("cmd".into(), j_str("capture")), ("pane_id".into(), j_str(pane_id)), ("lines".into(), j_num(lines))])
+}
+
+fn send_key_to_json(pane_id: &str, key: &str) -> JsonVal {
+    JsonVal::Object(vec![("cmd".into(), j_str("send_key")), ("pane_id".into(), j_str(pane_id)), ("key".into(), j_str(key))])
+}
+
 fn request_to_json(req: &CtlRequest) -> JsonVal {
     match req {
         CtlRequest::Status => JsonVal::Object(vec![("cmd".into(), j_str("status"))]),
@@ -179,6 +199,8 @@ fn request_to_json(req: &CtlRequest) -> JsonVal {
         }
         CtlRequest::Send { pane_id, text, enter } => send_to_json(pane_id, text, *enter),
         CtlRequest::OpenDoc { pane_id, path } => open_doc_to_json(pane_id, path),
+        CtlRequest::Capture { pane_id, lines } => capture_to_json(pane_id, *lines),
+        CtlRequest::SendKey { pane_id, key } => send_key_to_json(pane_id, key),
     }
 }
 
@@ -198,6 +220,15 @@ fn decode_open_doc_req(val: &JsonVal) -> Result<CtlRequest, String> {
     Ok(CtlRequest::OpenDoc { pane_id: field_opt_str(val, "pane_id"), path: field_str(val, "path")? })
 }
 
+fn decode_capture_req(val: &JsonVal) -> Result<CtlRequest, String> {
+    let lines = val.get("lines").and_then(JsonVal::as_u64).unwrap_or(100) as usize;
+    Ok(CtlRequest::Capture { pane_id: field_str(val, "pane_id")?, lines })
+}
+
+fn decode_send_key_req(val: &JsonVal) -> Result<CtlRequest, String> {
+    Ok(CtlRequest::SendKey { pane_id: field_str(val, "pane_id")?, key: field_str(val, "key")? })
+}
+
 pub fn decode_request(line: &str) -> Result<CtlRequest, String> {
     let val = parse_json(line.trim())?;
     match field_str(&val, "cmd")?.as_str() {
@@ -206,6 +237,8 @@ pub fn decode_request(line: &str) -> Result<CtlRequest, String> {
         "notify" => decode_notify_req(&val),
         "send" => decode_send_req(&val),
         "open_doc" | "open-doc" => decode_open_doc_req(&val),
+        "capture" => decode_capture_req(&val),
+        "send_key" | "send-key" => decode_send_key_req(&val),
         other => Err(format!("unknown command '{other}'")),
     }
 }
@@ -258,6 +291,13 @@ fn status_to_json(ver: &str, pid: u32, socket: &str, active_tab: usize, panes: &
     ])
 }
 
+fn capture_resp_to_json(pane_id: &str, lines: &[String]) -> JsonVal {
+    JsonVal::Object(vec![
+        ("ok".into(), JsonVal::Bool(true)), ("kind".into(), j_str("capture")),
+        ("pane_id".into(), j_str(pane_id)), ("lines".into(), JsonVal::Array(lines.iter().map(|l| j_str(l)).collect())),
+    ])
+}
+
 fn response_to_json(resp: &CtlResponse) -> JsonVal {
     match resp {
         CtlResponse::Ok { message } => {
@@ -266,6 +306,7 @@ fn response_to_json(resp: &CtlResponse) -> JsonVal {
         CtlResponse::Status { version, pid, socket, active_tab, panes } => {
             status_to_json(version, *pid, socket, *active_tab, panes)
         }
+        CtlResponse::Capture { pane_id, lines } => capture_resp_to_json(pane_id, lines),
         CtlResponse::Error { message } => {
             JsonVal::Object(vec![("ok".into(), JsonVal::Bool(false)), ("error".into(), j_str(message))])
         }
@@ -282,10 +323,24 @@ pub fn decode_response(line: &str) -> Result<CtlResponse, String> {
         let message = field_str(&val, "error").unwrap_or_else(|_| "unknown error".to_owned());
         return Ok(CtlResponse::Error { message });
     }
-    if val.get("kind").and_then(JsonVal::as_str) == Some("status") {
-        return decode_status_resp(&val);
+    match val.get("kind").and_then(JsonVal::as_str) {
+        Some("status") => return decode_status_resp(&val),
+        Some("capture") => return decode_capture_resp(&val),
+        _ => {}
     }
     Ok(CtlResponse::Ok { message: field_opt_str(&val, "message") })
+}
+
+fn decode_capture_resp(val: &JsonVal) -> Result<CtlResponse, String> {
+    let pane_id = field_str(val, "pane_id").unwrap_or_default();
+    let lines = val
+        .get("lines")
+        .and_then(JsonVal::as_array)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_owned))
+        .collect();
+    Ok(CtlResponse::Capture { pane_id, lines })
 }
 
 fn decode_status_resp(val: &JsonVal) -> Result<CtlResponse, String> {

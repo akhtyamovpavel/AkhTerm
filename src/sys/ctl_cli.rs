@@ -49,6 +49,8 @@ fn dispatch_subcommand(
         "focus" => parse_focus(tail, socket),
         "notify" => parse_notify(tail, socket, env_pane),
         "send" => parse_send(tail, socket),
+        "capture" => parse_capture(tail, socket, env_pane),
+        "send-key" | "send_key" => parse_send_key(tail, socket),
         "open-doc" | "open_doc" => parse_open_doc(tail, socket, env_pane, cwd),
         "hooks" => parse_hooks(tail),
         other => Err(format!("unknown command '{other}' (run 'akhterm --help')")),
@@ -183,6 +185,56 @@ fn parse_send(args: &[String], mut socket: Option<PathBuf>) -> Result<CliCommand
         i += 1;
     }
     build_send_cmd(socket, positional, enter)
+}
+
+fn apply_capture_arg(
+    args: &[String],
+    i: &mut usize,
+    socket: &mut Option<PathBuf>,
+    pane_id: &mut Option<String>,
+    lines: &mut usize,
+    json_out: &mut bool,
+) -> Result<(), String> {
+    match args[*i].as_str() {
+        "--socket" => *socket = Some(PathBuf::from(take_opt_val(args, i, "--socket")?)),
+        "--pane" => *pane_id = Some(take_opt_val(args, i, "--pane")?),
+        "--lines" => *lines = take_opt_val(args, i, "--lines")?.parse().map_err(|_| "invalid --lines")?,
+        "--json" => *json_out = true,
+        arg if pane_id.is_none() => *pane_id = Some(arg.to_owned()),
+        other => return Err(format!("unexpected argument '{other}' for capture")),
+    }
+    Ok(())
+}
+
+fn parse_capture(args: &[String], mut socket: Option<PathBuf>, env_pane: Option<&str>) -> Result<CliCommand, String> {
+    let (mut pane_id, mut lines, mut json_output, mut i) = (env_pane.map(str::to_owned), 100usize, false, 0);
+    while i < args.len() {
+        apply_capture_arg(args, &mut i, &mut socket, &mut pane_id, &mut lines, &mut json_output)?;
+        i += 1;
+    }
+    let pane_id = pane_id.ok_or_else(|| "capture requires <pane_id> or AKHTERM_PANE_ID".to_owned())?;
+    Ok(CliCommand::Request { socket, request: CtlRequest::Capture { pane_id, lines }, json_output })
+}
+
+fn build_send_key_cmd(socket: Option<PathBuf>, mut pos: Vec<String>) -> Result<CliCommand, String> {
+    if pos.len() != 2 {
+        return Err("send-key requires <pane_id> <enter|esc|up|down|tab|ctrl_c|1|2|3>".to_owned());
+    }
+    let request = CtlRequest::SendKey { pane_id: pos.remove(0), key: pos.remove(0) };
+    Ok(CliCommand::Request { socket, request, json_output: false })
+}
+
+fn parse_send_key(args: &[String], mut socket: Option<PathBuf>) -> Result<CliCommand, String> {
+    let (mut pos, mut i) = (Vec::new(), 0);
+    while i < args.len() {
+        if args[i] == "--socket" {
+            socket = Some(PathBuf::from(take_opt_val(args, &mut i, "--socket")?));
+        } else {
+            pos.push(args[i].clone());
+        }
+        i += 1;
+    }
+    build_send_key_cmd(socket, pos)
 }
 
 fn apply_open_doc_arg(
@@ -332,6 +384,13 @@ fn print_ok_response(message: Option<&str>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn print_capture_lines(lines: &[String]) -> ExitCode {
+    for line in lines {
+        println!("{line}");
+    }
+    ExitCode::SUCCESS
+}
+
 fn handle_response(resp: &CtlResponse, json_output: bool) -> ExitCode {
     if json_output {
         return handle_json_response(resp);
@@ -342,6 +401,7 @@ fn handle_response(resp: &CtlResponse, json_output: bool) -> ExitCode {
             print!("{}", format_status_table(version, *pid, *active_tab, panes));
             ExitCode::SUCCESS
         }
+        CtlResponse::Capture { lines, .. } => print_capture_lines(lines),
         CtlResponse::Error { message } => {
             eprintln!("akhterm: {message}");
             ExitCode::FAILURE

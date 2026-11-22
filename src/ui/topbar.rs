@@ -34,6 +34,7 @@ pub(crate) struct TopbarWidgets {
     pub(crate) mi_refactor_btn: *mut GtkWidget,
     pub(crate) tokens_menu: telemetry::TokensMenu,
     pub(crate) ports_menu: crate::ports_ui::PortsMenu,
+    pub(crate) remote_menu: crate::remote::ui::RemoteMenu,
     pub(crate) agents_pop: *mut GtkWidget,
 }
 
@@ -219,7 +220,7 @@ fn create_topbar_shell(root_vbox: *mut GtkWidget) -> (*mut GtkWidget, tab_strip:
 
 fn pack_right_menus(
     topbar: *mut GtkWidget,
-) -> ([*mut GtkWidget; 7], telemetry::TokensMenu, crate::ports_ui::PortsMenu) {
+) -> ([*mut GtkWidget; 7], telemetry::TokensMenu, crate::ports_ui::PortsMenu, crate::remote::ui::RemoteMenu) {
     let settings_btn = add_end_button(topbar, text::i18n_text::servers(), None);
     let prefs_btn = add_end_button(
         topbar,
@@ -234,8 +235,9 @@ fn pack_right_menus(
     let git_btn = add_end_button(topbar, text::i18n_text::git_menu(), Some(text::i18n_text::git_menu_tip()));
     let mi_btn = add_end_button(topbar, text::i18n_text::maintainability(), None);
     let ports_menu = crate::ports_ui::PortsMenu::new(topbar);
+    let remote_menu = crate::remote::ui::RemoteMenu::new(topbar);
     let tokens_menu = telemetry::TokensMenu::new(topbar, on_tokens_open);
-    ([settings_btn, handoff_btn, agents_btn, prefs_btn, swarm_btn, git_btn, mi_btn], tokens_menu, ports_menu)
+    ([settings_btn, handoff_btn, agents_btn, prefs_btn, swarm_btn, git_btn, mi_btn], tokens_menu, ports_menu, remote_menu)
 }
 
 pub(crate) fn build_topbar_widgets(
@@ -245,7 +247,7 @@ pub(crate) fn build_topbar_widgets(
     let (topbar, tab_strip, box_btn) = create_topbar_shell(root_vbox);
     let [theme_btn, split_horiz_btn, split_vert_btn, reconnect_btn, zoom_btn] =
         pack_left_controls(topbar, initial_theme);
-    let ([settings_btn, handoff_btn, agents_btn, prefs_btn, swarm_btn, git_btn, mi_btn], tokens_menu, ports_menu) =
+    let ([settings_btn, handoff_btn, agents_btn, prefs_btn, swarm_btn, git_btn, mi_btn], tokens_menu, ports_menu, remote_menu) =
         pack_right_menus(topbar);
     let (mi_pop, mi_pop_label, mi_refactor_btn) = build_mi_popover(mi_btn);
     let agents_pop = build_agents_popover(agents_btn);
@@ -253,7 +255,7 @@ pub(crate) fn build_topbar_widgets(
         topbar, tab_strip, box_btn, theme_btn, zoom_btn, reconnect_btn,
         split_vert_btn, split_horiz_btn, settings_btn, handoff_btn, agents_btn,
         prefs_btn, swarm_btn, git_btn, mi_btn, mi_pop, mi_pop_label,
-        mi_refactor_btn, tokens_menu, ports_menu, agents_pop,
+        mi_refactor_btn, tokens_menu, ports_menu, remote_menu, agents_pop,
     }
 }
 
@@ -717,6 +719,7 @@ fn refresh_localized_subwidgets(app: &AppState) {
     app.tab_strip.refresh_locale();
     app.update_banner.refresh_locale();
     app.ports_menu.refresh_locale();
+    app.remote_menu.sync_state();
     app.sys_monitor.refresh_locale();
 }
 
