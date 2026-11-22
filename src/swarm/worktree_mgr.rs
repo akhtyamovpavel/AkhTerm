@@ -349,6 +349,9 @@ mod tests {
             let repo = root.join("demo");
             fs::create_dir_all(&repo).unwrap();
             git_ok(&repo, &["init", "-b", "main"]);
+            git_ok(&repo, &["config", "user.name", "Test"]);
+            git_ok(&repo, &["config", "user.email", "test@example.com"]);
+            git_ok(&repo, &["config", "commit.gpgsign", "false"]);
             fs::write(repo.join("README.md"), "hello\n").unwrap();
             git_commit_all(&repo, "init");
             Self { root, repo }
