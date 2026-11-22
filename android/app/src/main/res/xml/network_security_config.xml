@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android Network Security Config cannot express CIDR ranges (RFC1918 / Tailscale CGNAT).
+  Cleartext is enabled at the XML layer and strictly restricted in PrivateNetworkCleartextInterceptor
+  to localhost, 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, and ::1.
+  All public IPs and public domains require HTTPS.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

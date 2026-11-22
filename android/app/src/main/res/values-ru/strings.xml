@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AkhTerm Mobile</string>
+
+    <!-- Состояния подключения -->
+    <string name="status_connected">Подключено</string>
+    <string name="status_connecting">Подключение…</string>
+    <string name="status_reconnecting">Переподключение…</string>
+    <string name="status_disconnected">Нет связи</string>
+    <string name="status_unauthorized">Сессия отозвана</string>
+    <string name="status_error">Ошибка связи</string>
+
+    <!-- Экран привязки -->
+    <string name="pairing_title">Привязка к AkhTerm</string>
+    <string name="pairing_subtitle">Отсканируйте QR-код в AkhTerm Desktop или введите адрес сервера и одноразовый код.</string>
+    <string name="pairing_tab_qr">QR-код</string>
+    <string name="pairing_tab_manual">Вручную</string>
+    <string name="pairing_camera_title">Нужен доступ к камере</string>
+    <string name="pairing_camera_rationale">Разрешите доступ к камере для сканирования QR-кода из AkhTerm Desktop или перейдите к ручному вводу.</string>
+    <string name="pairing_camera_grant">Разрешить камеру</string>
+    <string name="pairing_qr_hint">Наведите камеру на QR-код привязки в AkhTerm</string>
+    <string name="pairing_qr_detected">Обнаружен QR-код для %1$s</string>
+    <string name="pairing_qr_invalid">Неподдерживаемый формат QR-кода</string>
+    <string name="pairing_url_label">Адрес сервера</string>
+    <string name="pairing_url_placeholder">http://100.64.0.10:8787</string>
+    <string name="pairing_code_label">Код привязки</string>
+    <string name="pairing_code_placeholder">32-символьный hex-код</string>
+    <string name="pairing_device_name_label">Имя устройства</string>
+    <string name="pairing_test_button">Проверить связь</string>
+    <string name="pairing_pair_button">Привязать</string>
+    <string name="pairing_testing">Проверка…</string>
+    <string name="pairing_pairing">Привязка…</string>
+    <string name="pairing_health_ok">Доступен · AkhTerm %1$s (API v%2$d)</string>
+    <string name="pairing_error_invalid_url">Введите корректный URL (http:// или https://)</string>
+    <string name="pairing_error_empty_code">Введите код привязки из AkhTerm Desktop</string>
+    <string name="pairing_error_rate_limited">Слишком много неверных попыток. Сгенерируйте новый QR-код на ПК.</string>
+    <string name="pairing_error_invalid_code">Неверный или истёкший код привязки.</string>
+    <string name="pairing_cleartext_hint">HTTP разрешён только для localhost, локальных сетей (RFC 1918) и Tailscale (100.64.0.0/10). Для публичных адресов нужен HTTPS.</string>
+
+    <!-- Входящие / список агентов -->
+    <string name="inbox_title">Агенты</string>
+    <string name="inbox_refresh">Обновить</string>
+    <string name="inbox_settings">Настройки</string>
+    <string name="section_needs_approval">Ждут подтверждения</string>
+    <string name="section_error">Ошибки</string>
+    <string name="section_working">В работе</string>
+    <string name="section_done">Готово</string>
+    <string name="section_idle">Ожидание</string>
+    <string name="state_waiting">Ждёт</string>
+    <string name="state_working">Работает</string>
+    <string name="state_done">Готово</string>
+    <string name="state_idle">Простой</string>
+    <string name="state_error">Ошибка</string>
+    <string name="inbox_empty_title">Нет открытых панелей</string>
+    <string name="inbox_empty_body">Откройте вкладку терминала или запустите ИИ-агента в AkhTerm Desktop — они появятся здесь в реальном времени.</string>
+    <string name="inbox_unauthorized_title">Устройство отвязано</string>
+    <string name="inbox_unauthorized_body">Токен этого устройства был отозван на компьютере. Выполните привязку заново.</string>
+    <string name="inbox_repair_button">Привязать снова</string>
+    <string name="inbox_retry_button">Повторить</string>
+    <string name="inbox_notifications_banner">Включите уведомления, чтобы мгновенно получать запросы на подтверждение</string>
+    <string name="inbox_notifications_enable">Включить</string>
+    <string name="worktree_badge">worktree</string>
+    <string name="action_approve">Подтвердить</string>
+    <string name="action_yes">Да</string>
+    <string name="action_yes_save">Да и запомнить</string>
+    <string name="action_no">Нет</string>
+
+    <!-- Экран панели -->
+    <string name="pane_back">Назад</string>
+    <string name="pane_focus_desktop">Показать на ПК</string>
+    <string name="pane_focus_sent">Фокус переключён на ПК</string>
+    <string name="pane_autoscroll_on">Автопрокрутка вкл.</string>
+    <string name="pane_autoscroll_off">Автопрокрутка на паузе</string>
+    <string name="pane_approval_header">Требуется подтверждение</string>
+    <string name="pane_prompt_placeholder">Отправить команду или ответ…</string>
+    <string name="pane_send">Отправить</string>
+    <string name="pane_voice_input">Голосовой ввод</string>
+    <string name="pane_voice_prompt">Произнесите инструкцию</string>
+    <string name="pane_voice_unavailable">Распознавание речи недоступно на этом устройстве</string>
+    <string name="pane_empty_tail">Ожидание вывода терминала…</string>
+    <string name="pane_not_found">Панель уже закрыта на компьютере</string>
+
+    <!-- Панель TUI-клавиш -->
+    <string name="key_enter">Enter</string>
+    <string name="key_esc">Esc</string>
+    <string name="key_up">↑</string>
+    <string name="key_down">↓</string>
+    <string name="key_tab">Tab</string>
+    <string name="key_ctrl_c">Ctrl+C</string>
+
+    <!-- Настройки -->
+    <string name="settings_title">Настройки</string>
+    <string name="settings_host_section">Подключённый компьютер</string>
+    <string name="settings_host_name">Хост</string>
+    <string name="settings_server_url">Адрес сервера</string>
+    <string name="settings_device_id">ID устройства</string>
+    <string name="settings_desktop_version">Версия на ПК</string>
+    <string name="settings_monitor_section">Фоновый мониторинг</string>
+    <string name="settings_monitor_toggle">Постоянное подключение</string>
+    <string name="settings_monitor_desc">Поддерживает тихий фоновый сервис для мгновенных уведомлений через SSE.</string>
+    <string name="settings_notifications_permission">Уведомления об агентах</string>
+    <string name="settings_notifications_granted">Разрешены</string>
+    <string name="settings_notifications_denied">Отключены</string>
+    <string name="settings_theme_section">Оформление</string>
+    <string name="settings_theme_system">Системная</string>
+    <string name="settings_theme_dark">Тёмная Zinc</string>
+    <string name="settings_theme_light">Светлая Zinc</string>
+    <string name="settings_danger_section">Привязка устройства</string>
+    <string name="settings_unpair_button">Отвязать устройство</string>
+    <string name="settings_unpair_dialog_title">Отвязать это устройство?</string>
+    <string name="settings_unpair_dialog_body">Токен доступа будет отозван на компьютере, а локальные ключи удалены с телефона.</string>
+    <string name="settings_cancel">Отмена</string>
+    <string name="settings_confirm_unpair">Отвязать</string>
+
+    <!-- Уведомления -->
+    <string name="notif_channel_connection_name">Фоновое подключение</string>
+    <string name="notif_channel_connection_desc">Тихий индикатор активного подключения AkhTerm Mobile к компьютеру</string>
+    <string name="notif_channel_alerts_name">Уведомления агентов</string>
+    <string name="notif_channel_alerts_desc">Важные уведомления, когда агент ждёт подтверждения, завершился или выдал ошибку</string>
+    <string name="notif_connection_title">AkhTerm · %1$s</string>
+    <string name="notif_connection_waiting">Ждут подтверждения: %1$d</string>
+    <string name="notif_connection_idle">Отслеживается панелей: %1$d</string>
+    <string name="notif_connection_reconnecting">Переподключение к %1$s…</string>
+    <string name="notif_connection_unauthorized">Токен отозван — нажмите для привязки</string>
+    <string name="notif_action_approve">Да</string>
+    <string name="notif_action_no">Нет</string>
+    <string name="notif_action_reply">Ответить</string>
+    <string name="notif_reply_hint">Введите ответ…</string>
+    <string name="notif_action_failed">Ошибка действия: %1$s</string>
+</resources>
