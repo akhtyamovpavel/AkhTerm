@@ -230,3 +230,122 @@ jobs:
               --title "AkhTerm $GITHUB_REF_NAME" \
               --notes-file dist/RELEASE_NOTES.md
           fi
+
+  release-android:
+    needs: [release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure JDK 21 and Android SDK 35
+        run: |
+          if [ -n "${JAVA_HOME_21_X64:-}" ] && [ -x "${JAVA_HOME_21_X64}/bin/java" ]; then
+            echo "JAVA_HOME=${JAVA_HOME_21_X64}" >> "$GITHUB_ENV"
+            echo "${JAVA_HOME_21_X64}/bin" >> "$GITHUB_PATH"
+          else
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends openjdk-21-jdk-headless
+            echo "JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64" >> "$GITHUB_ENV"
+            echo "/usr/lib/jvm/java-21-openjdk-amd64/bin" >> "$GITHUB_PATH"
+          fi
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=${SDK_ROOT}" >> "$GITHUB_ENV"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ -x "$SDKMANAGER" ]; then
+            yes | "$SDKMANAGER" --licenses >/dev/null || true
+            "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
+          fi
+
+      - name: Build Android companion APK
+        id: android_apk
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
+          fi
+          mkdir -p dist
+          chmod +x android/gradlew
+
+          KEYSTORE_FILE=""
+          cleanup() {
+            if [ -n "$KEYSTORE_FILE" ] && [ -f "$KEYSTORE_FILE" ]; then
+              rm -f "$KEYSTORE_FILE"
+            fi
+          }
+          trap cleanup EXIT
+
+          if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ] && \
+             [ -n "${ANDROID_KEYSTORE_PASSWORD:-}" ] && \
+             [ -n "${ANDROID_KEY_ALIAS:-}" ] && \
+             [ -n "${ANDROID_KEY_PASSWORD:-}" ]; then
+            KEYSTORE_FILE="$RUNNER_TEMP/akhterm-release.jks"
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
+            chmod 600 "$KEYSTORE_FILE"
+            export ANDROID_KEYSTORE_PATH="$KEYSTORE_FILE"
+
+            (
+              cd android
+              ./gradlew testDebugUnitTest assembleRelease "-PakhtermVersionName=$VERSION" --no-daemon --stacktrace
+            )
+            APK_NAME="akhterm-mobile-${VERSION}.apk"
+            cp android/app/build/outputs/apk/release/app-release.apk "dist/${APK_NAME}"
+          else
+            echo "::warning::ANDROID_KEYSTORE_* secrets are not configured; building unsigned/debug fallback APK instead of a release-signed APK."
+            (
+              cd android
+              ./gradlew testDebugUnitTest assembleDebug "-PakhtermVersionName=$VERSION" --no-daemon --stacktrace
+            )
+            APK_NAME="akhterm-mobile-${VERSION}-debug.apk"
+            cp android/app/build/outputs/apk/debug/app-debug.apk "dist/${APK_NAME}"
+          fi
+
+          test -s "dist/${APK_NAME}"
+          echo "name=${APK_NAME}" >> "$GITHUB_OUTPUT"
+          echo "path=dist/${APK_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Android APK artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-android-apk
+          path: ${{ steps.android_apk.outputs.path }}
+          archive: false
+          if-no-files-found: error
+
+      - name: Attach Android APK to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APK_NAME: ${{ steps.android_apk.outputs.name }}
+        run: |
+          set -euo pipefail
+          gh release download "$GITHUB_REF_NAME" \
+            --pattern SHA256SUMS \
+            --dir dist \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+          grep -v 'akhterm-mobile-.*\.apk$' dist/SHA256SUMS > dist/SHA256SUMS.tmp || true
+          mv dist/SHA256SUMS.tmp dist/SHA256SUMS
+          (
+            cd dist
+            sha256sum "$APK_NAME" >> SHA256SUMS
+          )
+          gh release upload "$GITHUB_REF_NAME" \
+            "dist/$APK_NAME" \
+            dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber

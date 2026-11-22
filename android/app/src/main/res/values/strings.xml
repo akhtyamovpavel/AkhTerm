@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AkhTerm Mobile</string>
+
+    <!-- Connection states -->
+    <string name="status_connected">Connected</string>
+    <string name="status_connecting">Connecting…</string>
+    <string name="status_reconnecting">Reconnecting…</string>
+    <string name="status_disconnected">Offline</string>
+    <string name="status_unauthorized">Session revoked</string>
+    <string name="status_error">Connection error</string>
+
+    <!-- Pairing screen -->
+    <string name="pairing_title">Pair with AkhTerm</string>
+    <string name="pairing_subtitle">Scan the QR code in AkhTerm Desktop or enter your server address and one-time pairing code.</string>
+    <string name="pairing_tab_qr">Scan QR</string>
+    <string name="pairing_tab_manual">Manual</string>
+    <string name="pairing_camera_title">Camera access required</string>
+    <string name="pairing_camera_rationale">Grant camera permission to scan the QR code shown in AkhTerm Desktop, or switch to Manual entry below.</string>
+    <string name="pairing_camera_grant">Allow camera</string>
+    <string name="pairing_qr_hint">Point the camera at the AkhTerm pairing QR code</string>
+    <string name="pairing_qr_detected">QR detected for %1$s</string>
+    <string name="pairing_qr_invalid">Unsupported QR code format</string>
+    <string name="pairing_url_label">Server URL</string>
+    <string name="pairing_url_placeholder">http://100.64.0.10:8787</string>
+    <string name="pairing_code_label">Pairing code</string>
+    <string name="pairing_code_placeholder">32-character hex code</string>
+    <string name="pairing_device_name_label">Device name</string>
+    <string name="pairing_test_button">Test connection</string>
+    <string name="pairing_pair_button">Pair device</string>
+    <string name="pairing_testing">Testing…</string>
+    <string name="pairing_pairing">Pairing…</string>
+    <string name="pairing_health_ok">Reachable · AkhTerm %1$s (API v%2$d)</string>
+    <string name="pairing_error_invalid_url">Enter a valid http:// or https:// server URL</string>
+    <string name="pairing_error_empty_code">Enter the pairing code from AkhTerm Desktop</string>
+    <string name="pairing_error_rate_limited">Too many failed attempts. Generate a fresh QR code on desktop.</string>
+    <string name="pairing_error_invalid_code">Invalid or expired pairing code.</string>
+    <string name="pairing_cleartext_hint">HTTP is permitted only on localhost, LAN (RFC 1918), and Tailscale (100.64.0.0/10). Public hosts require HTTPS.</string>
+
+    <!-- Inbox screen -->
+    <string name="inbox_title">Agents</string>
+    <string name="inbox_refresh">Refresh</string>
+    <string name="inbox_settings">Settings</string>
+    <string name="section_needs_approval">Needs Approval</string>
+    <string name="section_error">Errors</string>
+    <string name="section_working">Working</string>
+    <string name="section_done">Done</string>
+    <string name="section_idle">Idle</string>
+    <string name="state_waiting">Waiting</string>
+    <string name="state_working">Working</string>
+    <string name="state_done">Done</string>
+    <string name="state_idle">Idle</string>
+    <string name="state_error">Error</string>
+    <string name="inbox_empty_title">No open panes</string>
+    <string name="inbox_empty_body">Open a terminal tab or start an AI agent in AkhTerm Desktop and it will appear here live.</string>
+    <string name="inbox_unauthorized_title">Device unpaired</string>
+    <string name="inbox_unauthorized_body">This device token was revoked on desktop. Pair again to reconnect.</string>
+    <string name="inbox_repair_button">Pair again</string>
+    <string name="inbox_retry_button">Retry</string>
+    <string name="inbox_notifications_banner">Enable notifications to get instant approval alerts</string>
+    <string name="inbox_notifications_enable">Enable</string>
+    <string name="worktree_badge">worktree</string>
+    <string name="action_approve">Approve</string>
+    <string name="action_yes">Yes</string>
+    <string name="action_yes_save">Yes &amp; save</string>
+    <string name="action_no">No</string>
+
+    <!-- Pane detail screen -->
+    <string name="pane_back">Back</string>
+    <string name="pane_focus_desktop">Focus on desktop</string>
+    <string name="pane_focus_sent">Focused on desktop</string>
+    <string name="pane_autoscroll_on">Auto-scroll on</string>
+    <string name="pane_autoscroll_off">Auto-scroll paused</string>
+    <string name="pane_approval_header">Approval required</string>
+    <string name="pane_prompt_placeholder">Send prompt or reply…</string>
+    <string name="pane_send">Send</string>
+    <string name="pane_voice_input">Voice input</string>
+    <string name="pane_voice_prompt">Speak your instruction</string>
+    <string name="pane_voice_unavailable">Speech recognition is not available on this device</string>
+    <string name="pane_empty_tail">Waiting for terminal output…</string>
+    <string name="pane_not_found">Pane is no longer open on desktop</string>
+
+    <!-- TUI keybar -->
+    <string name="key_enter">Enter</string>
+    <string name="key_esc">Esc</string>
+    <string name="key_up">↑</string>
+    <string name="key_down">↓</string>
+    <string name="key_tab">Tab</string>
+    <string name="key_ctrl_c">Ctrl+C</string>
+
+    <!-- Settings screen -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_host_section">Paired desktop</string>
+    <string name="settings_host_name">Host</string>
+    <string name="settings_server_url">Server URL</string>
+    <string name="settings_device_id">Device ID</string>
+    <string name="settings_desktop_version">Desktop version</string>
+    <string name="settings_monitor_section">Background monitor</string>
+    <string name="settings_monitor_toggle">Keep persistent connection</string>
+    <string name="settings_monitor_desc">Runs a low-priority foreground service to deliver instant approval alerts over SSE.</string>
+    <string name="settings_notifications_permission">Alert notifications</string>
+    <string name="settings_notifications_granted">Allowed</string>
+    <string name="settings_notifications_denied">Disabled</string>
+    <string name="settings_theme_section">Appearance</string>
+    <string name="settings_theme_system">System</string>
+    <string name="settings_theme_dark">Dark Zinc</string>
+    <string name="settings_theme_light">Light Zinc</string>
+    <string name="settings_danger_section">Device pairing</string>
+    <string name="settings_unpair_button">Unpair device</string>
+    <string name="settings_unpair_dialog_title">Unpair this device?</string>
+    <string name="settings_unpair_dialog_body">This revokes the access token on desktop and clears stored credentials on this phone.</string>
+    <string name="settings_cancel">Cancel</string>
+    <string name="settings_confirm_unpair">Unpair</string>
+
+    <!-- Notifications -->
+    <string name="notif_channel_connection_name">Background connection</string>
+    <string name="notif_channel_connection_desc">Quiet persistent indicator while AkhTerm Mobile is connected to desktop</string>
+    <string name="notif_channel_alerts_name">Agent alerts</string>
+    <string name="notif_channel_alerts_desc">High-priority alerts when an agent needs approval, finishes, or encounters an error</string>
+    <string name="notif_connection_title">AkhTerm · %1$s</string>
+    <string name="notif_connection_waiting">%1$d pane(s) need approval</string>
+    <string name="notif_connection_idle">Monitoring %1$d pane(s)</string>
+    <string name="notif_connection_reconnecting">Reconnecting to %1$s…</string>
+    <string name="notif_connection_unauthorized">Token revoked — tap to pair again</string>
+    <string name="notif_action_approve">Approve</string>
+    <string name="notif_action_no">No</string>
+    <string name="notif_action_reply">Reply</string>
+    <string name="notif_reply_hint">Type reply…</string>
+    <string name="notif_action_failed">Action failed: %1$s</string>
+</resources>
