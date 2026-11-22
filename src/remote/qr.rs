@@ -202,10 +202,11 @@ impl Grid {
     }
 
     fn place_alignments(&mut self, coords: &[usize]) {
-        let s = self.size;
-        for &cy in coords {
-            for &cx in coords {
-                if !self.is_func[cy * s + cx] {
+        let n = coords.len();
+        for (iy, &cy) in coords.iter().enumerate() {
+            for (ix, &cx) in coords.iter().enumerate() {
+                let on_finder = (ix == 0 && iy == 0) || (ix == 0 && iy + 1 == n) || (ix + 1 == n && iy == 0);
+                if !on_finder {
                     self.place_alignment(cx, cy);
                 }
             }
