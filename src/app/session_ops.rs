@@ -1201,21 +1201,122 @@ extern "C" fn on_reconnect_active(_btn: *mut GtkWidget, _data: *mut c_void) {
     reconnect_session(app_state::active_session_id());
 }
 
+enum ReconnectPlan {
+    Replace { argv: Vec<String>, title: String, cwd: String, scale: f64, old_pid: i32 },
+    DynamicInShell { vte: *mut GtkWidget, pane_pid: i32, ssh_pid: i32, cmd: String, host: String },
+}
+
+struct DynamicCtx {
+    vte: *mut GtkWidget, pane_pid: i32, ssh_pid: i32, host: String,
+    tmux: Option<String>, replace_meta: Option<(String, String, f64)>,
+}
+
+struct DynamicPoll {
+    sid: usize, vte: *mut GtkWidget, pane_pid: i32, ssh_pid: i32, cmd: String, tries: u8,
+}
+
+fn snapshot_reconnect_ctx(app: &AppState, sid: usize) -> Option<Result<ReconnectPlan, DynamicCtx>> {
+    let s = app.sessions.iter().find(|s| s.id == sid)?;
+    if let Some(r) = s.remote() {
+        let plan = ReconnectPlan::Replace {
+            argv: r.argv(), title: r.title(), cwd: s.cwd.clone(), scale: app.font_scale, old_pid: s.child_pid,
+        };
+        return Some(Ok(plan));
+    }
+    if !s.is_dynamic_ssh() { return None; }
+    let vte = s.active_vte();
+    let replace_meta = (vte == s.vte).then(|| (s.title.clone(), s.cwd.clone(), app.font_scale));
+    let tmux = s.remote_tmux.as_ref().map(|(sess, ..)| sess.clone());
+    Some(Err(DynamicCtx {
+        vte, pane_pid: s.pid_for_vte(vte), ssh_pid: s.proc_info.ssh_pid,
+        host: s.proc_info.ssh_host.clone(), tmux, replace_meta,
+    }))
+}
+
+fn plan_dynamic_reconnect(ctx: DynamicCtx) -> Option<ReconnectPlan> {
+    let live = proc_radar::inspect_proc_tree(ctx.pane_pid);
+    let host = if live.ssh_host.is_empty() { ctx.host } else { live.ssh_host };
+    let ssh_pid = if live.ssh_pid > 0 { live.ssh_pid } else { ctx.ssh_pid };
+    let cmdline = (ssh_pid > 0).then(|| proc_radar::read_proc_cmdline(ssh_pid)).flatten();
+    let argv = crate::ssh_detect::build_dynamic_ssh_reconnect_argv(
+        cmdline.as_deref(), &host, ctx.tmux.as_deref(),
+    )?;
+    if let Some((title, cwd, scale)) = ctx.replace_meta.filter(|_| ssh_pid > 0 && ssh_pid == ctx.pane_pid) {
+        return Some(ReconnectPlan::Replace { argv, title, cwd, scale, old_pid: ctx.pane_pid });
+    }
+    let cmd = crate::ssh_detect::format_shell_argv(&argv);
+    Some(ReconnectPlan::DynamicInShell { vte: ctx.vte, pane_pid: ctx.pane_pid, ssh_pid, cmd, host })
+}
+
+fn plan_reconnect(sid: usize) -> Option<ReconnectPlan> {
+    match app_state::with_app(|app| snapshot_reconnect_ctx(app, sid)).flatten()? {
+        Ok(plan) => Some(plan),
+        Err(ctx) => plan_dynamic_reconnect(ctx),
+    }
+}
+
+fn reset_dynamic_remote_state(sid: usize, target_vte: *mut GtkWidget) {
+    app_state::with_app_mut(|app| {
+        let Some(s) = app.sessions.iter_mut().find(|s| s.id == sid && s.has_vte(target_vte)) else { return; };
+        s.telemetry = telemetry::SessionTelemetry::default();
+        s.remote_tmux = None;
+        s.tmux_title_from_vte = false;
+        s.osc_title.clear();
+        if let Some(p) = s.pane_registry.by_vte_mut(target_vte) {
+            app.remote_telemetry.reset_session(p.probe_id);
+            p.telemetry = telemetry::SessionTelemetry::default();
+            p.remote_tmux = None;
+            p.osc_title.clear();
+        }
+    });
+}
+
+fn deliver_dynamic_reconnect(sid: usize, target_vte: *mut GtkWidget, cmd: &str) {
+    let live = app_state::with_app(|app| pane_actions::find_live_drop_vte(&app.sessions, app.active_id, sid, target_vte)).flatten();
+    if let Some((vte, _)) = live {
+        select_session(sid);
+        crate::file_drop::feed_vte_text(vte, &format!("{cmd}\n"), true);
+    }
+}
+
+extern "C" fn on_dynamic_reconnect_poll(data: *mut c_void) -> c_int {
+    if data.is_null() { return 0; }
+    let st = unsafe { &mut *data.cast::<DynamicPoll>() };
+    if st.tries > 0 && proc_radar::inspect_proc_tree(st.pane_pid).ssh_pid == st.ssh_pid {
+        st.tries -= 1;
+        return 1;
+    }
+    let done = unsafe { Box::from_raw(data.cast::<DynamicPoll>()) };
+    deliver_dynamic_reconnect(done.sid, done.vte, &done.cmd);
+    0
+}
+
+fn reconnect_dynamic_in_shell(sid: usize, vte: *mut GtkWidget, pane_pid: i32, ssh_pid: i32, cmd: String, host: String) {
+    reset_dynamic_remote_state(sid, vte);
+    app_state::set_footer_message(&format!("↻ {host}"));
+    if ssh_pid > 0 {
+        unsafe { kill(ssh_pid, 9) };
+        let poll = Box::new(DynamicPoll { sid, vte, pane_pid, ssh_pid, cmd, tries: 25 });
+        unsafe { g_timeout_add(30, on_dynamic_reconnect_poll, Box::into_raw(poll).cast()) };
+    } else {
+        deliver_dynamic_reconnect(sid, vte, &cmd);
+    }
+}
+
 pub(crate) fn reconnect_session(sid: usize) {
-    let details = app_state::with_app(|app| {
-        let s = app.sessions.iter().find(|s| s.id == sid)?;
-        Some((s.remote()?.clone(), s.cwd.clone(), app.font_scale, s.child_pid))
-    })
-    .flatten();
-    let Some((remote, cwd, scale, old_pid)) = details else {
-        return;
-    };
-    stop_ssh(old_pid);
-    let args = remote.argv();
-    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-    let (vte, pid) = create_terminal(&cwd, &argv, sid, scale);
-    replace_terminal(sid, vte, pid, remote.title());
-    select_session(sid);
+    match plan_reconnect(sid) {
+        Some(ReconnectPlan::Replace { argv, title, cwd, scale, old_pid }) => {
+            stop_ssh(old_pid);
+            let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+            let (vte, pid) = create_terminal(&cwd, &refs, sid, scale);
+            replace_terminal(sid, vte, pid, title);
+            select_session(sid);
+        }
+        Some(ReconnectPlan::DynamicInShell { vte, pane_pid, ssh_pid, cmd, host }) => {
+            reconnect_dynamic_in_shell(sid, vte, pane_pid, ssh_pid, cmd, host);
+        }
+        None => {}
+    }
 }
 
 fn reset_replaced_timings(s: &mut TermSession) {

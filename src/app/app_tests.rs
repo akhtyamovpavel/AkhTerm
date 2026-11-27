@@ -414,6 +414,71 @@ fn exercise_agy_paste_and_copy(vte: *mut GtkWidget, out_file: &Path) {
     assert!(captured.contains("текст для AGY"), "captured: {captured:?}");
 }
 
+fn assert_dynamic_reconnect_ui(sid: usize, active: bool) {
+    topbar::refresh_ui();
+    let btn_sensitive = APP.with(|c| {
+        let a = c.borrow();
+        let app = a.as_ref().unwrap();
+        unsafe { gtk_widget_get_sensitive(app.reconnect_btn) != 0 }
+    });
+    let menu_remote = pane_actions::build_tab_menu_spec(ptr::null_mut(), sid).unwrap().is_remote;
+    assert_eq!(btn_sensitive, active);
+    assert_eq!(menu_remote, active);
+}
+
+fn wait_for_dynamic_ssh_pid(expected_host: &str) -> i32 {
+    for _ in 0..80 {
+        pump_gtk_events();
+        let pid = app_state::with_app_mut(|app| {
+            let s = &mut app.sessions[0];
+            session_ops::sync_session_proc(s, None);
+            (s.proc_info.ssh_host == expected_host && s.proc_info.ssh_pid > 0).then_some(s.proc_info.ssh_pid)
+        })
+        .flatten();
+        if let Some(p) = pid {
+            return p;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    panic!("dynamic ssh {expected_host} was not detected");
+}
+
+fn verify_dynamic_ssh_reconnect_flow() {
+    let out_file = temp_test_path("akhterm_dyn_reconn");
+    let (win, _) = install_test_window();
+    let reconnect_btn = unsafe { gtk_button_new() };
+    APP.with(|c| {
+        let mut a = c.borrow_mut();
+        let app = a.as_mut().unwrap();
+        unsafe { gtk_box_pack_start(gtk_widget_get_parent(app.split_vert_btn), reconnect_btn, 0, 0, 0) };
+        app.reconnect_btn = reconnect_btn;
+    });
+    let sid = session_ops::add_tab(
+        "Shell", "", "/tmp", SessionCategory::Project,
+        &["bash", "--noprofile", "--norc", "-i"], Tab::local("shell"),
+    );
+    let vte = APP.with(|c| c.borrow().as_ref().unwrap().sessions[0].vte);
+    unsafe { gtk_widget_show_all(win) };
+    assert_dynamic_reconnect_ui(sid, false);
+
+    let setup = format!("ssh() {{ printf '%s\\n' \"$*\" > '{}'; }}\n", out_file.display());
+    file_drop::feed_vte_text(vte, &setup, false);
+    file_drop::feed_vte_text(
+        vte,
+        "bash -c 'exec -a ssh sh -c \"sleep 30\" -p 2222 user@prod-01'\n",
+        false,
+    );
+    let _ssh_pid = wait_for_dynamic_ssh_pid("user@prod-01");
+    assert_dynamic_reconnect_ui(sid, true);
+
+    session_ops::reconnect_session(sid);
+    let captured = wait_captured_output(&out_file, "user@prod-01");
+    assert!(captured.contains("-p 2222 user@prod-01"), "unexpected reconnect cmd: {captured:?}");
+
+    let _ = std::fs::remove_file(&out_file);
+    cleanup_test_window(win, &[sid]);
+}
+
 #[test]
 fn app_routes_local_and_remote_drops_and_ignores_closed_vte_on_idle() {
     with_headless_gtk(|| {
@@ -421,6 +486,7 @@ fn app_routes_local_and_remote_drops_and_ignores_closed_vte_on_idle() {
         verify_unified_rename_persists_and_resets_in_tabs_v1();
         verify_wayland_safe_mouse_tab_drag_without_root_coords();
         verify_smart_ctrl_c_and_ctrl_v_across_shell_and_agy();
+        verify_dynamic_ssh_reconnect_flow();
     });
 }
 

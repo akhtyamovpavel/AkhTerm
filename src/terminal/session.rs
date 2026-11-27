@@ -93,6 +93,11 @@ impl TermSession {
         self.category == SessionCategory::Project && !self.proc_info.ssh_host.is_empty()
     }
 
+    pub fn can_reconnect(&self) -> bool {
+        self.remote().is_some()
+            || (self.is_dynamic_ssh() && crate::tabs::is_ssh_host(&self.proc_info.ssh_host))
+    }
+
     pub fn effective_category(&self) -> SessionCategory {
         if self.is_dynamic_ssh() {
             SessionCategory::Remote
@@ -777,9 +782,11 @@ mod tests {
     fn dynamic_ssh_switches_category_and_restores_local_state_on_exit() {
         let mut s = sample_local_session("Productivity · Новая", "/tmp/proj");
         assert_eq!(s.effective_category(), SessionCategory::Project);
+        assert!(!s.can_reconnect());
         assert_eq!(s.active_local_cwd().as_deref(), Some("/tmp/proj"));
         s.telemetry.vte_fallback.context_tokens = 131_000;
         assert_dynamic_ssh_active(&mut s);
+        assert!(s.can_reconnect());
         assert!(!s.telemetry.snapshot().has_data());
 
         s.apply_vte_title(ptr::null_mut(), "AKHTERM_TMUX:main|0|claude|/srv/app");
@@ -793,6 +800,7 @@ mod tests {
         assert!(!s.telemetry.snapshot().has_data());
         refresh_smart_title(&mut s);
         assert_eq!(s.effective_category(), SessionCategory::Project);
+        assert!(!s.can_reconnect());
         assert!(!s.tmux_title_from_vte && s.remote_tmux.is_none() && s.osc_title.is_empty());
         assert_eq!(s.title, "Productivity · Новая");
         assert_eq!(s.active_local_cwd().as_deref(), Some("/tmp/proj"));
