@@ -1511,3 +1511,162 @@ button.ports-restore-btn {
     min-height: 24px;
     padding: 2px 8px;
 }
+
+.drop-overlay-backdrop {
+    background-color: alpha(@canvas, 0.72);
+    padding: 18px;
+}
+
+.drop-zone-card {
+    background-color: alpha(@update_card_bg, 0.94);
+    border: 2px dashed @border_strong;
+    border-radius: 10px;
+    padding: 18px 20px;
+    box-shadow: 0 8px 24px @update_shadow;
+}
+
+.drop-zone-card.drop-zone-active {
+    background-color: @drag_bg;
+    border: 2px solid @drag_border;
+}
+
+.drop-zone-title {
+    color: @text_strong;
+    font-size: 15px;
+    font-weight: 600;
+}
+
+.drop-zone-sub {
+    color: @muted;
+    font-size: 12px;
+}
+
+.transfer-card {
+    background-color: @update_card_bg;
+    border: 1px solid @border_strong;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px @update_shadow;
+    padding: 12px 14px;
+    min-width: 320px;
+}
+
+.transfer-badge {
+    color: @muted;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+}
+
+.transfer-title {
+    color: @text_strong;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.transfer-dest {
+    color: @muted;
+    font-size: 11px;
+}
+
+.transfer-stats {
+    color: @muted;
+    font-size: 11px;
+}
+
+progressbar.transfer-progress trough {
+    min-height: 6px;
+    border-radius: 3px;
+    background-color: @surface;
+}
+
+progressbar.transfer-progress progress {
+    min-height: 6px;
+    border-radius: 3px;
+    background-color: @drag_border;
+}
+
+button.transfer-btn {
+    background-color: @surface;
+    border: 1px solid @border_strong;
+    border-radius: 5px;
+    color: @text_strong;
+    font-size: 11px;
+    min-height: 24px;
+    padding: 3px 10px;
+}
+
+button.transfer-btn-danger {
+    background-color: @danger_bg;
+    border: 1px solid @danger_border;
+    border-radius: 5px;
+    color: @danger;
+    font-size: 11px;
+    min-height: 24px;
+    padding: 3px 10px;
+}
+
+.files-drawer {
+    background-color: @canvas;
+    border-left: 1px solid @border_strong;
+    padding: 8px;
+}
+
+.files-header {
+    color: @text_strong;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+}
+
+.files-path-label {
+    color: @muted;
+    font-size: 11px;
+    padding: 2px 0;
+}
+
+entry.files-search {
+    background-color: @surface;
+    border: 1px solid @border_strong;
+    border-radius: 5px;
+    color: @text_strong;
+    font-size: 12px;
+    min-height: 26px;
+    padding: 2px 8px;
+}
+
+.files-row {
+    background-color: transparent;
+    border-radius: 5px;
+    padding: 3px 6px;
+}
+
+.files-row:hover {
+    background-color: @surface;
+}
+
+.files-row-name {
+    color: @text_strong;
+    font-size: 12px;
+}
+
+.files-row-size {
+    color: @muted;
+    font-size: 11px;
+}
+
+button.files-row-btn {
+    background-color: @surface;
+    border: 1px solid @border_strong;
+    border-radius: 4px;
+    color: @text_strong;
+    font-size: 11px;
+    min-height: 22px;
+    min-width: 22px;
+    padding: 1px 6px;
+}
+
+.files-hint {
+    color: @muted;
+    font-size: 11px;
+    padding-top: 4px;
+}

@@ -17,6 +17,7 @@ pub enum ContextAction {
     CopySelection(*mut GtkWidget),
     PasteSmart { sid: usize, vte: *mut GtkWidget },
     OpenLink(String),
+    DownloadRemoteFile(crate::files::RemoteFileLink),
     PreviewMarkdown(PathBuf, Option<crate::markdown::Origin>),
     PreviewRemote(crate::markdown::RemoteDocument),
     CopyText(String),
@@ -203,6 +204,7 @@ pub struct VteMenuSpec {
     pub has_selection: bool,
     pub selected_text: Option<String>,
     pub link_target: Option<crate::session::VteLink>,
+    pub remote_download: Option<crate::files::RemoteFileLink>,
     pub is_local: bool,
     pub targets: Vec<SessionTarget>,
     pub has_cmd_marks: bool,
@@ -363,6 +365,10 @@ fn append_vte_link_items(menu: *mut GtkWidget, spec: &VteMenuSpec, dispatch: &Di
     items.push(append_bound_item(menu, label, true, open, dispatch));
     let copy = ContextAction::CopyText(url.to_owned());
     items.push(append_bound_item(menu, text::ctx_copy_link().as_ptr(), true, copy, dispatch));
+    if let Some(ref dl) = spec.remote_download {
+        let act = ContextAction::DownloadRemoteFile(dl.clone());
+        items.push(append_bound_item(menu, text::i18n_text::CTX_DOWNLOAD_SSH.cstr().as_ptr(), true, act, dispatch));
+    }
     if link.document.is_some() {
         return;
     }
@@ -709,7 +715,8 @@ mod tests {
 
     fn check_remote_vte_menu(vte: *mut GtkWidget, dispatch: &DispatchFn) {
         let spec = VteMenuSpec {
-            sid: 4, vte, has_selection: false, selected_text: None, link_target: None, is_local: false, targets: Vec::new(),
+            sid: 4, vte, has_selection: false, selected_text: None, link_target: None,
+            remote_download: None, is_local: false, targets: Vec::new(),
             has_cmd_marks: false, has_failed_cmd: false,
         };
         let built = build_vte_menu(&spec, dispatch);
@@ -734,6 +741,7 @@ mod tests {
             has_selection: true,
             selected_text: Some("ошибка".to_owned()),
             link_target: Some(crate::session::VteLink { url: "https://example.org".to_owned(), document: None }),
+            remote_download: None,
             is_local: true,
             targets: vec![SessionTarget { sid: 7, label: "Агент · Claude".to_owned() }],
             has_cmd_marks: true,
@@ -886,6 +894,7 @@ mod tests {
             has_selection: false,
             selected_text: None,
             link_target: Some(crate::session::VteLink { url: link, document: None }),
+            remote_download: None,
             is_local: true,
             targets: Vec::new(),
             has_cmd_marks: true,

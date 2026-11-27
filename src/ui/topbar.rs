@@ -233,6 +233,7 @@ fn pack_right_menus(
     let swarm_btn = add_end_button(topbar, text::swarm_btn(), Some(text::swarm_tip()));
     app_state::connect_click(swarm_btn, on_swarm_open, ptr::null_mut());
     let git_btn = add_end_button(topbar, text::i18n_text::git_menu(), Some(text::i18n_text::git_menu_tip()));
+    crate::files::drawer::mount_topbar_button(topbar);
     let mi_btn = add_end_button(topbar, text::i18n_text::maintainability(), None);
     let ports_menu = crate::ports_ui::PortsMenu::new(topbar);
     let remote_menu = crate::remote::ui::RemoteMenu::new(topbar);
@@ -718,6 +719,8 @@ fn refresh_localized_subwidgets(app: &AppState) {
     app.tokens_menu.refresh_locale();
     app.tab_strip.refresh_locale();
     app.update_banner.refresh_locale();
+    app.transfer_banner.refresh_locale();
+    crate::files::drawer::refresh_locale();
     app.ports_menu.refresh_locale();
     app.remote_menu.sync_state();
     app.sys_monitor.refresh_locale();

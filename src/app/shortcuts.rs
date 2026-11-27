@@ -172,16 +172,18 @@ extern "C" fn on_window_key_press(
     let Some((keyval, state, keycode)) = extract_key_event(event) else {
         return 0;
     };
-    if let Some(result) = crate::markdown::route_key(_win, keyval, state) { return result; }
-    if let Some(result) = crate::diff_review::route_key(_win, keyval, state) { return result; }
+    for route in [crate::markdown::route_key, crate::diff_review::route_key, crate::files::drawer::route_key] {
+        if let Some(r) = route(_win, keyval, state) {
+            return r;
+        }
+    }
     if route_swarm_escape(keyval) {
         return 1;
     }
-    if let Some(handled) = route_palette_key(keyval, state, keycode) {
-        return handled;
-    }
-    if let Some(handled) = route_search_key(keyval, state, keycode) {
-        return handled;
+    for route in [route_palette_key, route_search_key] {
+        if let Some(handled) = route(keyval, state, keycode) {
+            return handled;
+        }
     }
     dispatch_global_key(keyval, state, keycode)
 }
@@ -225,23 +227,20 @@ fn dispatch_tab_action_key(keyval: c_uint, keycode: u16) -> bool {
 }
 
 fn dispatch_workspace_shortcut(keyval: c_uint, state: c_uint, keycode: u16) -> bool {
+    let handlers: [(fn(c_uint, c_uint, u16) -> bool, fn()); 3] = [
+        (crate::task_dispatch::is_dispatch_shortcut, crate::task_dispatch::open_for_app),
+        (crate::swarm_view::is_swarm_shortcut, topbar::toggle_swarm_view),
+        (crate::diff_review::is_diff_review_shortcut, crate::diff_review::open_for_active),
+    ];
+    if let Some((_, run)) = handlers.iter().find(|(pred, _)| pred(keyval, state, keycode)) {
+        run();
+        return true;
+    }
     if approval::is_jump_attention_shortcut(keyval, keycode) {
         jump_next_attention();
         return true;
     }
-    if crate::task_dispatch::is_dispatch_shortcut(keyval, state, keycode) {
-        crate::task_dispatch::open_for_app();
-        return true;
-    }
-    if crate::swarm_view::is_swarm_shortcut(keyval, state, keycode) {
-        topbar::toggle_swarm_view();
-        return true;
-    }
-    if crate::diff_review::is_diff_review_shortcut(keyval, state, keycode) {
-        crate::diff_review::open_for_active();
-        return true;
-    }
-    false
+    crate::files::drawer::try_toggle_shortcut(keyval, state, keycode)
 }
 
 fn handle_tab_shortcut(keyval: c_uint, state: c_uint, keycode: u16) -> bool {
@@ -278,6 +277,7 @@ fn execute_palette_tool_action(action: palette::PaletteAction) {
         palette::PaletteAction::OpenSearch => open_search_bar(),
         palette::PaletteAction::OpenGitMenu => pane_actions::populate_git_popover(true, true),
         palette::PaletteAction::OpenDiffReview => crate::diff_review::open_for_active(),
+        palette::PaletteAction::ToggleFilesDrawer => crate::files::drawer::toggle(),
         palette::PaletteAction::SaveCheckpoint => crate::git_checkpoints::trigger_save_for_active(),
         palette::PaletteAction::UndoLastCheckpoint => crate::git_checkpoints::trigger_undo_last_for_active(),
         palette::PaletteAction::GitFile { repo_root, path, untracked } => {

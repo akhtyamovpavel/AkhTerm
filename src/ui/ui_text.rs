@@ -954,6 +954,83 @@ pub mod i18n_text {
         c"Показать QR для Android / PWA или настроить локальный сервер",
         c"Show Android / PWA pairing QR code or configure local remote server",
     );
+
+    pub const DROP_INSERT_TITLE: UiText = UiText::new(c"Вставить путь", c"Insert path");
+    pub const DROP_INSERT_LOCAL_SUB: UiText =
+        UiText::new(c"Экранированный путь в терминал", c"Quoted path into terminal");
+    pub const DROP_INSERT_REMOTE_SUB: UiText =
+        UiText::new(c"Загрузить в /tmp и вставить путь", c"Upload to /tmp and insert path");
+    pub const DROP_TRANSFER_LOCAL_TITLE: UiText = UiText::new(c"Скопировать сюда", c"Copy here");
+    pub const DROP_TRANSFER_REMOTE_TITLE: UiText = UiText::new(c"Загрузить сюда", c"Upload here");
+    pub const DROP_TRANSFER_SUB: UiText =
+        UiText::new(c"В текущий каталог", c"Into working directory");
+    pub const DROP_PASTE_IMAGE_SUB: UiText =
+        UiText::new(c"Сохранить изображение и передать", c"Save image and transfer");
+
+    pub const TRANSFER_BADGE: UiText = UiText::new(c"ПЕРЕДАЧА ФАЙЛОВ", c"FILE TRANSFER");
+    pub const TRANSFER_LOCAL_COPY: UiText =
+        UiText::new(c"Копирование в каталог", c"Copying to folder");
+    pub const TRANSFER_SSH_UPLOAD: UiText =
+        UiText::new(c"Загрузка по SSH", c"Uploading via SSH");
+    pub const TRANSFER_SSH_DOWNLOAD: UiText =
+        UiText::new(c"Скачивание с SSH", c"Downloading from SSH");
+    pub const TRANSFER_SSH_BRIDGE: UiText =
+        UiText::new(c"Передача SSH → SSH", c"Transferring SSH → SSH");
+    pub const TRANSFER_DONE: UiText = UiText::new(c"Готово", c"Done");
+    pub const TRANSFER_FAILED: UiText = UiText::new(c"Ошибка", c"Failed");
+    pub const TRANSFER_CANCELLED: UiText = UiText::new(c"Отменено", c"Cancelled");
+    pub const TRANSFER_BTN_CANCEL: UiText = UiText::new(c"Отмена", c"Cancel");
+    pub const TRANSFER_BTN_OPEN_FOLDER: UiText =
+        UiText::new(c"Открыть папку", c"Open folder");
+    pub const TRANSFER_BTN_INSERT_PATH: UiText =
+        UiText::new(c"Вставить путь", c"Insert path");
+    pub const TRANSFER_BTN_DISMISS: UiText = UiText::new(c"Скрыть", c"Dismiss");
+
+    pub const FILES_BTN: UiText = UiText::new(c"Файлы", c"Files");
+    pub const FILES_TIP: UiText = UiText::new(
+        c"Открыть или скрыть панель файлов вкладки (Ctrl+Shift+O)",
+        c"Show or hide workspace files drawer (Ctrl+Shift+O)",
+    );
+    pub const FILES_TITLE: UiText = UiText::new(c"ФАЙЛЫ", c"FILES");
+    pub const FILES_SEARCH_PLACEHOLDER: UiText = UiText::new(c"Фильтр по имени…", c"Filter by name…");
+    pub const FILES_UP_TIP: UiText = UiText::new(c"Перейти на уровень выше", c"Go to parent directory");
+    pub const FILES_REFRESH_TIP: UiText = UiText::new(c"Обновить список файлов", c"Refresh file list");
+    pub const FILES_HIDDEN_TIP: UiText = UiText::new(
+        c"Показать или скрыть скрытые файлы",
+        c"Show or hide hidden files",
+    );
+    pub const FILES_UPLOAD_BTN: UiText = UiText::new(c"Загрузить…", c"Upload…");
+    pub const FILES_UPLOAD_TIP: UiText = UiText::new(
+        c"Выбрать локальные файлы и загрузить в открытый каталог",
+        c"Choose local files and copy or upload into this folder",
+    );
+    pub const FILES_DOWNLOAD_TIP: UiText = UiText::new(
+        c"Скачать с SSH в Загрузки",
+        c"Download from SSH to Downloads",
+    );
+    pub const FILES_INSERT_TIP: UiText = UiText::new(
+        c"Вставить путь в терминал",
+        c"Insert path into active terminal",
+    );
+    pub const FILES_OPEN_TIP: UiText = UiText::new(c"Открыть файл или папку", c"Open file or folder");
+    pub const FILES_EMPTY: UiText = UiText::new(c"Каталог пуст", c"Directory is empty");
+    pub const FILES_LOADING: UiText = UiText::new(
+        c"Загрузка списка файлов…",
+        c"Loading directory listing…",
+    );
+    pub const FILES_DROP_HINT: UiText = UiText::new(
+        c"Перетащите файлы сюда или из списка в терминал",
+        c"Drop files here or drag rows into a terminal",
+    );
+    pub const CTX_DOWNLOAD_SSH: UiText = UiText::new(c"Скачать с SSH", c"Download from SSH");
+    pub const PALETTE_FILES_TITLE: UiText = UiText::new(
+        c"Панель файлов (локально и SSH)",
+        c"Files Drawer (Local & SSH)",
+    );
+    pub const PALETTE_FILES_DETAIL: UiText = UiText::new(
+        c"Открыть боковую панель файлов активной вкладки (Ctrl+Shift+O)",
+        c"Toggle the right-side file browser for the active tab (Ctrl+Shift+O)",
+    );
 }
 
 pub use i18n_text::*;
@@ -1050,6 +1127,24 @@ mod tests {
             i18n_text::SIDEBAR_GROUP_MONITOR, i18n_text::SIDEBAR_EMPTY_TABS,
             i18n_text::SIDEBAR_EMPTY_SEARCH, i18n_text::SIDEBAR_TMUX_PREFIX,
             i18n_text::SIDEBAR_FOLDER_NEW_TAB_TIP,
+            i18n_text::DROP_INSERT_TITLE, i18n_text::DROP_INSERT_LOCAL_SUB,
+            i18n_text::DROP_INSERT_REMOTE_SUB, i18n_text::DROP_TRANSFER_LOCAL_TITLE,
+            i18n_text::DROP_TRANSFER_REMOTE_TITLE, i18n_text::DROP_TRANSFER_SUB,
+            i18n_text::DROP_PASTE_IMAGE_SUB, i18n_text::TRANSFER_BADGE,
+            i18n_text::TRANSFER_LOCAL_COPY, i18n_text::TRANSFER_SSH_UPLOAD,
+            i18n_text::TRANSFER_SSH_DOWNLOAD, i18n_text::TRANSFER_SSH_BRIDGE,
+            i18n_text::TRANSFER_DONE, i18n_text::TRANSFER_FAILED,
+            i18n_text::TRANSFER_CANCELLED, i18n_text::TRANSFER_BTN_CANCEL,
+            i18n_text::TRANSFER_BTN_OPEN_FOLDER, i18n_text::TRANSFER_BTN_INSERT_PATH,
+            i18n_text::TRANSFER_BTN_DISMISS,
+            i18n_text::FILES_BTN, i18n_text::FILES_TIP, i18n_text::FILES_TITLE,
+            i18n_text::FILES_SEARCH_PLACEHOLDER, i18n_text::FILES_UP_TIP,
+            i18n_text::FILES_REFRESH_TIP, i18n_text::FILES_HIDDEN_TIP,
+            i18n_text::FILES_UPLOAD_BTN, i18n_text::FILES_UPLOAD_TIP,
+            i18n_text::FILES_DOWNLOAD_TIP, i18n_text::FILES_INSERT_TIP,
+            i18n_text::FILES_OPEN_TIP, i18n_text::FILES_EMPTY, i18n_text::FILES_LOADING,
+            i18n_text::FILES_DROP_HINT, i18n_text::CTX_DOWNLOAD_SSH,
+            i18n_text::PALETTE_FILES_TITLE, i18n_text::PALETTE_FILES_DETAIL,
         ] {
             assert_pair_valid(entry);
         }

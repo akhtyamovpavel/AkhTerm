@@ -199,8 +199,10 @@ fn wrap_header_vbox(bar: *mut GtkWidget, scroll: *mut GtkWidget) -> *mut GtkWidg
     unsafe {
         let vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
         gtk_box_pack_start(vbox as *mut GtkBox, bar, 0, 1, 0);
-        gtk_box_pack_start(vbox as *mut GtkBox, scroll, 1, 1, 0);
+        let wrapped = crate::files::drop_overlay::wrap_pane_scroll(scroll);
+        gtk_box_pack_start(vbox as *mut GtkBox, wrapped, 1, 1, 0);
         gtk_widget_set_visible(scroll, 1);
+        gtk_widget_set_visible(wrapped, 1);
         gtk_widget_set_visible(vbox, 1);
         vbox
     }

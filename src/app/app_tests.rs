@@ -140,6 +140,8 @@ fn assemble_test_app_state(
         remote_ports: crate::port_radar::RemotePortScheduler::default(),
         local_ports_by_sid: Default::default(),
         remote_url_ports_by_sid: Default::default(),
+        transfer_manager: crate::files::manager::TransferManager::default(),
+        transfer_banner: crate::files::transfer_banner::TransferBanner::new(),
     }
 }
 

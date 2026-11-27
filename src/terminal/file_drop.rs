@@ -9,8 +9,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::app::app_state::with_app_mut;
 use crate::ffi::*;
+use crate::files::drop_overlay;
+use crate::files::mime::{
+    decode_akhterm_drag, decode_gnome_copied_files, decode_uri_list_bytes, stage_png_bytes,
+    INFO_AKHTERM_FILES, INFO_GNOME_COPIED, INFO_IMAGE_PNG, INFO_URI_LIST, MIME_AKHTERM_FILES,
+    MIME_GNOME_COPIED, MIME_IMAGE_PNG, MIME_URI_LIST,
+};
+use crate::files::resolve::resolve_pane_endpoint;
+use crate::files::transfer_banner::notify_transfer_started;
+use crate::files::{DragPayload, DropMode, FileEndpoint, RemoteFileItem};
 use crate::tabs::is_ssh_host;
+use crate::telemetry::ssh_connection::SshRoute;
 use crate::ui_text as text;
 
 static DROP_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -357,6 +368,167 @@ fn start_remote_drop(vte: *mut GtkWidget, sid: usize, host: String, paths: Vec<P
     true
 }
 
+pub fn insert_shell_paths(vte: *mut GtkWidget, paths: &[String]) {
+    let payload = format_shell_paths(paths);
+    feed_vte_text(vte, &payload, false);
+}
+
+fn stage_png_for_drop(bytes: &[u8]) -> Option<PathBuf> {
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
+    let dir = std::env::temp_dir().join("akhterm-drops");
+    stage_png_bytes(bytes, &dir, stamp).ok()
+}
+
+fn extract_selection_bytes(selection_data: *const GtkSelectionData) -> Vec<u8> {
+    if selection_data.is_null() {
+        return Vec::new();
+    }
+    unsafe {
+        let len = gtk_selection_data_get_length(selection_data);
+        let ptr = gtk_selection_data_get_data(selection_data);
+        if ptr.is_null() || len <= 0 {
+            Vec::new()
+        } else {
+            std::slice::from_raw_parts(ptr, len as usize).to_vec()
+        }
+    }
+}
+
+pub(crate) fn extract_selection_payload(selection_data: *const GtkSelectionData, info: c_uint) -> Option<DragPayload> {
+    match info {
+        INFO_AKHTERM_FILES => decode_akhterm_drag(&extract_selection_bytes(selection_data)),
+        INFO_GNOME_COPIED => {
+            let paths = decode_gnome_copied_files(&extract_selection_bytes(selection_data));
+            (!paths.is_empty()).then_some(DragPayload::LocalPaths(paths))
+        }
+        INFO_IMAGE_PNG => {
+            let bytes = extract_selection_bytes(selection_data);
+            (!bytes.is_empty()).then_some(DragPayload::PngBytes(bytes))
+        }
+        _ => {
+            let uris = extract_selection_uris(selection_data);
+            let paths = decode_uri_list(&uris);
+            if !paths.is_empty() {
+                return Some(DragPayload::LocalPaths(paths));
+            }
+            let raw = decode_uri_list_bytes(&extract_selection_bytes(selection_data));
+            (!raw.is_empty()).then_some(DragPayload::LocalPaths(raw))
+        }
+    }
+}
+
+fn dispatch_local_to_endpoint(
+    vte: *mut GtkWidget,
+    paths: Vec<PathBuf>,
+    endpoint: &FileEndpoint,
+    mode: DropMode,
+) -> bool {
+    if paths.is_empty() {
+        return false;
+    }
+    match endpoint {
+        FileEndpoint::Local { cwd } if mode == DropMode::InsertPath => {
+            let _ = cwd;
+            let payload = format_local_drop_paths(&paths);
+            feed_vte_text(vte, &payload, true);
+            !payload.is_empty()
+        }
+        FileEndpoint::Local { cwd } => {
+            let ok = with_app_mut(|app| {
+                app.transfer_manager.start_local_copy(paths, cwd.clone(), vte, false)
+            })
+            .is_some();
+            if ok { notify_transfer_started(); }
+            ok
+        }
+        FileEndpoint::Remote { route, host, cwd, .. } => {
+            let to_tmp = mode == DropMode::InsertPath;
+            let ok = with_app_mut(|app| {
+                app.transfer_manager.start_ssh_upload(
+                    route.clone(), host.clone(), paths, cwd.clone(), to_tmp, vte, to_tmp,
+                )
+            })
+            .is_some();
+            if ok { notify_transfer_started(); }
+            ok
+        }
+    }
+}
+
+fn remote_route_for_item(item: &RemoteFileItem) -> Option<SshRoute> {
+    if item.ssh_pid > 0 { SshRoute::from_client(item.ssh_pid, &item.host) } else { SshRoute::for_host(&item.host) }
+}
+
+fn dispatch_remote_to_endpoint(
+    vte: *mut GtkWidget,
+    items: Vec<RemoteFileItem>,
+    endpoint: &FileEndpoint,
+    mode: DropMode,
+) -> bool {
+    let Some(first) = items.first() else { return false };
+    let Some(src_route) = remote_route_for_item(first) else { return false };
+    let src_host = first.host.clone();
+    let src_paths: Vec<String> = items.into_iter().map(|i| i.path).collect();
+    match endpoint {
+        FileEndpoint::Local { cwd } => {
+            let insert_after = mode == DropMode::InsertPath;
+            let dest = if insert_after {
+                let d = std::env::temp_dir().join("akhterm-drops");
+                let _ = std::fs::create_dir_all(&d);
+                d
+            } else {
+                cwd.clone()
+            };
+            let ok = with_app_mut(|app| {
+                app.transfer_manager.start_ssh_download(src_route, src_host, src_paths, dest, vte, insert_after)
+            })
+            .is_some();
+            if ok { notify_transfer_started(); }
+            ok
+        }
+        FileEndpoint::Remote { route: dst_route, host: dst_host, cwd: dst_cwd, .. } => {
+            if src_host == *dst_host && mode == DropMode::InsertPath {
+                insert_shell_paths(vte, &src_paths);
+                return true;
+            }
+            let insert_after = mode == DropMode::InsertPath;
+            let dest = if insert_after { "/tmp".to_owned() } else { dst_cwd.clone() };
+            let ok = with_app_mut(|app| {
+                app.transfer_manager.start_ssh_to_ssh(
+                    src_route, src_paths, dst_route.clone(), dst_host.clone(), dest, vte, insert_after,
+                )
+            })
+            .is_some();
+            if ok { notify_transfer_started(); }
+            ok
+        }
+    }
+}
+
+pub fn dispatch_drag_payload(vte: *mut GtkWidget, payload: DragPayload, mode: DropMode) -> bool {
+    if vte.is_null() {
+        return false;
+    }
+    let normalized = match payload {
+        DragPayload::PngBytes(bytes) => {
+            let Some(path) = stage_png_for_drop(&bytes) else { return false };
+            DragPayload::LocalPaths(vec![path])
+        }
+        other => other,
+    };
+    let Some(endpoint) = resolve_pane_endpoint(vte) else {
+        return match normalized {
+            DragPayload::LocalPaths(paths) if mode == DropMode::InsertPath => dispatch_dropped_paths(vte, paths),
+            _ => false,
+        };
+    };
+    match normalized {
+        DragPayload::LocalPaths(paths) => dispatch_local_to_endpoint(vte, paths, &endpoint, mode),
+        DragPayload::RemoteItems(items) => dispatch_remote_to_endpoint(vte, items, &endpoint, mode),
+        DragPayload::PngBytes(_) => false,
+    }
+}
+
 pub fn dispatch_dropped_paths(vte: *mut GtkWidget, paths: Vec<PathBuf>) -> bool {
     if vte.is_null() || paths.is_empty() {
         return false;
@@ -372,19 +544,77 @@ pub fn dispatch_dropped_paths(vte: *mut GtkWidget, paths: Vec<PathBuf>) -> bool 
     }
 }
 
+fn is_drag_image_target(vte: *mut GtkWidget, context: *mut GdkDragContext) -> bool {
+    if vte.is_null() || context.is_null() {
+        return false;
+    }
+    unsafe {
+        let atom = gtk_drag_dest_find_target(vte, context, ptr::null_mut());
+        if atom.is_null() {
+            return false;
+        }
+        let name_ptr = gdk_atom_name(atom);
+        if name_ptr.is_null() {
+            return false;
+        }
+        let is_img = CStr::from_ptr(name_ptr).to_str().is_ok_and(|s| s == "image/png");
+        g_free(name_ptr as *mut c_void);
+        is_img
+    }
+}
+
+extern "C" fn on_vte_drag_motion(
+    vte: *mut GtkWidget,
+    context: *mut GdkDragContext,
+    x: c_int,
+    _y: c_int,
+    _time: c_uint,
+    _user_data: *mut c_void,
+) -> c_int {
+    let is_remote = match resolve_pane_endpoint(vte) {
+        Some(ep) => matches!(ep, FileEndpoint::Remote { .. }),
+        None => matches!(current_hooks().map(|h| (h.resolve_target)(vte)), Some(DropTarget::Remote { .. })),
+    };
+    let is_image = is_drag_image_target(vte, context);
+    drop_overlay::show_for_vte(vte, x, is_remote, is_image);
+    0
+}
+
+extern "C" fn on_vte_drag_leave(
+    vte: *mut GtkWidget,
+    _context: *mut GdkDragContext,
+    _time: c_uint,
+    _user_data: *mut c_void,
+) {
+    drop_overlay::hide_for_vte(vte);
+}
+
+extern "C" fn on_vte_drag_drop(
+    vte: *mut GtkWidget,
+    _context: *mut GdkDragContext,
+    x: c_int,
+    _y: c_int,
+    _time: c_uint,
+    _user_data: *mut c_void,
+) -> c_int {
+    drop_overlay::record_drop_x(vte, x);
+    0
+}
+
 extern "C" fn on_vte_drag_data_received(
     vte: *mut GtkWidget,
     context: *mut GdkDragContext,
     _x: c_int,
     _y: c_int,
     selection_data: *const GtkSelectionData,
-    _info: c_uint,
+    info: c_uint,
     time: c_uint,
     _user_data: *mut c_void,
 ) {
-    let uris = extract_selection_uris(selection_data);
-    let paths = decode_uri_list(&uris);
-    let ok = dispatch_dropped_paths(vte, paths);
+    drop_overlay::hide_for_vte(vte);
+    let mode = drop_overlay::take_mode_for_vte(vte);
+    let ok = extract_selection_payload(selection_data, info)
+        .is_some_and(|payload| dispatch_drag_payload(vte, payload, mode));
     finish_drag(context, ok, time);
 }
 
@@ -392,16 +622,22 @@ pub fn setup_vte_file_drop(vte: *mut GtkWidget) {
     if vte.is_null() {
         return;
     }
-    enable_uri_drag_dest(vte);
+    let entries = [
+        GtkTargetEntry { target: MIME_AKHTERM_FILES.as_ptr(), flags: 0, info: INFO_AKHTERM_FILES },
+        GtkTargetEntry { target: MIME_URI_LIST.as_ptr(), flags: 0, info: INFO_URI_LIST },
+        GtkTargetEntry { target: MIME_GNOME_COPIED.as_ptr(), flags: 0, info: INFO_GNOME_COPIED },
+        GtkTargetEntry { target: MIME_IMAGE_PNG.as_ptr(), flags: 0, info: INFO_IMAGE_PNG },
+    ];
     unsafe {
-        g_signal_connect_data(
-            vte,
-            c"drag-data-received".as_ptr(),
-            on_vte_drag_data_received as *const c_void,
-            ptr::null_mut(),
-            ptr::null(),
-            0,
-        );
+        gtk_drag_dest_set(vte, DEST_DEFAULT_ALL, entries.as_ptr(), entries.len() as c_int, GDK_ACTION_COPY);
+        for (sig, cb) in [
+            (c"drag-motion", on_vte_drag_motion as *const c_void),
+            (c"drag-leave", on_vte_drag_leave as *const c_void),
+            (c"drag-drop", on_vte_drag_drop as *const c_void),
+            (c"drag-data-received", on_vte_drag_data_received as *const c_void),
+        ] {
+            g_signal_connect_data(vte, sig.as_ptr(), cb, ptr::null_mut(), ptr::null(), 0);
+        }
     }
 }
 

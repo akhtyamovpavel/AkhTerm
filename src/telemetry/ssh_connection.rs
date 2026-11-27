@@ -124,6 +124,30 @@ impl SshRoute {
             .stderr(Stdio::null())
             .spawn()
     }
+
+    pub(crate) fn spawn_transfer(
+        &self,
+        script: &str,
+        stdin: Stdio,
+        stdout: Stdio,
+        stderr: Stdio,
+    ) -> io::Result<std::process::Child> {
+        Command::new("ssh")
+            .args(SSH_OPTIONS)
+            .args(["-oServerAliveInterval=15", "-oServerAliveCountMax=3"])
+            .args(&self.args)
+            .arg(script)
+            .current_dir(&self.cwd)
+            .stdin(stdin)
+            .stdout(stdout)
+            .stderr(stderr)
+            .spawn()
+    }
+
+    pub(crate) fn spawn_rw(&self, script: &str, with_stdin: bool) -> io::Result<std::process::Child> {
+        let stdin = if with_stdin { Stdio::piped() } else { Stdio::null() };
+        self.spawn_transfer(script, stdin, Stdio::piped(), Stdio::piped())
+    }
 }
 
 // Keep routing and credentials from the interactive command. Unknown options

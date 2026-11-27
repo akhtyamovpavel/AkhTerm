@@ -73,9 +73,21 @@ pub const GDK_BUTTON_RELEASE_MASK: c_int = 1 << 9;
 pub const GDK_CONTROL_MASK: c_uint = 1 << 2;
 pub const GDK_SHIFT_MASK: c_uint = 1 << 0;
 pub const GDK_MOD1_MASK: c_uint = 1 << 3; // Alt
+pub const GDK_BUTTON1_MASK: c_uint = 1 << 8;
+pub const GTK_DEST_DEFAULT_MOTION: c_uint = 1 << 0;
+pub const GTK_DEST_DEFAULT_HIGHLIGHT: c_uint = 1 << 1;
+pub const GTK_DEST_DEFAULT_DROP: c_uint = 1 << 2;
 pub const GTK_DEST_DEFAULT_ALL: c_uint = 0x07;
 pub const DEST_DEFAULT_ALL: c_uint = GTK_DEST_DEFAULT_ALL;
+pub const GDK_ACTION_DEFAULT: c_uint = 1 << 0;
 pub const GDK_ACTION_COPY: c_uint = 1 << 1;
+pub const GDK_ACTION_MOVE: c_uint = 1 << 2;
+pub const GDK_ACTION_LINK: c_uint = 1 << 3;
+pub const GTK_FILE_CHOOSER_ACTION_OPEN: c_int = 0;
+pub const GTK_FILE_CHOOSER_ACTION_SAVE: c_int = 1;
+pub const GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER: c_int = 2;
+pub const GTK_RESPONSE_ACCEPT: c_int = -3;
+pub const GTK_RESPONSE_CANCEL: c_int = -6;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -92,6 +104,12 @@ pub struct GtkTargetEntry {
     pub target: *const c_char,
     pub flags: c_uint,
     pub info: c_uint,
+}
+
+#[repr(C)]
+pub struct GSList {
+    pub data: *mut c_void,
+    pub next: *mut GSList,
 }
 
 #[repr(C)]
@@ -132,6 +150,12 @@ extern "C" {
         hostname: *mut *mut c_char,
         error: *mut *mut c_void,
     ) -> *mut c_char;
+    pub fn g_filename_to_uri(
+        filename: *const c_char,
+        hostname: *const c_char,
+        error: *mut *mut c_void,
+    ) -> *mut c_char;
+    pub fn g_slist_free(list: *mut c_void);
     pub fn g_object_get(object: *mut c_void, first_property_name: *const c_char, ...);
     pub fn g_object_set(object: *mut c_void, first_property_name: *const c_char, ...);
     pub fn g_object_ref(object: *mut c_void) -> *mut c_void;
@@ -326,6 +350,11 @@ extern "C" {
     pub fn gtk_menu_popup_at_pointer(menu: *mut GtkWidget, trigger_event: *const GdkEvent);
 
     pub fn gtk_container_add(container: *mut GtkContainer, widget: *mut GtkWidget);
+    pub fn gtk_container_foreach(
+        container: *mut GtkContainer,
+        callback: extern "C" fn(*mut GtkWidget, *mut c_void),
+        user_data: *mut c_void,
+    );
     pub fn gtk_container_remove(container: *mut GtkContainer, widget: *mut GtkWidget);
     pub fn gtk_container_set_focus_hadjustment(container: *mut GtkContainer, adjustment: *mut GtkAdjustment);
     pub fn gtk_adjustment_clamp_page(adjustment: *mut GtkAdjustment, lower: f64, upper: f64);
@@ -349,6 +378,7 @@ extern "C" {
     pub fn gtk_widget_get_allocated_width(widget: *mut GtkWidget) -> c_int;
     pub fn gtk_widget_get_allocated_height(widget: *mut GtkWidget) -> c_int;
     pub fn gtk_widget_get_parent(widget: *mut GtkWidget) -> *mut GtkWidget;
+    pub fn gtk_widget_is_ancestor(widget: *mut GtkWidget, ancestor: *mut GtkWidget) -> c_int;
     pub fn gtk_widget_is_focus(widget: *mut GtkWidget) -> c_int;
     pub fn gtk_widget_has_focus(widget: *mut GtkWidget) -> c_int;
     pub fn gtk_widget_translate_coordinates(
@@ -386,8 +416,39 @@ extern "C" {
     pub fn gtk_drag_dest_set(w: *mut GtkWidget, f: c_uint, t: *const GtkTargetEntry, n: c_int, a: c_uint);
     pub fn gtk_drag_dest_add_uri_targets(widget: *mut GtkWidget);
     pub fn gtk_drag_dest_get_target_list(widget: *mut GtkWidget) -> *mut GtkTargetList;
+    pub fn gtk_drag_dest_find_target(
+        widget: *mut GtkWidget,
+        context: *mut GdkDragContext,
+        target_list: *mut GtkTargetList,
+    ) -> GdkAtom;
+    pub fn gtk_drag_get_data(
+        widget: *mut GtkWidget,
+        context: *mut GdkDragContext,
+        target: GdkAtom,
+        time: c_uint,
+    );
+    pub fn gtk_drag_source_set(
+        widget: *mut GtkWidget,
+        start_button_mask: c_uint,
+        targets: *const GtkTargetEntry,
+        n_targets: c_int,
+        actions: c_uint,
+    );
+    pub fn gtk_drag_source_set_icon_name(widget: *mut GtkWidget, icon_name: *const c_char);
+    pub fn gdk_atom_name(atom: GdkAtom) -> *mut c_char;
+    pub fn gdk_drag_status(context: *mut GdkDragContext, action: c_uint, time: c_uint);
     pub fn gtk_target_list_find(list: *mut GtkTargetList, target: GdkAtom, info: *mut c_uint) -> c_int;
     pub fn gtk_selection_data_get_uris(selection_data: *const GtkSelectionData) -> *mut *mut c_char;
+    pub fn gtk_selection_data_get_data(selection_data: *const GtkSelectionData) -> *const u8;
+    pub fn gtk_selection_data_get_length(selection_data: *const GtkSelectionData) -> c_int;
+    pub fn gtk_selection_data_get_pixbuf(selection_data: *const GtkSelectionData) -> *mut GdkPixbuf;
+    pub fn gtk_selection_data_set(
+        selection_data: *mut GtkSelectionData,
+        type_: GdkAtom,
+        format: c_int,
+        data: *const u8,
+        length: c_int,
+    );
     #[cfg(test)]
     pub fn gtk_clipboard_set_with_data(
         clipboard: *mut GtkClipboard,
@@ -397,11 +458,33 @@ extern "C" {
         clear_func: extern "C" fn(*mut GtkClipboard, *mut c_void),
         user_data: *mut c_void,
     ) -> c_int;
-    #[cfg(test)]
     pub fn gtk_selection_data_set_uris(selection_data: *mut GtkSelectionData, uris: *const *const c_char) -> c_int;
     #[cfg(test)]
     pub fn gtk_selection_data_set_text(selection_data: *mut GtkSelectionData, str: *const c_char, len: c_int) -> c_int;
     pub fn gtk_drag_finish(ctx: *mut GdkDragContext, success: c_int, del: c_int, time: c_uint);
+    pub fn gtk_progress_bar_new() -> *mut GtkWidget;
+    pub fn gtk_progress_bar_set_fraction(pbar: *mut GtkWidget, fraction: f64);
+    pub fn gtk_progress_bar_pulse(pbar: *mut GtkWidget);
+    pub fn gtk_event_box_new() -> *mut GtkWidget;
+    pub fn gtk_event_box_set_visible_window(event_box: *mut GtkWidget, visible_window: c_int);
+    pub fn gtk_file_chooser_dialog_new(
+        title: *const c_char,
+        parent: *mut GtkWindow,
+        action: c_int,
+        first_button_text: *const c_char,
+        ...
+    ) -> *mut GtkWidget;
+    pub fn gtk_dialog_add_button(
+        dialog: *mut GtkWidget,
+        button_text: *const c_char,
+        response_id: c_int,
+    ) -> *mut GtkWidget;
+    pub fn gtk_dialog_run(dialog: *mut GtkWidget) -> c_int;
+    pub fn gtk_file_chooser_set_select_multiple(chooser: *mut GtkWidget, select_multiple: c_int);
+    pub fn gtk_file_chooser_get_filename(chooser: *mut GtkWidget) -> *mut c_char;
+    pub fn gtk_file_chooser_get_filenames(chooser: *mut GtkWidget) -> *mut c_void;
+    pub fn gtk_file_chooser_set_current_folder(chooser: *mut GtkWidget, filename: *const c_char) -> c_int;
+    pub fn gtk_file_chooser_set_current_name(chooser: *mut GtkWidget, name: *const c_char);
     pub fn gdk_pixbuf_new(
         colorspace: c_int,
         has_alpha: c_int,

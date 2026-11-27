@@ -644,6 +644,7 @@ pub fn select_session(sid: usize) {
         apply_session_selection(sid, stack, &vtes, last_focus, &bar);
     }
     topbar::refresh_ui();
+    crate::files::drawer::sync_active_tab();
     unsafe { g_idle_add(on_reveal_tab, sid as *mut c_void) };
     save_tabs();
 }
