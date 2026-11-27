@@ -3,6 +3,7 @@
 mod app;
 #[path = "ui/diff_review.rs"]
 mod diff_review;
+pub(crate) mod files;
 #[path = "ui/markdown.rs"]
 mod markdown;
 #[path = "telemetry/port_radar.rs"]
