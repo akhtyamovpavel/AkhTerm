@@ -560,7 +560,7 @@ fn session_mi_badge(
 
 fn accumulate_session_counts(s: &session::TermSession, is_act: bool, out: &mut SessionViews, local_dir: &Option<String>) {
     if is_act {
-        out.can_reconnect = s.remote().is_some();
+        out.can_reconnect = s.can_reconnect();
         out.active_cwd = local_dir.clone();
     }
     out.counts[0] += usize::from(s.state == session::WorkState::Working);

@@ -90,18 +90,19 @@ pub fn format_ssh_destination(raw_dest: &str, login_user: Option<&str>) -> Optio
     }
 }
 
-pub fn parse_ssh_argv(argv: &[String]) -> Option<String> {
+fn scan_ssh_argv(argv: &[String]) -> Option<(&str, Option<&str>, usize)> {
     if exe_basename(argv.first()?) != "ssh" {
         return None;
     }
-    let mut login_user: Option<&str> = None;
-    let mut raw_dest: Option<&str> = None;
-    let mut idx = 1usize;
+    let (mut login_user, mut raw_dest, mut idx) = (None, None, 1usize);
     while idx < argv.len() {
         let tok = argv[idx].as_str();
         if tok == "--" {
             if raw_dest.is_none() {
                 raw_dest = Some(argv.get(idx + 1)?.as_str());
+                idx += 2;
+            } else {
+                idx += 1;
             }
             break;
         }
@@ -110,16 +111,67 @@ pub fn parse_ssh_argv(argv: &[String]) -> Option<String> {
             let (extra, maybe_user) = parse_flag_cluster(cluster, next)?;
             login_user = login_user.or(maybe_user);
             idx += 1 + extra;
-            continue;
-        }
-        if raw_dest.is_none() {
+        } else if raw_dest.is_none() {
             raw_dest = Some(tok);
             idx += 1;
         } else {
             break;
         }
     }
-    format_ssh_destination(raw_dest?, login_user)
+    Some((raw_dest?, login_user, idx))
+}
+
+pub fn parse_ssh_argv(argv: &[String]) -> Option<String> {
+    let (raw_dest, login_user, _) = scan_ssh_argv(argv)?;
+    format_ssh_destination(raw_dest, login_user)
+}
+
+pub fn ssh_argv_has_remote_command(argv: &[String]) -> bool {
+    let Some((raw_dest, login_user, cmd_idx)) = scan_ssh_argv(argv) else {
+        return false;
+    };
+    format_ssh_destination(raw_dest, login_user).is_some()
+        && argv.get(cmd_idx..).is_some_and(|tail| tail.iter().any(|t| !t.is_empty()))
+}
+
+fn has_tty_flag(argv: &[String]) -> bool {
+    argv.iter()
+        .skip(1)
+        .take_while(|t| t.as_str() != "--")
+        .any(|t| matches!(t.as_str(), "-t" | "-tt"))
+}
+
+pub fn build_dynamic_ssh_reconnect_argv(
+    cmdline: Option<&[String]>,
+    host: &str,
+    remote_tmux: Option<&str>,
+) -> Option<Vec<String>> {
+    if !is_ssh_host(host) {
+        return None;
+    }
+    let tmux = remote_tmux.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(args) = cmdline.filter(|a| parse_ssh_argv(a).is_some()) {
+        let mut out = args.to_vec();
+        if let Some(name) = tmux.filter(|_| !ssh_argv_has_remote_command(args)) {
+            if !has_tty_flag(&out) {
+                out.insert(1, "-t".to_owned());
+            }
+            out.push(crate::tabs::remote_tmux_attach_cmd(name));
+        }
+        return Some(out);
+    }
+    let conn = crate::tabs::RemoteConnection {
+        host: host.to_owned(),
+        tmux_session: tmux.map(str::to_owned),
+    };
+    Some(conn.argv())
+}
+
+pub fn format_shell_argv(argv: &[String]) -> String {
+    argv.iter()
+        .map(|arg| crate::file_drop::posix_shell_escape(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn is_excluded_tool_name(name: &str) -> bool {
@@ -308,6 +360,41 @@ mod tests {
             proc_node(101, 100, 100, &["ssh", "vpn@gw"]),
         ];
         assert_eq!(detect_active_ssh(100, 100, &exec_sshuttle), None);
+    }
+
+    #[test]
+    fn builds_dynamic_ssh_reconnect_argv_and_formats_shell_commands() {
+        assert!(!ssh_argv_has_remote_command(&vec_args(&["ssh", "prod"])));
+        assert!(!ssh_argv_has_remote_command(&vec_args(&["ssh", "-p", "2222", "-i", "key", "user@prod"])));
+        assert!(!ssh_argv_has_remote_command(&vec_args(&["ssh", "--", "prod"])));
+        assert!(ssh_argv_has_remote_command(&vec_args(&["ssh", "prod", "tmux", "attach"])));
+        assert!(ssh_argv_has_remote_command(&vec_args(&["ssh", "-t", "--", "prod", "ls", "-la"])));
+
+        let plain = vec_args(&["ssh", "-p", "2222", "-J", "bastion", "-i", "~/.ssh/id", "user@prod"]);
+        assert_eq!(build_dynamic_ssh_reconnect_argv(Some(&plain), "user@prod", None), Some(plain.clone()));
+
+        let with_tmux = build_dynamic_ssh_reconnect_argv(Some(&plain), "user@prod", Some("work")).unwrap();
+        assert_eq!(&with_tmux[..2], ["ssh", "-t"]);
+        assert!(with_tmux.last().unwrap().contains("new-session -A -s 'work'"));
+
+        let already_t = vec_args(&["ssh", "-t", "prod"]);
+        let with_t_tmux = build_dynamic_ssh_reconnect_argv(Some(&already_t), "prod", Some("main")).unwrap();
+        assert_eq!(with_t_tmux.iter().filter(|a| a.as_str() == "-t").count(), 1);
+        assert!(with_t_tmux.last().unwrap().contains("new-session -A -s 'main'"));
+
+        let custom_cmd = vec_args(&["ssh", "-t", "prod", "tmux", "a", "-t", "main"]);
+        assert_eq!(build_dynamic_ssh_reconnect_argv(Some(&custom_cmd), "prod", Some("main")), Some(custom_cmd));
+
+        let fallback = build_dynamic_ssh_reconnect_argv(None, "prod", Some("dev")).unwrap();
+        assert_eq!(&fallback[..2], ["ssh", "-t"]);
+        assert!(fallback.contains(&"prod".to_owned()));
+        assert!(fallback.last().unwrap().contains("new-session -A -s 'dev'"));
+
+        assert_eq!(build_dynamic_ssh_reconnect_argv(None, "-oProxyCommand=evil", None), None);
+        assert_eq!(build_dynamic_ssh_reconnect_argv(None, "bad host", None), None);
+
+        let formatted = format_shell_argv(&vec_args(&["ssh", "-p", "2222", "user@prod-01", "echo 'hi'; id"]));
+        assert_eq!(formatted, "ssh -p 2222 'user@prod-01' 'echo '\\''hi'\\''; id'");
     }
 
     #[test]

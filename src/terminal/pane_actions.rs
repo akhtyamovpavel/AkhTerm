@@ -1007,14 +1007,24 @@ pub(crate) fn tab_context_menu_cb() -> extern "C" fn(*mut GtkWidget, *const GdkE
     on_tab_context_menu
 }
 
+#[cfg(test)]
+pub(crate) fn build_tab_menu_spec(widget: *mut GtkWidget, sid: usize) -> Option<context_menu::TabMenuSpec> {
+    build_tab_menu_spec_inner(widget, sid)
+}
+
+#[cfg(not(test))]
 fn build_tab_menu_spec(widget: *mut GtkWidget, sid: usize) -> Option<context_menu::TabMenuSpec> {
+    build_tab_menu_spec_inner(widget, sid)
+}
+
+fn build_tab_menu_spec_inner(widget: *mut GtkWidget, sid: usize) -> Option<context_menu::TabMenuSpec> {
     app_state::with_app(|app| {
         let s = app.sessions.iter().find(|s| s.id == sid)?;
         Some(context_menu::TabMenuSpec {
             sid,
             anchor: widget,
             local_cwd: s.active_local_cwd(),
-            is_remote: s.remote().is_some(),
+            is_remote: s.can_reconnect(),
             can_close_others: app.sessions.len() > 1,
         })
     })

@@ -273,7 +273,7 @@ fn ssh_base_argv(host: &str) -> Vec<String> {
     argv
 }
 
-fn remote_tmux_attach_cmd(name: &str) -> String {
+pub(crate) fn remote_tmux_attach_cmd(name: &str) -> String {
     let target = shell_quote(name);
     let titles = shell_quote(crate::tmux_local::TMUX_TITLE_FORMAT);
     format!(
