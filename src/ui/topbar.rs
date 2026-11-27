@@ -718,6 +718,7 @@ fn refresh_localized_subwidgets(app: &AppState) {
     app.tokens_menu.refresh_locale();
     app.tab_strip.refresh_locale();
     app.update_banner.refresh_locale();
+    app.transfer_banner.refresh_locale();
     app.ports_menu.refresh_locale();
     app.remote_menu.sync_state();
     app.sys_monitor.refresh_locale();

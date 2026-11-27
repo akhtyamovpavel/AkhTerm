@@ -1,11 +1,18 @@
 #![allow(dead_code)]
 //! Domain types and progress state for local and SSH file drag-and-drop and transfer operations.
 
+pub mod drop_overlay;
 pub mod local_fs;
+pub mod manager;
 pub mod mime;
+pub mod resolve;
 pub mod ssh_ops;
+pub mod transfer_banner;
+#[cfg(test)]
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod ui_tests;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

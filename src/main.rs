@@ -97,6 +97,10 @@ fn init_app_hooks() -> Option<std::fs::File> {
     register_link_cwd_lookup(session_ops::lookup_vte_link_cwd);
     register_link_open_hook(ports_ui::intercept_vte_link_open);
     install_file_drop_hooks();
+    files::manager::register_transfer_hooks(files::manager::TransferHooks {
+        on_insert_paths: file_drop::insert_shell_paths,
+        on_status: app_state::set_footer_message,
+    });
     register_vte_menu_hook(pane_actions::open_vte_context_menu);
     pane_header::register_pane_close_hook(pane_actions::close_pane_by_vte);
     updater_wire::init_hooks();
@@ -278,8 +282,11 @@ fn install_app_state(a: AppAssembly) {
     swarm_view.mount_in_stack(a.stack.cast());
     let update_banner = updater_wire::build_update_banner();
     update_banner.mount_in_overlay(a.overlay);
+    let transfer_banner = files::transfer_banner::TransferBanner::new();
+    transfer_banner.mount_in_overlay(a.overlay);
     APP.with(|cell| *cell.borrow_mut() = Some(build_app_state(
         a, git_menu, handoff, palette, pin_pop, swarm_pop, swarm_view, update_banner,
+        transfer_banner,
     )));
 }
 
@@ -292,6 +299,7 @@ fn build_app_state(
     swarm_pop: swarm_view::SwarmPopover,
     swarm_view: swarm_view::SwarmView,
     update_banner: update_banner::UpdateBanner,
+    transfer_banner: files::transfer_banner::TransferBanner,
 ) -> AppState {
     let sys_sampler = sys_monitor::SysSampler::new();
     a.sys_monitor.update(sys_sampler.snapshot());
@@ -326,6 +334,8 @@ fn build_app_state(
         ssh_tunnels: ssh_tunnel::SshTunnelManager::new(),
         remote_ports: a.sched.remote_ports, local_ports_by_sid: Default::default(),
         remote_url_ports_by_sid: Default::default(),
+        transfer_manager: files::manager::TransferManager::default(),
+        transfer_banner,
     }
 }
 

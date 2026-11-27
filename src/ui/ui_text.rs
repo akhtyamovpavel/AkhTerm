@@ -954,6 +954,37 @@ pub mod i18n_text {
         c"Показать QR для Android / PWA или настроить локальный сервер",
         c"Show Android / PWA pairing QR code or configure local remote server",
     );
+
+    pub const DROP_INSERT_TITLE: UiText = UiText::new(c"Вставить путь", c"Insert path");
+    pub const DROP_INSERT_LOCAL_SUB: UiText =
+        UiText::new(c"Экранированный путь в терминал", c"Quoted path into terminal");
+    pub const DROP_INSERT_REMOTE_SUB: UiText =
+        UiText::new(c"Загрузить в /tmp и вставить путь", c"Upload to /tmp and insert path");
+    pub const DROP_TRANSFER_LOCAL_TITLE: UiText = UiText::new(c"Скопировать сюда", c"Copy here");
+    pub const DROP_TRANSFER_REMOTE_TITLE: UiText = UiText::new(c"Загрузить сюда", c"Upload here");
+    pub const DROP_TRANSFER_SUB: UiText =
+        UiText::new(c"В текущий каталог", c"Into working directory");
+    pub const DROP_PASTE_IMAGE_SUB: UiText =
+        UiText::new(c"Сохранить изображение и передать", c"Save image and transfer");
+
+    pub const TRANSFER_BADGE: UiText = UiText::new(c"ПЕРЕДАЧА ФАЙЛОВ", c"FILE TRANSFER");
+    pub const TRANSFER_LOCAL_COPY: UiText =
+        UiText::new(c"Копирование в каталог", c"Copying to folder");
+    pub const TRANSFER_SSH_UPLOAD: UiText =
+        UiText::new(c"Загрузка по SSH", c"Uploading via SSH");
+    pub const TRANSFER_SSH_DOWNLOAD: UiText =
+        UiText::new(c"Скачивание с SSH", c"Downloading from SSH");
+    pub const TRANSFER_SSH_BRIDGE: UiText =
+        UiText::new(c"Передача SSH → SSH", c"Transferring SSH → SSH");
+    pub const TRANSFER_DONE: UiText = UiText::new(c"Готово", c"Done");
+    pub const TRANSFER_FAILED: UiText = UiText::new(c"Ошибка", c"Failed");
+    pub const TRANSFER_CANCELLED: UiText = UiText::new(c"Отменено", c"Cancelled");
+    pub const TRANSFER_BTN_CANCEL: UiText = UiText::new(c"Отмена", c"Cancel");
+    pub const TRANSFER_BTN_OPEN_FOLDER: UiText =
+        UiText::new(c"Открыть папку", c"Open folder");
+    pub const TRANSFER_BTN_INSERT_PATH: UiText =
+        UiText::new(c"Вставить путь", c"Insert path");
+    pub const TRANSFER_BTN_DISMISS: UiText = UiText::new(c"Скрыть", c"Dismiss");
 }
 
 pub use i18n_text::*;
@@ -1050,6 +1081,16 @@ mod tests {
             i18n_text::SIDEBAR_GROUP_MONITOR, i18n_text::SIDEBAR_EMPTY_TABS,
             i18n_text::SIDEBAR_EMPTY_SEARCH, i18n_text::SIDEBAR_TMUX_PREFIX,
             i18n_text::SIDEBAR_FOLDER_NEW_TAB_TIP,
+            i18n_text::DROP_INSERT_TITLE, i18n_text::DROP_INSERT_LOCAL_SUB,
+            i18n_text::DROP_INSERT_REMOTE_SUB, i18n_text::DROP_TRANSFER_LOCAL_TITLE,
+            i18n_text::DROP_TRANSFER_REMOTE_TITLE, i18n_text::DROP_TRANSFER_SUB,
+            i18n_text::DROP_PASTE_IMAGE_SUB, i18n_text::TRANSFER_BADGE,
+            i18n_text::TRANSFER_LOCAL_COPY, i18n_text::TRANSFER_SSH_UPLOAD,
+            i18n_text::TRANSFER_SSH_DOWNLOAD, i18n_text::TRANSFER_SSH_BRIDGE,
+            i18n_text::TRANSFER_DONE, i18n_text::TRANSFER_FAILED,
+            i18n_text::TRANSFER_CANCELLED, i18n_text::TRANSFER_BTN_CANCEL,
+            i18n_text::TRANSFER_BTN_OPEN_FOLDER, i18n_text::TRANSFER_BTN_INSERT_PATH,
+            i18n_text::TRANSFER_BTN_DISMISS,
         ] {
             assert_pair_valid(entry);
         }

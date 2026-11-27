@@ -101,6 +101,8 @@ pub(crate) struct AppState {
     pub(crate) remote_ports: crate::port_radar::RemotePortScheduler,
     pub(crate) local_ports_by_sid: HashMap<usize, Vec<crate::port_radar::DetectedPort>>,
     pub(crate) remote_url_ports_by_sid: HashMap<usize, Vec<crate::port_radar::DetectedPort>>,
+    pub(crate) transfer_manager: crate::files::manager::TransferManager,
+    pub(crate) transfer_banner: crate::files::transfer_banner::TransferBanner,
 }
 
 thread_local! {
