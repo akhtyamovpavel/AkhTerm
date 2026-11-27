@@ -109,6 +109,14 @@ pub fn resolve_remote_file_link(vte: *mut GtkWidget, raw_url_or_path: &str) -> O
     Some(RemoteFileLink { sid, host, ssh_pid, route, path })
 }
 
+pub(crate) fn remote_download_for_vte_link(
+    vte: *mut GtkWidget,
+    link: Option<&crate::terminal::session::VteLink>,
+) -> Option<RemoteFileLink> {
+    let url = &link?.url;
+    resolve_remote_file_link(vte, url)
+}
+
 /// Format a compact breadcrumb label for UI display (`~/proj` or `host:/srv/app`).
 pub fn endpoint_short_label(endpoint: &FileEndpoint) -> String {
     match endpoint {

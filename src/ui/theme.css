@@ -1604,3 +1604,69 @@ button.transfer-btn-danger {
     min-height: 24px;
     padding: 3px 10px;
 }
+
+.files-drawer {
+    background-color: @canvas;
+    border-left: 1px solid @border_strong;
+    padding: 8px;
+}
+
+.files-header {
+    color: @text_strong;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+}
+
+.files-path-label {
+    color: @muted;
+    font-size: 11px;
+    padding: 2px 0;
+}
+
+entry.files-search {
+    background-color: @surface;
+    border: 1px solid @border_strong;
+    border-radius: 5px;
+    color: @text_strong;
+    font-size: 12px;
+    min-height: 26px;
+    padding: 2px 8px;
+}
+
+.files-row {
+    background-color: transparent;
+    border-radius: 5px;
+    padding: 3px 6px;
+}
+
+.files-row:hover {
+    background-color: @surface;
+}
+
+.files-row-name {
+    color: @text_strong;
+    font-size: 12px;
+}
+
+.files-row-size {
+    color: @muted;
+    font-size: 11px;
+}
+
+button.files-row-btn {
+    background-color: @surface;
+    border: 1px solid @border_strong;
+    border-radius: 4px;
+    color: @text_strong;
+    font-size: 11px;
+    min-height: 22px;
+    min-width: 22px;
+    padding: 1px 6px;
+}
+
+.files-hint {
+    color: @muted;
+    font-size: 11px;
+    padding-top: 4px;
+}

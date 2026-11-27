@@ -163,7 +163,9 @@ fn build_workspace_area(
         let term_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
         let work_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
         markdown::mount(work_hbox, term_vbox);
-        diff_review::mount(hbox, work_hbox);
+        let files_wrap = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+        diff_review::mount(files_wrap, work_hbox);
+        files::drawer::mount(hbox, files_wrap);
         let search_bar = search_bar::SearchBar::new(shortcuts::active_search_vte, shortcuts::collect_close_search_vtes);
         gtk_box_pack_start(term_vbox, search_bar.widget(), 0, 1, 0);
         let stack = gtk_stack_new();

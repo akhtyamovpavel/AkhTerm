@@ -350,6 +350,11 @@ extern "C" {
     pub fn gtk_menu_popup_at_pointer(menu: *mut GtkWidget, trigger_event: *const GdkEvent);
 
     pub fn gtk_container_add(container: *mut GtkContainer, widget: *mut GtkWidget);
+    pub fn gtk_container_foreach(
+        container: *mut GtkContainer,
+        callback: extern "C" fn(*mut GtkWidget, *mut c_void),
+        user_data: *mut c_void,
+    );
     pub fn gtk_container_remove(container: *mut GtkContainer, widget: *mut GtkWidget);
     pub fn gtk_container_set_focus_hadjustment(container: *mut GtkContainer, adjustment: *mut GtkAdjustment);
     pub fn gtk_adjustment_clamp_page(adjustment: *mut GtkAdjustment, lower: f64, upper: f64);
@@ -373,6 +378,7 @@ extern "C" {
     pub fn gtk_widget_get_allocated_width(widget: *mut GtkWidget) -> c_int;
     pub fn gtk_widget_get_allocated_height(widget: *mut GtkWidget) -> c_int;
     pub fn gtk_widget_get_parent(widget: *mut GtkWidget) -> *mut GtkWidget;
+    pub fn gtk_widget_is_ancestor(widget: *mut GtkWidget, ancestor: *mut GtkWidget) -> c_int;
     pub fn gtk_widget_is_focus(widget: *mut GtkWidget) -> c_int;
     pub fn gtk_widget_has_focus(widget: *mut GtkWidget) -> c_int;
     pub fn gtk_widget_translate_coordinates(

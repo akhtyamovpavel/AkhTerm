@@ -1,6 +1,9 @@
 #![allow(dead_code)]
 //! Domain types and progress state for local and SSH file drag-and-drop and transfer operations.
 
+pub mod drawer;
+pub mod drawer_rows;
+pub(crate) mod drawer_transfer;
 pub mod drop_overlay;
 pub mod local_fs;
 pub mod manager;
@@ -9,6 +12,8 @@ pub mod resolve;
 pub mod ssh_ops;
 pub mod transfer_banner;
 #[cfg(test)]
+#[cfg(test)]
+mod drawer_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

@@ -920,6 +920,7 @@ fn execute_vte_action(action: ContextAction) -> Result<(), ContextAction> {
         }
         ContextAction::PreviewMarkdown(path, origin) => crate::markdown::open_local(&path, origin),
         ContextAction::PreviewRemote(doc) => crate::markdown::open_remote(doc),
+        ContextAction::DownloadRemoteFile(link) => crate::files::drawer_transfer::start_remote_download_link(link),
         ContextAction::OpenLink(url) => {
             if !crate::ports_ui::intercept_active_link_open(&url) {
                 proc_radar::open_external_link(&url);
@@ -978,6 +979,7 @@ fn build_vte_menu_spec(
 ) -> Option<context_menu::VteMenuSpec> {
     let has_selection = context_menu::has_vte_selection(vte);
     let selected_text = has_selection.then(|| context_menu::read_vte_selection(vte)).flatten();
+    let remote_download = crate::files::resolve::remote_download_for_vte_link(vte, link_target.as_ref());
     app_state::with_app_mut(|app| {
         let idx = app.sessions.iter().position(|s| s.has_vte(vte))?;
         app.sessions[idx].focus_pane(vte);
@@ -986,8 +988,8 @@ fn build_vte_menu_spec(
         let (has_cmd_marks, has_failed_cmd) = crate::cmd_marks::menu_flags_for_session(&app.sessions[idx], vte);
         let targets = collect_forward_targets(app, sid);
         Some(context_menu::VteMenuSpec {
-            sid, vte, has_selection, selected_text, link_target, is_local, targets,
-            has_cmd_marks, has_failed_cmd,
+            sid, vte, has_selection, selected_text, link_target, remote_download,
+            is_local, targets, has_cmd_marks, has_failed_cmd,
         })
     })
     .flatten()

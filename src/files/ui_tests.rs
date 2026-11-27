@@ -1,6 +1,6 @@
 //! Unit, headless GTK widget, and Maintainability Index tests for Chunk 2 modules.
 
-use std::{fs, path::*, ptr, sync::Mutex, time::*};
+use std::{fs, path::*, ptr, time::*};
 
 use crate::ffi::*;
 use crate::files::drop_overlay::*;
@@ -10,16 +10,8 @@ use crate::files::resolve::*;
 use crate::files::transfer_banner::*;
 use crate::files::*;
 use crate::i18n::*;
+use crate::proc_radar::tests::with_headless_gtk;
 use crate::terminal::file_drop::setup_vte_file_drop;
-
-pub(crate) static GTK_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-pub(crate) fn ensure_gtk() -> bool {
-    let mut argc = 0;
-    let mut argv = ptr::null_mut();
-    let ok = unsafe { gtk_init_check(&mut argc, &mut argv) };
-    ok != 0
-}
 
 fn temp_dir(tag: &str) -> PathBuf {
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
@@ -38,29 +30,21 @@ unsafe fn make_overlay_fixture() -> (*mut GtkWidget, *mut GtkWidget) {
 }
 
 unsafe fn check_overlay_ru(child: *mut GtkWidget) {
-    with_locale_lock(|| {
-        set_locale(UiLocale::Ru);
-        assert_eq!(show_for_vte(child, 0, false, false), DropMode::InsertPath);
-    });
+    set_locale(UiLocale::Ru);
+    assert_eq!(show_for_vte(child, 0, false, false), DropMode::InsertPath);
     assert_eq!(inspect_vte_overlay(child), Some((true, false, true)));
 }
 
 unsafe fn check_overlay_en(child: *mut GtkWidget) {
-    with_locale_lock(|| {
-        set_locale(UiLocale::En);
-        assert_eq!(show_for_vte(child, 500, true, true), DropMode::CopyToCwd);
-    });
+    set_locale(UiLocale::En);
+    assert_eq!(show_for_vte(child, 500, true, true), DropMode::CopyToCwd);
     assert_eq!(inspect_vte_overlay(child), Some((false, true, true)));
 }
 
 #[test]
 fn drop_overlay_zones_localize_toggle_and_retain_last_mode() {
     assert_eq!((mode_for_x(400, 100), mode_for_x(400, 300)), (DropMode::InsertPath, DropMode::CopyToCwd));
-    let _guard = GTK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    if !ensure_gtk() {
-        return;
-    }
-    unsafe {
+    with_locale_lock(|| with_headless_gtk(|| unsafe {
         let (child, overlay) = make_overlay_fixture();
         check_overlay_ru(child);
         check_overlay_en(child);
@@ -68,7 +52,7 @@ fn drop_overlay_zones_localize_toggle_and_retain_last_mode() {
         assert_eq!(take_mode_for_vte(child), DropMode::CopyToCwd);
         gtk_widget_destroy(overlay);
         assert_eq!(inspect_vte_overlay(child), None);
-    }
+    }));
 }
 
 fn seed_hello(dir: &Path) -> (PathBuf, PathBuf) {
@@ -92,17 +76,15 @@ fn wait_settled(mgr: &mut TransferManager) -> TransferSnapshot {
 }
 
 fn verify_banner_visibility(snap: &TransferSnapshot) {
-    let _guard = GTK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    if !ensure_gtk() {
-        return;
-    }
-    let b = TransferBanner::new();
-    assert!(!banner_visible(&b));
-    b.apply_snapshot(Some(snap));
-    assert!(banner_visible(&b));
-    b.apply_snapshot(None);
-    assert!(!banner_visible(&b));
-    unsafe { gtk_widget_destroy(banner_card_ptr(&b)) };
+    with_headless_gtk(|| {
+        let b = TransferBanner::new();
+        assert!(!banner_visible(&b));
+        b.apply_snapshot(Some(snap));
+        assert!(banner_visible(&b));
+        b.apply_snapshot(None);
+        assert!(!banner_visible(&b));
+        unsafe { gtk_widget_destroy(banner_card_ptr(&b)) };
+    });
 }
 
 #[test]
@@ -142,16 +124,12 @@ unsafe fn check_targets_registered(w: *mut GtkWidget) {
 
 #[test]
 fn setup_vte_file_drop_registers_all_four_mime_targets() {
-    let _guard = GTK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    if !ensure_gtk() {
-        return;
-    }
-    unsafe {
+    with_headless_gtk(|| unsafe {
         let w = gtk_label_new(c"drop-target".as_ptr());
         setup_vte_file_drop(w);
         check_targets_registered(w);
         gtk_widget_destroy(w);
-    }
+    });
 }
 
 #[test]

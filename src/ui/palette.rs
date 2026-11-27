@@ -99,6 +99,7 @@ pub enum PaletteAction {
     OpenSearch,
     OpenGitMenu,
     OpenDiffReview,
+    ToggleFilesDrawer,
     SaveCheckpoint,
     UndoLastCheckpoint,
     GitFile { repo_root: String, path: String, untracked: bool },
@@ -505,8 +506,14 @@ fn make_remote_item(locale: UiLocale) -> PaletteItem {
     new_ui_item(PaletteKind::Settings, text::PALETTE_REMOTE_TITLE, text::PALETTE_REMOTE_DETAIL, kw, PaletteAction::OpenRemoteMenu, locale)
 }
 
+fn make_files_drawer_item(locale: UiLocale) -> PaletteItem {
+    let kw = "files drawer ssh upload download explorer файлы загрузка скачать";
+    new_ui_item(PaletteKind::Settings, text::PALETTE_FILES_TITLE, text::PALETTE_FILES_DETAIL, kw, PaletteAction::ToggleFilesDrawer, locale)
+}
+
 fn push_v1_command_items(out: &mut Vec<PaletteItem>, locale: UiLocale) {
     out.push(make_diff_review_item(locale));
+    out.push(make_files_drawer_item(locale));
     out.push(make_save_checkpoint_item(locale));
     out.push(make_undo_checkpoint_item(locale));
     out.push(new_ui_item(PaletteKind::Git, text::WT_PALETTE_NEW_TITLE, text::WT_PALETTE_NEW_DETAIL, "git worktree new create branch создать ветку", PaletteAction::NewGitWorktree, locale));

@@ -394,7 +394,7 @@ fn extract_selection_bytes(selection_data: *const GtkSelectionData) -> Vec<u8> {
     }
 }
 
-fn extract_selection_payload(selection_data: *const GtkSelectionData, info: c_uint) -> Option<DragPayload> {
+pub(crate) fn extract_selection_payload(selection_data: *const GtkSelectionData, info: c_uint) -> Option<DragPayload> {
     match info {
         INFO_AKHTERM_FILES => decode_akhterm_drag(&extract_selection_bytes(selection_data)),
         INFO_GNOME_COPIED => {
